@@ -1,10 +1,11 @@
 # Public release baseline
 
-This document is the source-of-truth baseline for future GalleryBrowser public releases, beginning with version 1.0.
+This document is the source-of-truth baseline for GalleryBrowser public releases. The current public release is version 1.1.0; the baseline policy began with version 1.0.0.
 
 ## Build and package
 
 - Build command: `scripts/Publish-GalleryBrowser.ps1 -Mode Public`
+- Current package: `artifacts/release/GalleryBrowser-1.1-win-x64`
 - Target: Windows x64, .NET self-contained, single executable
 - Trimming: disabled
 - Debug symbols and XML documentation: excluded

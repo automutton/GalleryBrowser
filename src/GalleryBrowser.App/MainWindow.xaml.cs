@@ -3,6 +3,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Net.Http;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -84,11 +85,27 @@ public partial class MainWindow : Window
         _thumbnailService = new ThumbnailService(_database, _ffmpegService);
         _galleryDatabaseUpdateService = new GalleryDatabaseUpdateService(_database, _fileBrowser);
         InitializeComponent();
+#if DEBUG
+        Title = CreateDebugWindowTitle();
+#endif
         RestoreWindowLayout();
         Loaded += OnLoaded;
         Closing += OnClosing;
         Closed += OnClosed;
     }
+
+#if DEBUG
+    private static string CreateDebugWindowTitle()
+    {
+        var assembly = typeof(MainWindow).Assembly;
+        var buildVersion = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+        return string.IsNullOrWhiteSpace(buildVersion)
+            ? "GalleryBrowser [DEBUG]"
+            : $"GalleryBrowser [DEBUG {buildVersion}]";
+    }
+#endif
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {

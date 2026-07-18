@@ -26,10 +26,10 @@ public sealed class GalleryDatabase
     private const string LegacyNoCharacterFilterValue = "No Character";
     private const string DefaultCreatorTrackingDisplayCurrency = "JPY";
     private const int DefaultCreatorTrackingCompositionLabelLimit = 5;
-    private const string CreatorSummaryCacheVersion = "v3";
-    private const string UserMetricsCacheVersion = "v1";
+    private const string CreatorSummaryCacheVersion = "v4";
+    private const string UserMetricsCacheVersion = "v2";
     private const string CreatorTrackingDashboardCacheVersion = "v1";
-    private const string GalleryWorksCacheVersion = "v1";
+    private const string GalleryWorksCacheVersion = "v2";
     private const string GalleryFiltersCacheVersion = "v1";
     private const string DefaultGidTargetExtensions = "zip;rar;7z;cbz;cbr";
     private const int DefaultGidDigitCount = 6;
@@ -2288,8 +2288,8 @@ public sealed class GalleryDatabase
         contentMode = NormalizeStickyNoteContentMode(contentMode);
         x = Math.Max(0, x);
         y = Math.Max(0, y);
-        width = Math.Clamp(width, 200, 1200);
-        height = Math.Clamp(height, 140, 900);
+        width = Math.Clamp(width, 125, 1200);
+        height = Math.Clamp(height, 100, 900);
         var timestamp = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
 
         using var connection = OpenApplicationDataConnection();
@@ -2357,8 +2357,8 @@ public sealed class GalleryDatabase
         command.Parameters.AddWithValue("$content", content);
         command.Parameters.AddWithValue("$x", Math.Max(0, note.X));
         command.Parameters.AddWithValue("$y", Math.Max(0, note.Y));
-        command.Parameters.AddWithValue("$width", Math.Clamp(note.Width, 200, 1200));
-        command.Parameters.AddWithValue("$height", Math.Clamp(note.Height, 140, 900));
+        command.Parameters.AddWithValue("$width", Math.Clamp(note.Width, 125, 1200));
+        command.Parameters.AddWithValue("$height", Math.Clamp(note.Height, 100, 900));
         command.Parameters.AddWithValue("$colorKey", colorKey);
         command.Parameters.AddWithValue("$contentMode", contentMode);
         command.Parameters.AddWithValue("$updatedAt", DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture));
@@ -2411,8 +2411,8 @@ public sealed class GalleryDatabase
             command.Parameters.AddWithValue("$content", content);
             command.Parameters.AddWithValue("$x", Math.Max(0, note.X));
             command.Parameters.AddWithValue("$y", Math.Max(0, note.Y));
-            command.Parameters.AddWithValue("$width", Math.Clamp(note.Width, 200, 1200));
-            command.Parameters.AddWithValue("$height", Math.Clamp(note.Height, 140, 900));
+            command.Parameters.AddWithValue("$width", Math.Clamp(note.Width, 125, 1200));
+            command.Parameters.AddWithValue("$height", Math.Clamp(note.Height, 100, 900));
             command.Parameters.AddWithValue("$colorKey", colorKey);
             command.Parameters.AddWithValue("$contentMode", contentMode);
             command.Parameters.AddWithValue("$createdAt", string.IsNullOrWhiteSpace(note.CreatedAt) ? timestamp : note.CreatedAt);
@@ -2613,8 +2613,8 @@ public sealed class GalleryDatabase
             Content = content,
             X = Math.Max(0, note.X),
             Y = Math.Max(0, note.Y),
-            Width = Math.Clamp(note.Width <= 0 ? 250 : note.Width, 200, 1200),
-            Height = Math.Clamp(note.Height <= 0 ? 200 : note.Height, 140, 900),
+            Width = Math.Clamp(note.Width <= 0 ? 250 : note.Width, 125, 1200),
+            Height = Math.Clamp(note.Height <= 0 ? 200 : note.Height, 100, 900),
             ColorKey = NormalizeStickyNoteColorKey(note.ColorKey),
             ContentMode = NormalizeStickyNoteContentMode(note.ContentMode)
         };
@@ -5700,6 +5700,8 @@ public sealed class GalleryDatabase
                 targetPaths,
                 supportedExtensions);
             var orderBy = BuildGalleryWorkOrderBy(sort);
+            var titleSelect = BuildGalleryWorkAttributeSelectExpression("title", "title");
+            var characterSelect = BuildGalleryWorkAttributeSelectExpression("character", "character");
 
             using var countCommand = connection.CreateCommand();
             countCommand.CommandText = $"SELECT COUNT(*) FROM items AS i WHERE {where};";
@@ -5715,8 +5717,8 @@ public sealed class GalleryDatabase
                     COALESCE(i.category, ''),
                     COALESCE(i.top_folder, ''),
                     COALESCE(i.creator, ''),
-                    COALESCE(i.title, ''),
-                    COALESCE(i.character, ''),
+                    {titleSelect},
+                    {characterSelect},
                     COALESCE(i.rating, 0),
                     COALESCE(i.image_count, 0),
                     i.duration_seconds,
@@ -6023,6 +6025,7 @@ public sealed class GalleryDatabase
             var creatorTrackingFacts = ListCreatorTrackingSummaryFacts(connection);
             var summaries = new Dictionary<string, GalleryCreatorSummaryAccumulator>(StringComparer.OrdinalIgnoreCase);
             var tagsByGid = ListGalleryCreatorTagsByGid(connection);
+            var titlesByGid = ListGalleryAssignedFilterValuesByGid(connection, "title");
             var emptyRatings = Array.Empty<int>();
             var emptyStrings = Array.Empty<string>();
 
@@ -6105,7 +6108,14 @@ public sealed class GalleryDatabase
                     summary.MaxRating = Math.Max(summary.MaxRating, rating);
                     summary.LastAccessTime = SelectLatestGalleryTimestamp(summary.LastAccessTime, lastAccessTime);
                     summary.LastUpdatedTime = SelectLatestGalleryTimestamp(summary.LastUpdatedTime, lastWriteTime);
-                    if (!string.IsNullOrWhiteSpace(title))
+                    if (titlesByGid.TryGetValue(gid, out var assignedTitles) && assignedTitles.Count > 0)
+                    {
+                        foreach (var assignedTitle in assignedTitles)
+                        {
+                            summary.TitleCounts[assignedTitle] = summary.TitleCounts.GetValueOrDefault(assignedTitle) + 1;
+                        }
+                    }
+                    else if (!string.IsNullOrWhiteSpace(title))
                     {
                         summary.TitleCounts[title] = summary.TitleCounts.GetValueOrDefault(title) + 1;
                     }
@@ -6424,6 +6434,8 @@ public sealed class GalleryDatabase
 
             const string targetTag = "輪姦";
             var tagsByGid = ListGalleryCreatorTagsByGid(connection);
+            var titlesByGid = ListGalleryAssignedFilterValuesByGid(connection, "title");
+            var charactersByGid = ListGalleryAssignedFilterValuesByGid(connection, "character");
             var trackingFacts = ListCreatorTrackingSummaryFacts(connection);
             var creators = new Dictionary<string, UserMetricsEntityAccumulator>(StringComparer.OrdinalIgnoreCase);
             var titles = new Dictionary<string, UserMetricsEntityAccumulator>(StringComparer.OrdinalIgnoreCase);
@@ -6492,8 +6504,17 @@ public sealed class GalleryDatabase
                     tagsByGid.TryGetValue(gid, out var itemTags);
                     var hasTargetTag = itemTags?.Any(tag => tag.Equals(targetTag, StringComparison.OrdinalIgnoreCase)) == true;
                     UpdateUserMetricsEntity(creators, creator, rating, imageCount, isRecent, false);
-                    UpdateUserMetricsEntity(titles, title, rating, imageCount, isRecent, hasTargetTag);
-                    foreach (var value in SplitUserMetricsValues(character))
+                    var itemTitles = titlesByGid.TryGetValue(gid, out var assignedTitles) && assignedTitles.Count > 0
+                        ? assignedTitles
+                        : SplitUserMetricsValues(title).ToArray();
+                    foreach (var value in itemTitles)
+                    {
+                        UpdateUserMetricsEntity(titles, value, rating, imageCount, isRecent, hasTargetTag);
+                    }
+                    var itemCharacters = charactersByGid.TryGetValue(gid, out var assignedCharacters) && assignedCharacters.Count > 0
+                        ? assignedCharacters
+                        : SplitUserMetricsValues(character).ToArray();
+                    foreach (var value in itemCharacters)
                     {
                         UpdateUserMetricsEntity(characters, value, rating, imageCount, isRecent, false);
                     }
@@ -6935,6 +6956,50 @@ public sealed class GalleryDatabase
         }
 
         return tagsByGid.ToDictionary(
+            entry => entry.Key,
+            entry => (IReadOnlyList<string>)entry.Value,
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyDictionary<string, IReadOnlyList<string>> ListGalleryAssignedFilterValuesByGid(
+        SqliteConnection connection,
+        string filterType)
+    {
+        var filterIdColumn = filterType switch
+        {
+            "title" => "title_filter_id",
+            "character" => "character_filter_id",
+            _ => throw new ArgumentOutOfRangeException(nameof(filterType), filterType, "対応していない属性種別です。")
+        };
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT combination_map.gid, TRIM(filter.canonical_name)
+            FROM gallery_item_filter_combinations AS combination_map
+            JOIN gallery_filter_combinations AS combination
+              ON combination.combination_id = combination_map.combination_id
+             AND combination.use_flg <> 0
+            JOIN gallery_filters AS filter
+              ON filter.filter_id = combination.{filterIdColumn}
+             AND filter.filter_type = $filterType
+            WHERE TRIM(filter.canonical_name) <> ''
+            GROUP BY combination_map.gid, filter.filter_id, filter.canonical_name
+            ORDER BY combination_map.gid, filter.canonical_name COLLATE NOCASE;
+            """;
+        command.Parameters.AddWithValue("$filterType", filterType);
+        using var reader = command.ExecuteReader();
+        var valuesByGid = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        while (reader.Read())
+        {
+            var gid = reader.GetString(0);
+            if (!valuesByGid.TryGetValue(gid, out var values))
+            {
+                values = [];
+                valuesByGid[gid] = values;
+            }
+            values.Add(reader.GetString(1));
+        }
+
+        return valuesByGid.ToDictionary(
             entry => entry.Key,
             entry => (IReadOnlyList<string>)entry.Value,
             StringComparer.OrdinalIgnoreCase);
@@ -10720,6 +10785,33 @@ public sealed class GalleryDatabase
         }
 
         return string.Join(" AND ", clauses);
+    }
+
+    private static string BuildGalleryWorkAttributeSelectExpression(string filterType, string legacyColumn)
+    {
+        var filterIdColumn = filterType switch
+        {
+            "title" when legacyColumn == "title" => "title_filter_id",
+            "character" when legacyColumn == "character" => "character_filter_id",
+            _ => throw new ArgumentOutOfRangeException(nameof(filterType), filterType, "対応していない属性種別です。")
+        };
+        return $"""
+            COALESCE(NULLIF((
+                SELECT group_concat(attribute_name, ' / ')
+                FROM (
+                    SELECT DISTINCT filter.canonical_name AS attribute_name
+                    FROM gallery_item_filter_combinations AS combination_map
+                    JOIN gallery_filter_combinations AS combination
+                      ON combination.combination_id = combination_map.combination_id
+                     AND combination.use_flg <> 0
+                    JOIN gallery_filters AS filter
+                      ON filter.filter_id = combination.{filterIdColumn}
+                     AND filter.filter_type = '{filterType}'
+                    WHERE combination_map.gid = i.gid
+                    ORDER BY filter.canonical_name COLLATE NOCASE
+                )
+            ), ''), COALESCE(i.{legacyColumn}, ''))
+            """;
     }
 
     private static bool IsUnassignedCharacterFilter(string value) =>

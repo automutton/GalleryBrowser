@@ -18,6 +18,7 @@
     ChevronUp,
     CloudUpload,
     Columns2,
+    ContactRound,
     Code2,
     Copy,
     Coins,
@@ -740,7 +741,8 @@
   };
 
   type KeyboardShortcutCommand =
-    | 'focusExplorerSearch'
+    | 'openGlobalSearch'
+    | 'navigateBack'
     | 'navigateExplorerParent'
     | 'createExplorerFolder'
     | 'selectNextTab'
@@ -790,7 +792,8 @@
   const keyboardShortcutDefinitions: KeyboardShortcutDefinition[] = [
     { command: 'selectNextTab', label: '次のタブへ移動', scope: 'Explorer / Creator Tracking' },
     { command: 'selectPreviousTab', label: '前のタブへ移動', scope: 'Explorer / Creator Tracking' },
-    { command: 'focusExplorerSearch', label: '検索ボックスへフォーカス', scope: 'Gallery / Explorer' },
+    { command: 'openGlobalSearch', label: '検索を開く', scope: 'アプリ全体' },
+    { command: 'navigateBack', label: '前の画面へ戻る', scope: 'アプリ全体' },
     { command: 'navigateExplorerParent', label: '親フォルダへ移動', scope: 'Explorer' },
     { command: 'createExplorerFolder', label: '新しいフォルダを作成', scope: 'Explorer' },
     { command: 'copyExplorerSelection', label: '選択項目をコピー', scope: 'Explorer' },
@@ -801,7 +804,8 @@
     { command: 'deleteExplorerSelection', label: '選択項目を削除', scope: 'Explorer' }
   ];
   const defaultKeyboardShortcutSettings: KeyboardShortcutSettings = {
-    focusExplorerSearch: 'Ctrl+F',
+    openGlobalSearch: 'Ctrl+F',
+    navigateBack: 'Backspace',
     navigateExplorerParent: 'Alt+ArrowUp',
     createExplorerFolder: 'Ctrl+N',
     selectNextTab: 'Ctrl+Tab',
@@ -1041,6 +1045,16 @@
     stateJson: string;
   };
 
+  type NavigationHistoryEntry = {
+    view: ActiveView;
+    capture: BookmarkCapture | null;
+    settingsSection: SettingsSection;
+    userGuideSection: UserGuideSectionId;
+    userMetricsCategory: string;
+  };
+
+  type GlobalSearchMode = 'normal' | 'creator';
+
   type GalleryBookmarkState = {
     version: number;
     section: string;
@@ -1147,6 +1161,7 @@
   type ExplorerTabContextMenu = {
     tab: ExplorerTab;
     creator: string;
+    creatorFolder: string;
     category: string;
     x: number;
     y: number;
@@ -1644,6 +1659,13 @@
   let bookmarkDeleteCandidate: ViewBookmark | null = null;
   let bookmarkMutationMessage = '';
   let bookmarkRestoreWarnings: string[] = [];
+  let navigationBackStack: NavigationHistoryEntry[] = [];
+  let navigationForwardStack: NavigationHistoryEntry[] = [];
+  let navigationHistoryRestoring = false;
+  let globalSearchOpen = false;
+  let globalSearchMode: GlobalSearchMode = 'normal';
+  let globalSearchQuery = '';
+  let globalSearchInputElement: HTMLInputElement | null = null;
   let pendingGalleryBookmarkRestore: { bookmark: ViewBookmark; state: GalleryBookmarkState; requestId: string } | null = null;
   let pendingExplorerBookmarkRestore: { bookmark: ViewBookmark; state: ExplorerBookmarkState; requestId: string } | null = null;
   let pendingCreatorSummaryBookmarkRestore: { bookmark: ViewBookmark; state: CreatorSummaryBookmarkState } | null = null;
@@ -3407,8 +3429,14 @@
         return;
       }
 
+      if (event.key === 'Escape' && globalSearchOpen) {
+        event.preventDefault();
+        globalSearchOpen = false;
+        return;
+      }
+
+      if (handleGlobalShortcut(event)) return;
       handleCreatorTrackingShortcut(event);
-      handleGalleryShortcut(event);
       handleExplorerShortcut(event);
     };
     const onGalleryWheel = (event: WheelEvent) => {
@@ -3768,6 +3796,7 @@
   }
 
   function applyGallerySection(section: string) {
+    if (activeView === 'library' && section !== gallerySection) recordNavigationHistory();
     gallerySection = section;
     loadGalleryPins(section);
     galleryRatingFilters = [];
@@ -3854,6 +3883,7 @@
   }
 
   function selectGalleryCreatorSummarySection(section: string) {
+    if (activeView === 'creators' && section !== galleryCreatorSummarySection) recordNavigationHistory();
     creatorsNavigationExpanded = true;
     galleryCreatorSummarySection = section;
     galleryCreatorSummaryCoreTitles = [];
@@ -4239,6 +4269,7 @@
 
   function activateCreatorTrackingTab(tabId: string) {
     if (tabId === activeCreatorTrackingTabId && activeView === 'creatorTracking') return;
+    if (activeView === 'creatorTracking') recordNavigationHistory();
     saveCreatorTracking();
     captureActiveCreatorTrackingTab();
     const tab = creatorTrackingTabs.find(candidate => candidate.id === tabId);
@@ -4269,17 +4300,73 @@
     }
   }
 
-  function handleGalleryShortcut(event: KeyboardEvent) {
-    if ((activeView !== 'library' && activeView !== 'creators')
-      || !matchesKeyboardShortcut(event, 'focusExplorerSearch')) return;
-    event.preventDefault();
-    requestAnimationFrame(() => {
-      const input = activeView === 'creators'
-        ? galleryCreatorSummarySearchInputElement
-        : gallerySearchInputElement;
-      input?.focus();
-      input?.select();
-    });
+  async function openGlobalSearchDialog() {
+    globalSearchMode = activeView === 'creators' ? 'creator' : 'normal';
+    globalSearchQuery = activeView === 'explorer'
+      ? activeExplorerQuery
+      : activeView === 'creators'
+        ? galleryCreatorSummaryQuery
+        : activeView === 'library'
+          ? galleryQuery
+          : '';
+    globalSearchOpen = true;
+    await tick();
+    globalSearchInputElement?.focus();
+    globalSearchInputElement?.select();
+  }
+
+  function executeGlobalSearch() {
+    const search = globalSearchQuery.trim();
+    recordNavigationHistory();
+    globalSearchOpen = false;
+
+    if (globalSearchMode === 'creator') {
+      const sourceSection = activeView === 'library'
+        ? gallerySection
+        : activeView === 'creatorTracking'
+          ? creatorTrackingSummary?.category
+          : activeView === 'userMetrics'
+            ? userMetricsCategory
+            : galleryCreatorSummarySection;
+      if (sourceSection && gallerySections.some(section => section.id === sourceSection)) {
+        galleryCreatorSummarySection = sourceSection;
+      }
+      galleryCreatorSummaryQuery = search;
+      if (activeView !== 'creators') activateView('creators');
+      if (galleryCreatorSummaries.length === 0) loadGalleryCreatorSummaries();
+      return;
+    }
+
+    if (activeView === 'explorer') {
+      if (explorerSplit && splitFocusedPane === 'right') splitExplorerQuery = search;
+      else explorerQuery = search;
+      return;
+    }
+    if (activeView === 'creators') {
+      galleryCreatorSummaryQuery = search;
+      return;
+    }
+
+    galleryQuery = search;
+    if (activeView !== 'library') activateView('library');
+    if (galleryWorks.length === 0) loadGalleryWorks();
+  }
+
+  function handleGlobalShortcut(event: KeyboardEvent) {
+    if (matchesKeyboardShortcut(event, 'openGlobalSearch')) {
+      event.preventDefault();
+      void openGlobalSearchDialog();
+      return true;
+    }
+
+    const target = event.target as HTMLElement | null;
+    const isEditable = Boolean(target?.matches('input, select, textarea, [contenteditable="true"]'));
+    if (!isEditable && matchesKeyboardShortcut(event, 'navigateBack')) {
+      event.preventDefault();
+      navigateAppHistory(-1);
+      return true;
+    }
+    return false;
   }
 
   function syncActiveCreatorTrackingTab() {
@@ -6654,12 +6741,37 @@
     });
   }
 
+  function applyGalleryReverseCreator() {
+    const work = galleryContextTargetWork ?? galleryContextMenu?.work ?? null;
+    if (!work?.creator?.trim()) {
+      closeGalleryContextMenu();
+      showExplorerToast('この作品にはCreatorが登録されていません。', 'error');
+      return;
+    }
+
+    const creator = work.creator.trim();
+    closeGalleryContextMenu();
+    recordNavigationHistory();
+    galleryCreatorFilters = [creator];
+    galleryTitleFilters = [];
+    galleryCharacterFilters = [];
+    galleryTagFilters = [];
+    galleryPromotedCreators = galleryCollapsePins.creator ? [] : [creator];
+    galleryPromotedTitles = [];
+    galleryPromotedCharacters = [];
+    galleryPromotedTags = [];
+    selectedGalleryWorkIds = new Set();
+    loadGalleryWorks(false, galleryRatingFilters, true);
+    showExplorerToast(`Creator「${creator}」で絞り込みました。`, 'success');
+  }
+
   function applyGalleryReverseFilters(
     mode: GalleryReverseFilterMode,
     rawTitles: unknown[],
     rawCharacters: unknown[],
     workName: string)
   {
+    recordNavigationHistory();
     const titles = [...new Set(rawTitles.map(value => String(value ?? '').trim()).filter(Boolean))];
     const characters = rawCharacters
       .map((value): GalleryReverseCharacterFilter | null => {
@@ -6820,8 +6932,8 @@
       return null;
     }
 
-    const width = Math.min(1200, Math.max(200, Number(note.width ?? 250)));
-    const height = Math.min(900, Math.max(140, Number(note.height ?? 200)));
+    const width = Math.min(1200, Math.max(125, Number(note.width ?? 250)));
+    const height = Math.min(900, Math.max(100, Number(note.height ?? 200)));
     const contextKey = normalizeStickyNoteContextKey(viewType as StickyNoteView, String(note.contextKey ?? ''));
     if (!contextKey) return null;
     return {
@@ -6909,8 +7021,8 @@
     }
     const trigger = event.currentTarget as HTMLElement;
     const bounds = trigger.getBoundingClientRect();
-    const width = Math.max(200, Math.min(250, window.innerWidth - 24));
-    const height = Math.max(140, Math.min(200, window.innerHeight - 24));
+    const width = Math.max(125, Math.min(250, window.innerWidth - 24));
+    const height = Math.max(100, Math.min(200, window.innerHeight - 24));
     const centeredX = bounds.left + (bounds.width - width) / 2;
     const x = Math.max(12, Math.min(centeredX, window.innerWidth - width - 12));
     const y = Math.max(stickyNoteTitlebarHeight, Math.min(bounds.bottom + 8, window.innerHeight - height - 12));
@@ -7148,20 +7260,20 @@
     else {
       const edge = interaction.edge ?? 'se';
       if (edge.includes('e')) {
-        width = Math.min(1200, Math.max(200, interaction.width + deltaX));
-        width = Math.min(width, Math.max(200, window.innerWidth - interaction.x));
+        width = Math.min(1200, Math.max(125, interaction.width + deltaX));
+        width = Math.min(width, Math.max(125, window.innerWidth - interaction.x));
       }
       if (edge.includes('s')) {
-        height = Math.min(900, Math.max(140, interaction.height + deltaY));
-        height = Math.min(height, Math.max(140, window.innerHeight - interaction.y));
+        height = Math.min(900, Math.max(100, interaction.height + deltaY));
+        height = Math.min(height, Math.max(100, window.innerHeight - interaction.y));
       }
       if (edge.includes('w')) {
-        width = Math.min(1200, Math.max(200, interaction.width - deltaX));
+        width = Math.min(1200, Math.max(125, interaction.width - deltaX));
         x = Math.max(0, interaction.x + interaction.width - width);
         width = interaction.x + interaction.width - x;
       }
       if (edge.includes('n')) {
-        height = Math.min(900, Math.max(140, interaction.height - deltaY));
+        height = Math.min(900, Math.max(100, interaction.height - deltaY));
         y = Math.max(stickyNoteTitlebarHeight, interaction.y + interaction.height - height);
         height = interaction.y + interaction.height - y;
       }
@@ -7182,8 +7294,8 @@
   function clampStickyNotesToViewport() {
     const changedIds: number[] = [];
     stickyNotes = stickyNotes.map((note) => {
-      const width = Math.min(note.width, Math.max(200, window.innerWidth));
-      const height = Math.min(note.height, Math.max(140, window.innerHeight));
+      const width = Math.min(note.width, Math.max(125, window.innerWidth));
+      const height = Math.min(note.height, Math.max(100, window.innerHeight));
       const x = Math.max(0, Math.min(note.x, window.innerWidth - width));
       const y = Math.max(
         stickyNoteTitlebarHeight,
@@ -7456,6 +7568,88 @@
     };
   }
 
+  function captureNavigationHistoryEntry(): NavigationHistoryEntry {
+    return {
+      view: activeView,
+      capture: captureCurrentBookmark(),
+      settingsSection,
+      userGuideSection: activeUserGuideSection,
+      userMetricsCategory
+    };
+  }
+
+  function getNavigationHistoryFingerprint(entry: NavigationHistoryEntry) {
+    return JSON.stringify({
+      view: entry.view,
+      stateJson: entry.capture?.stateJson ?? '',
+      settingsSection: entry.settingsSection,
+      userGuideSection: entry.userGuideSection,
+      userMetricsCategory: entry.userMetricsCategory
+    });
+  }
+
+  function recordNavigationHistory() {
+    if (navigationHistoryRestoring) return;
+    const entry = captureNavigationHistoryEntry();
+    const previous = navigationBackStack.at(-1);
+    if (!previous || getNavigationHistoryFingerprint(previous) !== getNavigationHistoryFingerprint(entry)) {
+      navigationBackStack = [...navigationBackStack, entry].slice(-50);
+    }
+    navigationForwardStack = [];
+  }
+
+  function restoreNavigationHistoryEntry(entry: NavigationHistoryEntry) {
+    navigationHistoryRestoring = true;
+    try {
+      if (entry.capture) {
+        const historyBookmark: ViewBookmark = {
+          id: -Date.now(),
+          name: '前の画面',
+          viewType: entry.capture.viewType,
+          stateJson: entry.capture.stateJson,
+          thumbnailDataUrl: '',
+          windowWidth: 0,
+          windowHeight: 0,
+          windowIsMaximized: false,
+          position: 0,
+          createdAt: '',
+          updatedAt: ''
+        };
+        openViewBookmark(historyBookmark, false);
+        return;
+      }
+
+      settingsSection = entry.settingsSection;
+      activeUserGuideSection = entry.userGuideSection;
+      userMetricsCategory = entry.userMetricsCategory;
+      activateView(entry.view);
+      if (entry.view === 'userMetrics') loadUserMetrics(entry.userMetricsCategory);
+    }
+    finally {
+      navigationHistoryRestoring = false;
+    }
+  }
+
+  function navigateAppHistory(direction: -1 | 1) {
+    const source = direction < 0 ? navigationBackStack : navigationForwardStack;
+    const target = source.at(-1);
+    if (!target) {
+      showExplorerToast(direction < 0 ? 'これより前の画面はありません。' : 'これより後の画面はありません。', 'error');
+      return;
+    }
+
+    const current = captureNavigationHistoryEntry();
+    if (direction < 0) {
+      navigationBackStack = source.slice(0, -1);
+      navigationForwardStack = [...navigationForwardStack, current].slice(-50);
+    }
+    else {
+      navigationForwardStack = source.slice(0, -1);
+      navigationBackStack = [...navigationBackStack, current].slice(-50);
+    }
+    restoreNavigationHistoryEntry(target);
+  }
+
   function openBookmarks() {
     bookmarkCapture = null;
     activateView('bookmarks');
@@ -7561,14 +7755,16 @@
     return Number.isNaN(date.getTime()) ? value : date.toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' });
   }
 
-  function openViewBookmark(bookmark: ViewBookmark) {
+  function openViewBookmark(bookmark: ViewBookmark, restoreWindow = true) {
     bookmarkRestoreWarnings = [];
-    postHostMessage({
-      type: 'view.bookmarks.window.restore',
-      width: Number(bookmark.windowWidth ?? 0),
-      height: Number(bookmark.windowHeight ?? 0),
-      isMaximized: Boolean(bookmark.windowIsMaximized)
-    });
+    if (restoreWindow) {
+      postHostMessage({
+        type: 'view.bookmarks.window.restore',
+        width: Number(bookmark.windowWidth ?? 0),
+        height: Number(bookmark.windowHeight ?? 0),
+        isMaximized: Boolean(bookmark.windowIsMaximized)
+      });
+    }
     if (bookmark.viewType === 'library') {
       const state = parseBookmarkState<GalleryBookmarkState>(bookmark);
       if (state) requestGalleryBookmarkRestore(bookmark, state);
@@ -7724,7 +7920,7 @@
     );
     restoreStickyNotesFromBookmark(state.stickyNotes, 'library', state.section, warnings);
     bookmarkRestoreWarnings = warnings;
-    showExplorerToast(`Bookmark「${bookmark.name}」を開きました。`, 'success');
+    if (bookmark.id >= 0) showExplorerToast(`Bookmark「${bookmark.name}」を開きました。`, 'success');
   }
 
   function requestExplorerBookmarkRestore(bookmark: ViewBookmark, state: ExplorerBookmarkState) {
@@ -7807,7 +8003,7 @@
     restoreStickyNotesFromBookmark(state.stickyNotes, 'explorer', restoredStickyNotePath, warnings);
     persistExplorerTabs();
     bookmarkRestoreWarnings = warnings;
-    showExplorerToast(`Bookmark「${bookmark.name}」を開きました。`, 'success');
+    if (bookmark.id >= 0) showExplorerToast(`Bookmark「${bookmark.name}」を開きました。`, 'success');
   }
 
   function restoreCreatorSummaryBookmark(bookmark: ViewBookmark, state: CreatorSummaryBookmarkState) {
@@ -7886,7 +8082,7 @@
     persistNavigationState();
     restoreStickyNotesFromBookmark(state.stickyNotes, 'creators', section, warnings);
     bookmarkRestoreWarnings = warnings;
-    showExplorerToast(`Bookmark「${bookmark.name}」を開きました。`, 'success');
+    if (bookmark.id >= 0) showExplorerToast(`Bookmark「${bookmark.name}」を開きました。`, 'success');
   }
 
   function restoreCreatorTrackingBookmark(bookmark: ViewBookmark, state: CreatorTrackingBookmarkState) {
@@ -7919,7 +8115,7 @@
     }
     persistNavigationState();
     bookmarkRestoreWarnings = warnings;
-    showExplorerToast(`Bookmark「${bookmark.name}」を開きました。`, 'success');
+    if (bookmark.id >= 0) showExplorerToast(`Bookmark「${bookmark.name}」を開きました。`, 'success');
   }
 
   function setView(view: ActiveView) {
@@ -7971,6 +8167,7 @@
   }
 
   function activateView(view: ActiveView) {
+    if (view !== activeView) recordNavigationHistory();
     if (activeView === 'creatorTracking' && view !== 'creatorTracking') {
       saveCreatorTracking();
     }
@@ -9162,9 +9359,15 @@
     if (tab) startExplorerSplit(tab);
   }
 
-  function getExplorerCreatorFromTab(tab: ExplorerTab) {
-    const folderName = getExplorerPathLabel(tab.path);
-    return /^【(.+)】$/.exec(folderName)?.[1]?.trim() ?? '';
+  function getExplorerCreatorContextFromTab(tab: ExplorerTab) {
+    const normalizedPath = normalizeWindowsPath(tab.path);
+    const matches = [...normalizedPath.matchAll(/(?:^|\\)(【([^\\]+)】)(?=\\|$)/g)];
+    const nearest = matches.at(-1);
+    if (!nearest || nearest.index === undefined) return null;
+    return {
+      creator: nearest[2].trim(),
+      creatorFolder: normalizedPath.slice(0, nearest.index + nearest[0].length)
+    };
   }
 
   function getGalleryCategoryForExplorerPath(path: string) {
@@ -9180,8 +9383,8 @@
   }
 
   function openExplorerTabContextMenu(event: MouseEvent, tab: ExplorerTab) {
-    const creator = getExplorerCreatorFromTab(tab);
-    if (!creator) {
+    const creatorContext = getExplorerCreatorContextFromTab(tab);
+    if (!creatorContext?.creator) {
       enterExplorerSplit(event, tab);
       return;
     }
@@ -9190,7 +9393,8 @@
     event.stopPropagation();
     explorerTabContextMenu = {
       tab,
-      creator,
+      creator: creatorContext.creator,
+      creatorFolder: creatorContext.creatorFolder,
       category: getGalleryCategoryForExplorerPath(tab.path),
       x: Math.min(event.clientX, window.innerWidth - 284),
       y: Math.min(event.clientY, window.innerHeight - 128)
@@ -9205,11 +9409,15 @@
       return;
     }
 
-    gallerySection = context.category;
-    loadGalleryPins(context.category);
+    openGalleryForCreator(context.category, context.creator);
+  }
+
+  function openGalleryForCreator(category: string, creator: string) {
+    gallerySection = category;
+    loadGalleryPins(category);
     galleryRatingFilters = [];
     galleryTagFilters = [];
-    galleryCreatorFilters = [context.creator];
+    galleryCreatorFilters = [creator];
     galleryTitleFilters = [];
     galleryCharacterFilters = [];
     galleryQuery = '';
@@ -9217,7 +9425,7 @@
     galleryTitleFiltersExpanded = false;
     galleryCharacterFiltersExpanded = false;
     galleryTagFiltersExpanded = false;
-    galleryPromotedCreators = [context.creator];
+    galleryPromotedCreators = [creator];
     galleryPromotedTitles = [];
     galleryPromotedCharacters = [];
     galleryPromotedTags = [];
@@ -9226,6 +9434,18 @@
     galleryTotal = 0;
     activateView('library');
     loadGalleryWorks(false, galleryRatingFilters, true);
+  }
+
+  function navigateCreatorTrackingToGallery() {
+    const activeTab = creatorTrackingTabs.find(tab => tab.id === activeCreatorTrackingTabId);
+    const creator = creatorTracking?.creator?.trim() || activeTab?.creator?.trim() || '';
+    const category = creatorTrackingSummary?.category?.trim() || activeTab?.summary?.category?.trim() || '';
+    if (!creator || !category) {
+      showExplorerToast('Galleryへ移動する作者または区分を特定できませんでした。', 'error');
+      return;
+    }
+    saveCreatorTracking();
+    openGalleryForCreator(category, creator);
   }
 
   function navigateExplorerCreatorTabToTracking() {
@@ -9244,7 +9464,7 @@
       openCreatorTrackingForSummary(summary);
       return;
     }
-    pendingGalleryCreatorTracking = { creator: context.creator, category: context.category, creatorFolder: context.tab.path };
+    pendingGalleryCreatorTracking = { creator: context.creator, category: context.category, creatorFolder: context.creatorFolder };
     loadGalleryCreatorSummaries();
     showExplorerToast(`Creator「${context.creator}」の情報を読み込んでいます。`, 'progress');
   }
@@ -9328,10 +9548,10 @@
       pane === 'left' ? navigateToParent() : navigateSplitParent();
     }
     else if (command === 'back') {
-      navigateExplorerHistory(-1, pane);
+      navigateAppHistory(-1);
     }
     else if (command === 'forward') {
-      navigateExplorerHistory(1, pane);
+      navigateAppHistory(1);
     }
     else if (command === 'clearFilter') {
       if (pane === 'left') {
@@ -10622,12 +10842,6 @@
 
   function handleExplorerShortcut(event: KeyboardEvent) {
     if (activeView !== 'explorer' || renamingEntry || deleteConfirmation || splitRenamingEntry || splitDeleteConfirmation) {
-      return;
-    }
-
-    if (matchesKeyboardShortcut(event, 'focusExplorerSearch')) {
-      event.preventDefault();
-      focusExplorerFilter();
       return;
     }
 
@@ -12435,6 +12649,7 @@
             <span>作者の活動・保管・評価・課金状況を一か所に集約します</span>
           </div>
           <div class="creator-tracking-toolbar-actions">
+            <button class="creator-tracking-gallery-button" title="この作者をGalleryで表示" aria-label="この作者をGalleryで表示" disabled={!creatorTracking && !creatorTrackingSummary} onclick={navigateCreatorTrackingToGallery}><LayoutGrid size={18} /></button>
             <button class="creator-tracking-refresh-button" title="この作者の最新データを反映" aria-label="この作者の最新データを反映" disabled={!creatorTracking || creatorTrackingIsLoading || creatorTrackingIsSaving} onclick={refreshCreatorTracking}><RefreshCw size={18} /></button>
             <button class="sticky-note-launch-button" title="Creator Trackingに付箋を追加" onclick={createStickyNoteFromToolbar}><StickyNote size={18} /></button>
             <button class="view-bookmark-button" title="現在のCreator TrackingをBookmark" onclick={captureViewBookmarkFromToolbar}><Bookmark size={18} /></button>
@@ -16249,8 +16464,9 @@
                         : `${work.imageCount.toLocaleString('ja-JP')}枚`} /
                       {formatGalleryDate(getGalleryCardDate(work))}
                     </p>
-                    {#if work.creator || work.title}
-                      <p class="gallery-work-sub">{[work.creator, work.title].filter(Boolean).join(' / ')}</p>
+                    {#if work.creator || work.title || work.character}
+                      {@const workAttributes = [work.creator, work.title, work.character].filter(Boolean).join(' / ')}
+                      <p class="gallery-work-sub" title={workAttributes}>{workAttributes}</p>
                     {/if}
                   </div>
                 </button>
@@ -16267,6 +16483,52 @@
     {/if}
   </section>
 </main>
+
+{#if globalSearchOpen}
+  <div
+    class="modal-backdrop global-search-backdrop"
+    role="presentation"
+    onclick={(event) => {
+      if (event.target === event.currentTarget) globalSearchOpen = false;
+    }}
+  >
+    <form
+      class="modal global-search-modal"
+      role="search"
+      onsubmit={(event) => {
+        event.preventDefault();
+        executeGlobalSearch();
+      }}
+    >
+      <div class="modal-heading">
+        <div>
+          <h2>検索</h2>
+          <span>通常検索または作者検索を選択します</span>
+        </div>
+        <button type="button" aria-label="閉じる" onclick={() => globalSearchOpen = false}><X size={18} /></button>
+      </div>
+      <div class="global-search-mode" role="group" aria-label="検索対象">
+        <button type="button" class:active={globalSearchMode === 'normal'} onclick={() => globalSearchMode = 'normal'}><Search size={16} />通常検索</button>
+        <button type="button" class:active={globalSearchMode === 'creator'} onclick={() => globalSearchMode = 'creator'}><UserRound size={16} />作者検索</button>
+      </div>
+      <label class="global-search-field">
+        <span>{globalSearchMode === 'creator' ? '作者名' : '検索語'}</span>
+        <input bind:this={globalSearchInputElement} bind:value={globalSearchQuery} type="search" placeholder={globalSearchMode === 'creator' ? '作者を検索' : '現在の画面を検索'} />
+      </label>
+      <p>{globalSearchMode === 'creator'
+        ? 'Creatorsを開き、作者名で検索します。'
+        : activeView === 'explorer'
+          ? '現在フォーカスしているExplorerフォルダを検索します。'
+          : activeView === 'creators'
+            ? '現在のCreators区分を検索します。'
+            : '現在のGallery区分を検索します。'}</p>
+      <div class="modal-actions">
+        <button type="button" class="quiet-button" onclick={() => globalSearchOpen = false}>キャンセル</button>
+        <button type="submit" class="primary-button">検索</button>
+      </div>
+    </form>
+  </div>
+{/if}
 
 {#if themeSaveConfirmOpen}
   <div
@@ -16934,11 +17196,23 @@
             if (event.button !== 0) return;
             event.preventDefault();
             event.stopPropagation();
+            applyGalleryReverseCreator();
+          }}
+        >
+          <UserRound size={16} />
+          <span>作品のCreator</span>
+        </button>
+        <button
+          role="menuitem"
+          onpointerdown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            event.stopPropagation();
             requestGalleryReverseFilters('title');
           }}
         >
           <BookOpenText size={16} />
-          <span>作品のTitleでフィルター</span>
+          <span>作品のTitle</span>
         </button>
         <button
           role="menuitem"
@@ -16949,8 +17223,8 @@
             requestGalleryReverseFilters('character');
           }}
         >
-          <UserRound size={16} />
-          <span>作品のCharacterでフィルター</span>
+          <ContactRound size={16} />
+          <span>作品のCharacter</span>
         </button>
       </div>
     </div>

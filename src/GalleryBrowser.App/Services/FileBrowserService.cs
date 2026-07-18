@@ -303,17 +303,34 @@ public sealed class FileBrowserService
                     .Select(match => match.Groups["gid"].Value.Trim())
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray();
-                if (gids.Length != 1 ||
-                    gids[0].Length != digitCount ||
+                if (matches.Count != 1 ||
+                    gids.Length != 1 ||
                     gids[0].Any(character => !char.IsAsciiLetterOrDigit(character)))
                 {
                     errors.Add(
-                        $"{file}: ファイル名のgidが現在の{digitCount}桁Base36仕様と一致しません。GID一括移行またはファイル名修正を行ってください。");
+                        $"{file}: ファイル名のgidを一意なBase36値として解釈できません。ファイル名を修正してください。");
+                    continue;
+                }
+                if (gids[0].Length != digitCount)
+                {
+                    // Files that were outside their registered path during a previous
+                    // bulk migration can reappear with the old-width tag. Treat them as
+                    // assignment targets so the stale tag is replaced instead of making
+                    // every subsequent database scan fail permanently.
+                    targets.Add(file);
+                    continue;
                 }
                 skippedExistingCount++;
                 continue;
             }
             targets.Add(file);
+        }
+
+        // Complete validation before reserving GIDs or renaming any file. This keeps a
+        // malformed name from leaving an otherwise aborted scan partially modified.
+        if (errors.Count > 0)
+        {
+            return new GidAssignmentResult(targets.Count, 0, 0, skippedExistingCount, errors);
         }
 
         if (targets.Count == 0)
@@ -347,8 +364,9 @@ public sealed class FileBrowserService
             {
                 var fileName = Path.GetFileName(source);
                 var originalExtension = Path.GetExtension(fileName);
-                var baseName = Path.GetFileNameWithoutExtension(fileName);
-                var targetName = $"{baseName}{{gid={assignedGids[source]}}}{originalExtension}";
+                var targetName = GidTagRegex.IsMatch(fileName)
+                    ? GidTagRegex.Replace(fileName, $"{{gid={assignedGids[source]}}}", 1)
+                    : $"{Path.GetFileNameWithoutExtension(fileName)}{{gid={assignedGids[source]}}}{originalExtension}";
                 if (targetName.Length > 255)
                 {
                     throw new InvalidOperationException("gid付与後のファイル名が255文字を超えます。");
