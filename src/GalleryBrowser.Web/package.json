@@ -1,0 +1,22 @@
+{
+  "name": "gallery-browser-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build --configLoader runner",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "svelte": "^5.43.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.3.5"
+  },
+  "dependencies": {
+    "@tanstack/svelte-virtual": "^3.13.12",
+    "clsx": "^2.1.1",
+    "lucide-svelte": "^0.468.0"
+  }
+}

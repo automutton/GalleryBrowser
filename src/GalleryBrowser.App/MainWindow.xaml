@@ -1,0 +1,15 @@
+<Window x:Class="GalleryBrowser.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="GalleryBrowser"
+        Width="1800"
+        Height="1200"
+        MinWidth="960"
+        MinHeight="640"
+        Icon="Assets/GalleryBrowser.ico"
+        Background="#111318">
+  <Grid>
+    <wv2:WebView2 x:Name="Browser" />
+  </Grid>
+</Window>

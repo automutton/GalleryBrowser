@@ -1,0 +1,1160 @@
+import { userGuideTranslations } from './userGuideTranslations';
+
+export type AppLanguage = 'ja' | 'en' | 'zh-CN' | 'zh-TW';
+
+type Translation = [english: string, simplifiedChinese: string, traditionalChinese: string];
+
+const exactTranslations: Record<string, Translation> = {
+  '日本語': ['Japanese', '日语', '日文'],
+  '言語': ['Language', '语言', '語言'],
+  '言語設定': ['Language settings', '语言设置', '語言設定'],
+  '表示言語': ['Display language', '显示语言', '顯示語言'],
+  'アプリのシステムUIで使用する言語を設定します': ['Choose the language used by the application interface.', '设置应用程序界面使用的语言。', '設定應用程式介面使用的語言。'],
+  '言語を切り替えると、システムUIへすぐに反映されます。作品名・Creator・Title・Character・Tagなどの登録データは翻訳されません。': ['Language changes are applied to the system interface immediately. Saved data such as work names, Creator, Title, Character, and Tag is not translated.', '切换语言后会立即应用到系统界面。作品名、Creator、Title、Character、Tag等已保存数据不会被翻译。', '切換語言後會立即套用至系統介面。作品名稱、Creator、Title、Character、Tag等已儲存資料不會被翻譯。'],
+  '言語設定を保存しました。': ['Language settings saved.', '语言设置已保存。', '語言設定已儲存。'],
+  '言語設定を保存できませんでした。': ['Could not save language settings.', '无法保存语言设置。', '無法儲存語言設定。'],
+
+  'テーマ': ['Theme', '主题', '主題'],
+  'テーマとアクセントカラー': ['Theme and accent colors', '主题与强调色', '主題與強調色'],
+  'テーマ設定を適用しますか？': ['Apply theme settings?', '要应用主题设置吗？', '要套用主題設定嗎？'],
+  'テーマ設定を保存し、アプリ全体へ適用しました。': ['Theme settings were saved and applied to the application.', '主题设置已保存并应用到整个应用程序。', '主題設定已儲存並套用至整個應用程式。'],
+  'テーマ設定を保存できませんでした。': ['Could not save theme settings.', '无法保存主题设置。', '無法儲存主題設定。'],
+  'アプリ全体の配色が切り替わります': ['The color scheme will change throughout the application.', '整个应用程序的配色将会更改。', '整個應用程式的配色將會變更。'],
+  '編集内容はExpectedで確認できます。保存するまではアプリ全体へ反映されません。': ['Review your changes under Expected. They are not applied to the application until you save.', '可在Expected中预览更改。保存前不会应用到整个应用程序。', '可在Expected中預覽變更。儲存前不會套用至整個應用程式。'],
+  'テーマとアクセントカラーに入っている設定の場合のプレビューです': ['Preview of the selected theme and accent colors.', '所选主题和强调色的预览。', '所選主題與強調色的預覽。'],
+  '現在アプリに適用中': ['Currently applied', '当前已应用', '目前已套用'],
+  '保存後の表示イメージ': ['Preview after saving', '保存后的显示预览', '儲存後的顯示預覽'],
+  'ライト（実験機能）': ['Light (Experimental)', '浅色（实验功能）', '淺色（實驗功能）'],
+  'ダーク': ['Dark', '深色', '深色'],
+  'アクセントカラー': ['Accent colors', '强调色', '強調色'],
+  '選択状態や主要操作に使用する2色を設定します': ['Set the two colors used for selections and primary actions.', '设置用于选中状态和主要操作的两种颜色。', '設定用於選取狀態與主要操作的兩種顏色。'],
+  'メインカラー': ['Main color', '主色', '主色'],
+  'サブカラー': ['Secondary color', '辅助色', '輔助色'],
+  '現在のライム色に相当する選択・強調色': ['Selection and highlight color, currently lime.', '用于选中和强调的颜色，当前为青柠色。', '用於選取與強調的顏色，目前為萊姆色。'],
+  '現在のオレンジ色に相当する補助・操作色': ['Secondary action color, currently orange.', '用于辅助操作的颜色，当前为橙色。', '用於輔助操作的顏色，目前為橘色。'],
+  '現在のテーマに合う配色をランダムに提案': ['Suggest a random color pair for the current theme', '随机推荐适合当前主题的配色', '隨機推薦適合目前主題的配色'],
+  'レコメンド': ['Recommend', '推荐', '推薦'],
+  '保存': ['Save', '保存', '儲存'],
+  '保存して適用': ['Save and apply', '保存并应用', '儲存並套用'],
+  'リセット': ['Reset', '重置', '重設'],
+  '初期値': ['Defaults', '默认值', '預設值'],
+  '初期値に戻す': ['Restore defaults', '恢复默认值', '還原預設值'],
+  'キャンセル': ['Cancel', '取消', '取消'],
+  '閉じる': ['Close', '关闭', '關閉'],
+  '確認': ['Confirm', '确认', '確認'],
+  'はい': ['Yes', '是', '是'],
+  'いいえ': ['No', '否', '否'],
+  '追加': ['Add', '添加', '新增'],
+  '更新': ['Update', '更新', '更新'],
+  '削除': ['Delete', '删除', '刪除'],
+  '登録': ['Register', '注册', '登錄'],
+  '解除': ['Remove', '移除', '解除'],
+  '選択': ['Select', '选择', '選取'],
+  '検索': ['Search', '搜索', '搜尋'],
+  '詳細': ['Details', '详细信息', '詳細資料'],
+  '名前': ['Name', '名称', '名稱'],
+  'アイコン': ['Icon', '图标', '圖示'],
+  'レート': ['Rating', '评分', '評分'],
+  '解像度': ['Resolution', '分辨率', '解析度'],
+  '比': ['Ratio', '比例', '比例'],
+  '幅': ['Width', '宽度', '寬度'],
+  '高さ': ['Height', '高度', '高度'],
+  '長さ': ['Duration', '时长', '時長'],
+  '未設定': ['Not set', '未设置', '未設定'],
+  '未分類': ['Uncategorized', '未分类', '未分類'],
+  'なし': ['None', '无', '無'],
+  'すべて': ['All', '全部', '全部'],
+  'ファイル': ['File', '文件', '檔案'],
+  'フォルダ': ['Folder', '文件夹', '資料夾'],
+  'サイズ': ['Size', '大小', '大小'],
+  '種類': ['Type', '类型', '類型'],
+  '作成日時': ['Created', '创建时间', '建立時間'],
+  '更新日時': ['Updated', '更新时间', '更新時間'],
+  'アクセス日時': ['Accessed', '访问时间', '存取時間'],
+  'ページ': ['Pages', '页数', '頁數'],
+  '戻る': ['Back', '返回', '返回'],
+  '進む': ['Forward', '前进', '前進'],
+  '親フォルダ': ['Parent folder', '上级文件夹', '上層資料夾'],
+  '親フォルダへ移動': ['Go to parent folder', '转到上级文件夹', '前往上層資料夾'],
+  '再読み込み': ['Reload', '重新加载', '重新載入'],
+  '新しいタブ': ['New tab', '新标签页', '新分頁'],
+  'タブを閉じる': ['Close tab', '关闭标签页', '關閉分頁'],
+  '前のタブへ移動': ['Go to previous tab', '转到上一个标签页', '前往上一個分頁'],
+  '次のタブへ移動': ['Go to next tab', '转到下一个标签页', '前往下一個分頁'],
+  '分割表示': ['Split view', '分屏显示', '分割顯示'],
+  '分割表示を終了': ['Exit split view', '退出分屏显示', '結束分割顯示'],
+  '左側の分割ペイン': ['Left split pane', '左侧分屏窗格', '左側分割窗格'],
+  '右側の分割ペイン': ['Right split pane', '右侧分屏窗格', '右側分割窗格'],
+  'アクセス可能なドライブ': ['Available drives', '可用驱动器', '可用磁碟機'],
+  'ドライブを選択': ['Select drive', '选择驱动器', '選取磁碟機'],
+  'フォルダ階層': ['Folder hierarchy', '文件夹层级', '資料夾階層'],
+  'フォルダパス': ['Folder path', '文件夹路径', '資料夾路徑'],
+  'フォルダパスを入力': ['Enter a folder path', '输入文件夹路径', '輸入資料夾路徑'],
+  'フルパスを入力': ['Enter full path', '输入完整路径', '輸入完整路徑'],
+  '現在のフォルダを検索': ['Search current folder', '搜索当前文件夹', '搜尋目前資料夾'],
+  '右側のフォルダを検索': ['Search right folder', '搜索右侧文件夹', '搜尋右側資料夾'],
+  'フォルダパスをクリップボードに格納': ['Copy folder path to clipboard', '将文件夹路径复制到剪贴板', '將資料夾路徑複製到剪貼簿'],
+  '新しいフォルダを作成': ['Create new folder', '新建文件夹', '建立新資料夾'],
+  '新しいフォルダを作成して移動': ['Create a new folder and move', '新建文件夹并移动', '建立新資料夾並移動'],
+  '選択項目をコピー': ['Copy selected items', '复制所选项目', '複製所選項目'],
+  '選択項目を切り取り': ['Cut selected items', '剪切所选项目', '剪下所選項目'],
+  '選択項目を削除': ['Delete selected items', '删除所选项目', '刪除所選項目'],
+  'すべて選択': ['Select all', '全选', '全選'],
+  '検索ボックスへフォーカス': ['Focus search box', '聚焦搜索框', '聚焦搜尋框'],
+  '貼り付け': ['Paste', '粘贴', '貼上'],
+  'コピー': ['Copy', '复制', '複製'],
+  '移動': ['Move', '移动', '移動'],
+  '名前を変更': ['Rename', '重命名', '重新命名'],
+  'フォルダ操作': ['Folder actions', '文件夹操作', '資料夾操作'],
+  'DB管理機能': ['Database tools', '数据库工具', '資料庫工具'],
+  'gid発行': ['Issue gid', '生成gid', '產生gid'],
+  '作者フォルダ化': ['Convert to creator folder', '转换为作者文件夹', '轉換為作者資料夾'],
+  'zipに変換': ['Convert to ZIP', '转换为ZIP', '轉換為ZIP'],
+  'ファイルを削除': ['Delete file', '删除文件', '刪除檔案'],
+  'さらに読み込む': ['Load more', '加载更多', '載入更多'],
+  'このフォルダには表示する項目がありません。': ['There are no items to display in this folder.', '此文件夹中没有可显示的项目。', '此資料夾中沒有可顯示的項目。'],
+  'この区分には表示できる作品がありません。': ['There are no works to display in this section.', '此分区中没有可显示的作品。', '此分區中沒有可顯示的作品。'],
+  '検索条件に一致する作品がありません。': ['No works match the search criteria.', '没有符合搜索条件的作品。', '沒有符合搜尋條件的作品。'],
+  '条件に一致するCreatorがありません。': ['No creators match the criteria.', '没有符合条件的Creator。', '沒有符合條件的Creator。'],
+
+  '新規タブ候補': ['New tab candidates', '新标签页候选项', '新分頁候選項目'],
+  '区分別の設定': ['Section settings', '分区设置', '分區設定'],
+  'Creator Tracking': ['Creator Tracking', 'Creator Tracking', 'Creator Tracking'],
+  '起動プログラム': ['Launch programs', '启动程序', '啟動程式'],
+  'マウスジェスチャ': ['Mouse gestures', '鼠标手势', '滑鼠手勢'],
+  'キーボードショートカット': ['Keyboard shortcuts', '键盘快捷键', '鍵盤快速鍵'],
+  'gid管理': ['gid management', 'gid管理', 'gid管理'],
+  '検索エンジン': ['Search engine', '搜索引擎', '搜尋引擎'],
+  'サムネイルキャッシュ': ['Thumbnail cache', '缩略图缓存', '縮圖快取'],
+  'データベース': ['Database', '数据库', '資料庫'],
+  'アプリ全体の明暗テーマとアクセントカラーを設定します': ['Configure the application theme and accent colors.', '设置应用程序的明暗主题和强调色。', '設定應用程式的明暗主題與強調色。'],
+  'Explorer の新規タブメニューに表示するフォルダを登録します': ['Register folders shown in the Explorer new-tab menu.', '注册要显示在Explorer新标签页菜单中的文件夹。', '登錄要顯示於Explorer新分頁選單中的資料夾。'],
+  '区分ごとの走査対象、使用フィルタ、カード表示とサムネイルの調整を設定します': ['Configure scan targets, enabled filters, card display, and thumbnails for each section.', '设置各分区的扫描目标、启用筛选器、卡片显示和缩略图。', '設定各分區的掃描目標、啟用篩選器、卡片顯示與縮圖。'],
+  '評価・集計・活動場所・表示に関する既定値を設定します': ['Configure defaults for ratings, summaries, activity locations, and display.', '设置评分、汇总、活动位置和显示的默认值。', '設定評分、彙總、活動位置與顯示的預設值。'],
+  'クリック起動と右クリックメニューへの表示を個別に設定します': ['Configure click launching and context-menu visibility separately.', '分别设置点击启动和右键菜单显示。', '分別設定點擊啟動與右鍵選單顯示。'],
+  '右ボタンを押したままのジェスチャと軌跡表示を設定します': ['Configure gestures performed while holding the right button and their trail.', '设置按住右键时的手势及轨迹显示。', '設定按住右鍵時的手勢及軌跡顯示。'],
+  'アプリ内のキーボード操作に割り当てるキーを設定します': ['Configure keys assigned to application actions.', '设置分配给应用内操作的按键。', '設定指派給應用程式操作的按鍵。'],
+  'gid発番対象の拡張子と既存GIDの桁数変更を管理します': ['Manage file extensions eligible for gid assignment and change existing GID lengths.', '管理gid生成目标扩展名及现有GID位数更改。', '管理gid產生目標副檔名及現有GID位數變更。'],
+  'フィルタエディタで標準名を調べる検索方法を設定します': ['Configure how the Filter Editor searches for canonical names.', '设置筛选器编辑器查找标准名称的方式。', '設定篩選器編輯器查找標準名稱的方式。'],
+  '対象ディレクトリ配下のフォルダと対応ファイルのサムネイルを保存します': ['Store thumbnails for folders and supported files under target directories.', '保存目标目录下文件夹及对应文件的缩略图。', '儲存目標目錄下資料夾及對應檔案的縮圖。'],
+  '本体DB、キャッシュDB、クラウドバックアップを管理します': ['Manage the primary database, cache database, and cloud backups.', '管理主数据库、缓存数据库和云备份。', '管理主資料庫、快取資料庫與雲端備份。'],
+  'WinRAR の実行ファイルと右クリックメニューで扱う書庫形式を設定します': ['Configure the WinRAR executable and archive formats available from the context menu.', '设置WinRAR可执行文件及右键菜单中可用的压缩格式。', '設定WinRAR執行檔及右鍵選單中可用的壓縮格式。'],
+
+  '外部DBの結合': ['Merge an external database', '合并外部数据库', '合併外部資料庫'],
+  '後から見つかったGallery本体DBを取り込みます。正に選んだDBの値を競合時に優先し、両方を事前にバックアップします': ['Import a primary Gallery database found later. Values from the database selected as authoritative take priority when conflicts occur, and both databases are backed up first.', '导入之后找到的Gallery主数据库。发生冲突时优先采用指定为主数据库的值，并预先备份两个数据库。', '匯入之後找到的Gallery主要資料庫。發生衝突時優先採用指定為主要資料庫的值，並預先備份兩個資料庫。'],
+  '作品、Tag、フィルター定義、Creator Tracking、ブックマーク、付箋を外部結合します。結合元DBは削除しません': ['Merge works, Tags, filter definitions, Creator Tracking, bookmarks, and sticky notes. The source database is not deleted.', '外部合并作品、Tag、筛选器定义、Creator Tracking、书签和便笺。不会删除源数据库。', '外部合併作品、Tag、篩選器定義、Creator Tracking、書籤與便箋。不會刪除來源資料庫。'],
+  '競合時に正とするDB': ['Authoritative database for conflicts', '冲突时采用的主数据库', '衝突時採用的主要資料庫'],
+  '現在使用中のDB（現在の保存先を維持）': ['Current database (keep the current location)', '当前数据库（保持当前保存位置）', '目前資料庫（保留目前儲存位置）'],
+  '選択したDB（結合後はこちらへ切替）': ['Selected database (switch to it after merging)', '所选数据库（合并后切换至此）', '所選資料庫（合併後切換至此）'],
+  '結合するSQLiteDBを選択': ['Select a SQLiteDB to merge', '选择要合并的SQLiteDB', '選取要合併的SQLiteDB'],
+  '参照': ['Browse', '浏览', '瀏覽'],
+  'バックアップして結合': ['Back up and merge', '备份并合并', '備份並合併'],
+  'pCloud バックアップ': ['pCloud backup', 'pCloud备份', 'pCloud備份'],
+  '本体DBの整合性スナップショットをアイドル時に自動保存し、任意の世代から手動で復元できます': ['Automatically save consistent snapshots of the primary database while idle, and manually restore any retained version.', '在空闲时自动保存主数据库的一致性快照，并可手动恢复任意保留版本。', '在閒置時自動儲存主要資料庫的一致性快照，並可手動還原任一保留版本。'],
+  'pCloudバックアップ機能': ['pCloud backup feature', 'pCloud备份功能', 'pCloud備份功能'],
+  'OFFの場合、自動・手動バックアップを実行しません': ['When OFF, neither automatic nor manual backups are run.', '关闭时不会执行自动或手动备份。', '關閉時不會執行自動或手動備份。'],
+  'バックアップの確認頻度（分）': ['Backup check interval (minutes)', '备份检查频率（分钟）', '備份檢查頻率（分鐘）'],
+  'バックアップの頻度（日）': ['Backup interval (days)', '备份频率（天）', '備份頻率（天）'],
+  '最大スナップショット数': ['Maximum snapshots', '最大快照数', '最大快照數'],
+  'アイドル判定時間（分）': ['Idle threshold (minutes)', '空闲判定时间（分钟）', '閒置判定時間（分鐘）'],
+  '有効時は': ['When enabled, check every', '启用后每隔', '啟用後每隔'],
+  '分ごとに確認し、前回の成功から': ['minutes. Run when the last successful backup was at least', '分钟检查一次；距上次成功备份达到', '分鐘檢查一次；距上次成功備份達到'],
+  '日以上経過していて、アプリを': ['days ago and the app has been idle for', '天以上，且应用已连续', '天以上，且應用程式已連續'],
+  '分以上操作していない場合に実行します。直近': ['minutes. Keep the latest', '分钟未操作时执行。保留最近', '分鐘未操作時執行。保留最近'],
+  '件を保持します。': ['snapshots.', '个快照。', '個快照。'],
+  'pCloud内の保存先を入力': ['Enter the destination folder in pCloud', '输入pCloud中的保存位置', '輸入pCloud中的儲存位置'],
+  '登録済み（空欄なら維持）': ['Registered (leave blank to keep)', '已注册（留空则保持）', '已登錄（留空則保留）'],
+  'アクセストークンを貼り付け': ['Paste access token', '粘贴访问令牌', '貼上存取權杖'],
+  'スナップショットを更新': ['Refresh snapshots', '刷新快照', '重新整理快照'],
+  '復元可能なスナップショット': ['Restorable snapshots', '可恢复的快照', '可還原的快照'],
+  '復元可能なスナップショットはありません。': ['No restorable snapshots are available.', '没有可恢复的快照。', '沒有可還原的快照。'],
+  '復元': ['Restore', '恢复', '還原'],
+  'の位置に検索語を入れます': [' is replaced with the search term.', ' 的位置会替换为搜索词。', ' 的位置會替換為搜尋詞。'],
+
+  '起動プログラムはまだ登録されていません。': ['No launch programs have been registered.', '尚未注册启动程序。', '尚未登錄啟動程式。'],
+  '起動プログラムを追加': ['Add launch program', '添加启动程序', '新增啟動程式'],
+  '既存の起動プログラムを編集中': ['Editing an existing launch program', '正在编辑现有启动程序', '正在編輯現有啟動程式'],
+  '追加する設定を入力してください': ['Enter the settings to add.', '请输入要添加的设置。', '請輸入要新增的設定。'],
+  '表示名': ['Display name', '显示名称', '顯示名稱'],
+  '実行ファイル': ['Executable', '可执行文件', '執行檔'],
+  '実行ファイルを選択': ['Select executable', '选择可执行文件', '選取執行檔'],
+  '起動オプション': ['Launch options', '启动选项', '啟動選項'],
+  'シングルクリックで起動': ['Launch with single click', '单击启动', '單擊啟動'],
+  'ダブルクリックで起動': ['Launch with double click', '双击启动', '雙擊啟動'],
+  '右クリックメニュー': ['Context menu', '右键菜单', '右鍵選單'],
+  '右クリックメニューに「WinRARで開く」を表示する': ['Show “Open with WinRAR” in the context menu', '在右键菜单中显示“使用WinRAR打开”', '在右鍵選單中顯示「使用WinRAR開啟」'],
+  '複数起動を許可する': ['Allow multiple instances', '允许多个实例', '允許多個執行個體'],
+  'セパレータ': ['Separator', '分隔符', '分隔線'],
+  'セパレータを追加': ['Add separator', '添加分隔符', '新增分隔線'],
+  '候補が登録されていません': ['No candidates are registered.', '未注册候选项。', '未登錄候選項目。'],
+  '候補を追加': ['Add candidate', '添加候选项', '新增候選項目'],
+  '候補を削除': ['Delete candidate', '删除候选项', '刪除候選項目'],
+  'ドラッグして表示順を変更': ['Drag to change display order', '拖动以更改显示顺序', '拖曳以變更顯示順序'],
+
+  'フィルタエディタ': ['Filter Editor', '筛选器编辑器', '篩選器編輯器'],
+  'Categoryを検索': ['Search Categories', '搜索Category', '搜尋Category'],
+  '作品名を入力': ['Enter a work title', '输入作品名', '輸入作品名稱'],
+  'キャラクター名を入力': ['Enter a character name', '输入角色名', '輸入角色名稱'],
+  'フィルタセットの管理とGallery各区分へのマッピングを設定します': ['Manage filter sets and mappings to Gallery sections.', '管理筛选器集及其到Gallery各分区的映射。', '管理篩選器集及其至Gallery各分區的對應。'],
+  'フィルタアイテム一覧': ['Filter items', '筛选器项目列表', '篩選器項目清單'],
+  'フィルタ定義': ['Filter definition', '筛选器定义', '篩選器定義'],
+  '既存フィルタ': ['Existing filters', '现有筛选器', '現有篩選器'],
+  '新しいフィルタ': ['New filter', '新建筛选器', '新增篩選器'],
+  'フィルタを検索': ['Search filters', '搜索筛选器', '搜尋篩選器'],
+  'フィルタまたはCategoryを検索': ['Search filters or categories', '搜索筛选器或Category', '搜尋篩選器或Category'],
+  'フィルタ候補': ['Filter candidates', '筛选器候选项', '篩選器候選項目'],
+  'フィルター消去': ['Clear filters', '清除筛选器', '清除篩選器'],
+  'フィルターの登録と解除': ['Register or remove filters', '注册或移除筛选器', '登錄或解除篩選器'],
+  '区分マトリクス': ['Section matrix', '分区矩阵', '分區矩陣'],
+  '取り込み前の確認': ['Review before import', '导入前确认', '匯入前確認'],
+  '確認して登録': ['Review and register', '确认并注册', '確認並登錄'],
+  'Commit中...': ['Committing...', '正在提交...', '正在提交...'],
+  'Category の定義': ['Category definition', 'Category定义', 'Category定義'],
+  'Category名': ['Category name', 'Category名称', 'Category名稱'],
+  'Character移動・統合': ['Move or merge Character', '移动或合并Character', '移動或合併Character'],
+  '自動Title統合': ['Automatic Title merge', '自动合并Title', '自動合併Title'],
+
+  'Tagエディタ': ['Tag Editor', 'Tag编辑器', 'Tag編輯器'],
+  'Tagの管理とGallery各区分へのマッピングを設定します': ['Manage Tags and mappings to Gallery sections.', '管理Tag及其到Gallery各分区的映射。', '管理Tag及其至Gallery各分區的對應。'],
+  'Tag一覧': ['Tag list', 'Tag列表', 'Tag清單'],
+  'Tagがありません': ['No Tags.', '没有Tag。', '沒有Tag。'],
+  'Tagデータなし': ['No Tag data', '无Tag数据', '無Tag資料'],
+  'Tag名': ['Tag name', 'Tag名称', 'Tag名稱'],
+  '新しいTag名': ['New Tag name', '新Tag名称', '新Tag名稱'],
+  '新規Tagの登録': ['Register new Tag', '注册新Tag', '登錄新Tag'],
+  'Tagの登録と解除': ['Register or remove Tags', '注册或移除Tag', '登錄或解除Tag'],
+  'Tag登録に戻る': ['Return to Tag registration', '返回Tag注册', '返回Tag登錄'],
+
+  '登録済みのTitle': ['Registered Titles', '已注册Title', '已登錄Title'],
+  '登録済みCharacter': ['Registered Characters', '已注册Character', '已登錄Character'],
+  '登録済みTag': ['Registered Tags', '已注册Tag', '已登錄Tag'],
+  '登録可能なCharacter': ['Available Characters', '可注册Character', '可登錄Character'],
+  '登録可能なTag': ['Available Tags', '可注册Tag', '可登錄Tag'],
+  '作品に登録済みのTitle': ['Titles registered to the work', '作品已注册的Title', '作品已登錄的Title'],
+  '作品に登録済みのCharacter': ['Characters registered to the work', '作品已注册的Character', '作品已登錄的Character'],
+  '作品に登録済みのTag': ['Tags registered to the work', '作品已注册的Tag', '作品已登錄的Tag'],
+  'Title属性': ['Title attribute', 'Title属性', 'Title屬性'],
+  'Character属性': ['Character attribute', 'Character属性', 'Character屬性'],
+  'Title属性の登録': ['Register Title attributes', '注册Title属性', '登錄Title屬性'],
+  'Character属性の登録': ['Register Character attributes', '注册Character属性', '登錄Character屬性'],
+  '新規Titleの追加': ['Add new Title', '添加新Title', '新增Title'],
+  '該当するTitleはありません': ['No matching Titles.', '没有匹配的Title。', '沒有符合的Title。'],
+  '該当するCharacterはありません': ['No matching Characters.', '没有匹配的Character。', '沒有符合的Character。'],
+  '該当するTagはありません': ['No matching Tags.', '没有匹配的Tag。', '沒有符合的Tag。'],
+
+  '付箋': ['Sticky note', '便笺', '便箋'],
+  '付箋の操作': ['Sticky note actions', '便笺操作', '便箋操作'],
+  '付箋の表示と色': ['Sticky note display and color', '便笺显示与颜色', '便箋顯示與顏色'],
+  '付箋の色': ['Sticky note color', '便笺颜色', '便箋顏色'],
+  '付箋の色を変更': ['Change sticky note color', '更改便笺颜色', '變更便箋顏色'],
+  '付箋の本文': ['Sticky note body', '便笺正文', '便箋內容'],
+  '付箋を削除': ['Delete sticky note', '删除便笺', '刪除便箋'],
+  '付箋を破棄': ['Discard sticky note', '丢弃便笺', '捨棄便箋'],
+  'Markdownに切り替え': ['Switch to Markdown', '切换到Markdown', '切換至Markdown'],
+  'プレーンテキストに切り替え': ['Switch to plain text', '切换到纯文本', '切換至純文字'],
+  'Markdownを入力...': ['Enter Markdown...', '输入Markdown...', '輸入Markdown...'],
+  'メモを入力...': ['Enter a note...', '输入备注...', '輸入備註...'],
+  'クリックしてMarkdownを編集...': ['Click to edit Markdown...', '点击编辑Markdown...', '點擊編輯Markdown...'],
+  '各画面とBookmarkに保存された付箋をまとめて管理します': ['Manage sticky notes from each view and bookmarks in one place.', '集中管理各界面和Bookmark中保存的便笺。', '集中管理各畫面與Bookmark中儲存的便箋。'],
+  'Boardの表示方法': ['Board display mode', 'Board显示方式', 'Board顯示方式'],
+  '機能別': ['By feature', '按功能', '依功能'],
+
+  'Bookmark名': ['Bookmark name', 'Bookmark名称', 'Bookmark名稱'],
+  'Bookmarkはまだありません': ['No bookmarks yet.', '尚无Bookmark。', '尚無Bookmark。'],
+  'Bookmarkを削除': ['Delete bookmark', '删除Bookmark', '刪除Bookmark'],
+  'Bookmarkを削除しますか？': ['Delete this bookmark?', '要删除此Bookmark吗？', '要刪除此Bookmark嗎？'],
+  '現在のビューをBookmark': ['Bookmark current view', '为当前视图添加Bookmark', '將目前檢視加入Bookmark'],
+  '現在のビューをそのまま保存': ['Save the current view as-is', '按当前状态保存视图', '依目前狀態儲存檢視'],
+  'Gallery・Explorer・Creatorの現在のビューを保存して再現します': ['Save and restore the current Gallery, Explorer, and Creator views.', '保存并恢复当前Gallery、Explorer和Creator视图。', '儲存並還原目前Gallery、Explorer與Creator檢視。'],
+
+  'Galleryを検索': ['Search Gallery', '搜索Gallery', '搜尋Gallery'],
+  'Creatorを検索': ['Search creators', '搜索Creator', '搜尋Creator'],
+  '現在のGalleryをBookmark': ['Bookmark current Gallery', '为当前Gallery添加Bookmark', '將目前Gallery加入Bookmark'],
+  '現在のExplorerをBookmark': ['Bookmark current Explorer', '为当前Explorer添加Bookmark', '將目前Explorer加入Bookmark'],
+  '現在のCreatorsをBookmark': ['Bookmark current Creators', '为当前Creators添加Bookmark', '將目前Creators加入Bookmark'],
+  '現在のCreator TrackingをBookmark': ['Bookmark current Creator Tracking', '为当前Creator Tracking添加Bookmark', '將目前Creator Tracking加入Bookmark'],
+  'Galleryに付箋を追加': ['Add a sticky note to Gallery', '在Gallery中添加便笺', '在Gallery中新增便箋'],
+  'Explorerに付箋を追加': ['Add a sticky note to Explorer', '在Explorer中添加便笺', '在Explorer中新增便箋'],
+  'Creatorsに付箋を追加': ['Add a sticky note to Creators', '在Creators中添加便笺', '在Creators中新增便箋'],
+  'Creator Trackingに付箋を追加': ['Add a sticky note to Creator Tracking', '在Creator Tracking中添加便笺', '在Creator Tracking中新增便箋'],
+  'Galleryのフィルター選択をすべて解除': ['Clear all Gallery filter selections', '清除所有Gallery筛选条件', '清除所有Gallery篩選條件'],
+  'Creatorsのフィルターをすべて解除': ['Clear all Creators filters', '清除所有Creators筛选条件', '清除所有Creators篩選條件'],
+  'Galleryを更新（未実装）': ['Refresh Gallery (not implemented)', '刷新Gallery（尚未实现）', '重新整理Gallery（尚未實作）'],
+  'SQLiteDBから再集計': ['Recalculate from SQLiteDB', '从SQLiteDB重新汇总', '從SQLiteDB重新彙總'],
+  '選択中CreatorのCreator Trackingを開く': ['Open Creator Tracking for the selected Creator', '打开所选Creator的Creator Tracking', '開啟所選Creator的Creator Tracking'],
+  '選択中CreatorのストレージフォルダをExplorerで開く': ['Open the selected Creator’s storage folders in Explorer', '在Explorer中打开所选Creator的存储文件夹', '在Explorer中開啟所選Creator的儲存資料夾'],
+  'Creatorを1件だけ選択すると使用できます': ['Available when exactly one Creator is selected', '仅选择一个Creator时可用', '僅選取一個Creator時可用'],
+  'Creator単位で作品数・評価・画像数・更新日時を集計します': ['Summarizes works, ratings, images, and update dates by Creator.', '按Creator汇总作品数、评分、图像数和更新时间。', '依Creator彙總作品數、評分、圖片數與更新時間。'],
+  'Creatorsを集計しています...': ['Calculating Creators...', '正在汇总Creators...', '正在彙總Creators...'],
+  'Galleryを読み込み中...': ['Loading Gallery...', '正在加载Gallery...', '正在載入Gallery...'],
+  'Creator Trackingを読み込んでいます...': ['Loading Creator Tracking...', '正在加载Creator Tracking...', '正在載入Creator Tracking...'],
+
+  '作者基本情報とフォローの概要': ['Creator profile and follow-up overview', '作者基本信息与关注概览', '作者基本資訊與追蹤概覽'],
+  '作品の傾向': ['Work tendencies', '作品倾向', '作品傾向'],
+  '活動場所': ['Activity locations', '活动平台', '活動平台'],
+  'ストレージ': ['Storage', '存储', '儲存空間'],
+  '課金・購入記録': ['Subscriptions and purchases', '订阅与购买记录', '訂閱與購買記錄'],
+  'フォロー方針': ['Follow-up policy', '关注方针', '追蹤方針'],
+  '別名義': ['Alternate name', '其他名义', '其他名義'],
+  '起票日': ['Started on', '建档日期', '建檔日期'],
+  '最終確認日': ['Last checked', '最后确认日期', '最後確認日期'],
+  '最終確認日に今日の日付を設定': ['Set last checked date to today', '将最后确认日期设为今天', '將最後確認日期設為今天'],
+  'User\'s memo': ['User\'s memo', '用户备注', '使用者備註'],
+  'フォローアップ': ['Follow up', '跟进', '追蹤'],
+  '日数': ['Days', '天数', '天數'],
+  '活動場所を追加': ['Add activity location', '添加活动平台', '新增活動平台'],
+  '活動場所を削除': ['Delete activity location', '删除活动平台', '刪除活動平台'],
+  '名称': ['Name', '名称', '名稱'],
+  'URL / 場所': ['URL / Location', 'URL / 位置', 'URL / 位置'],
+  'メモ': ['Memo', '备注', '備註'],
+  '用途・確認頻度': ['Purpose / check interval', '用途／确认频率', '用途／確認頻率'],
+  '活動場所の候補': ['Activity location options', '活动平台选项', '活動平台選項'],
+  'ドロップダウンの候補': ['Dropdown options', '下拉菜单选项', '下拉選單選項'],
+  'サイトアイコン': ['Site icon', '站点图标', '網站圖示'],
+  'サイトアイコンを更新': ['Refresh site icon', '更新站点图标', '更新網站圖示'],
+  'アイコン未取得': ['No icon', '未获取图标', '尚未取得圖示'],
+  'サブスク': ['Subscriptions', '订阅', '訂閱'],
+  '購入': ['Purchases', '购买', '購買'],
+  'サブスク歴を追加': ['Add subscription', '添加订阅记录', '新增訂閱記錄'],
+  '購入歴を追加': ['Add purchase', '添加购买记录', '新增購買記錄'],
+  '課金プラットフォーム': ['Billing platform', '付费平台', '付費平台'],
+  '購入プラットフォーム': ['Purchase platform', '购买平台', '購買平台'],
+  '対象プラン（任意）': ['Plan (optional)', '目标方案（可选）', '方案（選填）'],
+  '商品名': ['Product', '商品名称', '商品名稱'],
+  '通貨': ['Currency', '货币', '貨幣'],
+  '金額': ['Amount', '金额', '金額'],
+  '支払い額': ['Payment amount', '支付金额', '付款金額'],
+  '支払い頻度': ['Billing frequency', '支付频率', '付款頻率'],
+  '開始日': ['Start date', '开始日期', '開始日期'],
+  '更新予定日': ['Next renewal', '下次续订日期', '下次續訂日期'],
+  '終了予定': ['Ending', '计划结束', '預計結束'],
+  'アラート': ['Alert', '提醒', '提醒'],
+  'ウィッシュリスト': ['Wishlist', '愿望清单', '願望清單'],
+  '有効': ['Active', '有效', '有效'],
+  '購入日': ['Purchase date', '购买日期', '購買日期'],
+  '課金履歴がありません': ['No billing history.', '没有付费记录。', '沒有付費記錄。'],
+
+  '総ファイル数': ['Total files', '文件总数', '檔案總數'],
+  '総画像枚数': ['Total images', '图像总数', '圖片總數'],
+  'トータル評価値': ['Total rating', '总评分', '總評分'],
+  'フォローしている日数': ['Days followed', '关注天数', '追蹤天數'],
+  '総課金額': ['Total spend', '总消费金额', '總消費金額'],
+  '直近3か月の課金額': ['Spend in last 3 months', '最近3个月消费金额', '最近3個月消費金額'],
+  '書庫のファイル数・画像枚数': ['Archive files and images', '归档文件数与图像数', '封存檔案數與圖片數'],
+  '月': ['Month', '月', '月'],
+  '年': ['Year', '年', '年'],
+  '週': ['Week', '周', '週'],
+  '月単位': ['Monthly', '按月', '每月'],
+  '年単位': ['Yearly', '按年', '每年'],
+  '週単位': ['Weekly', '按周', '每週'],
+  '全期間': ['All time', '全部期间', '全部期間'],
+  '作品傾向に対する自分の評価': ['Your evaluation of work tendencies', '您对作品倾向的评价', '您對作品傾向的評價'],
+  '総合評価': ['Overall rating', '综合评分', '綜合評分'],
+  'シチュエーション': ['Situation', '情境', '情境'],
+  '連続性': ['Continuity', '连续性', '連續性'],
+  '一貫性': ['Consistency', '一致性', '一致性'],
+  'クオリティ': ['Quality', '质量', '品質'],
+  '質感': ['Texture', '质感', '質感'],
+  'ボリューム': ['Volume', '内容量', '內容量'],
+
+  'User Metricsを集計しています...': ['Calculating User Metrics...', '正在汇总User Metrics...', '正在彙總User Metrics...'],
+  'ライブラリ・Creator Tracking・課金記録を横断して可視化します': ['Visualizes data across the library, Creator Tracking, and billing records.', '跨资源库、Creator Tracking和付费记录进行可视化。', '跨媒體庫、Creator Tracking與付費記錄進行視覺化。'],
+  'ファイル数': ['File count', '文件数', '檔案數'],
+  '画像枚数': ['Image count', '图像数', '圖片數'],
+  '評価値': ['Rating', '评分', '評分'],
+  '作者数': ['Creator count', '作者数', '作者數'],
+  '課金額': ['Spend', '消费金额', '消費金額'],
+  '推移': ['Trend', '趋势', '趨勢'],
+  'ランキング': ['Ranking', '排名', '排名'],
+  '活動サイト別の作者数': ['Creators by activity site', '按活动站点统计作者数', '依活動網站統計作者數'],
+  'Title別バブルチャート': ['Bubble chart by Title', '按Title的气泡图', '依Title的氣泡圖'],
+  'User Metricsを再集計': ['Recalculate User Metrics', '重新汇总User Metrics', '重新彙總User Metrics'],
+
+  'WinRAR設定': ['WinRAR settings', 'WinRAR设置', 'WinRAR設定'],
+  'FFmpeg設定': ['FFmpeg settings', 'FFmpeg设置', 'FFmpeg設定'],
+  'WinRARの実行ファイル': ['WinRAR executable', 'WinRAR可执行文件', 'WinRAR執行檔'],
+  'FFmpegの実行ファイル': ['FFmpeg executable', 'FFmpeg可执行文件', 'FFmpeg執行檔'],
+  '拡張子': ['Extensions', '扩展名', '副檔名'],
+  '拡張子設定を保存': ['Save extension settings', '保存扩展名设置', '儲存副檔名設定'],
+  '解凍・圧縮・WinRARで開く操作に使用する専用設定です': ['Dedicated settings for extraction, compression, and opening with WinRAR.', '用于解压、压缩和使用WinRAR打开的专用设置。', '用於解壓縮、壓縮及使用WinRAR開啟的專用設定。'],
+  '動画サムネイル生成に使用する FFmpeg の実行ファイルと対応形式を設定します': ['Configure the FFmpeg executable and formats used for video thumbnails.', '设置用于生成视频缩略图的FFmpeg可执行文件和支持格式。', '設定用於產生影片縮圖的FFmpeg執行檔與支援格式。'],
+  'ffmpeg.exe を選択': ['Select ffmpeg.exe', '选择ffmpeg.exe', '選取ffmpeg.exe'],
+  'WinRAR.exe を選択': ['Select WinRAR.exe', '选择WinRAR.exe', '選取WinRAR.exe'],
+  'SQLiteDBの手動更新': ['Manual SQLiteDB update', '手动更新SQLiteDB', '手動更新SQLiteDB'],
+  'SQLiteDBのメンテナンス': ['SQLiteDB maintenance', 'SQLiteDB维护', 'SQLiteDB維護'],
+  'サムネイル設定': ['Thumbnail settings', '缩略图设置', '縮圖設定'],
+  'サムネイル調整': ['Thumbnail adjustment', '缩略图调整', '縮圖調整'],
+  'カード調整': ['Card adjustment', '卡片调整', '卡片調整'],
+  '区分': ['Section', '分区', '分區'],
+  '使用フィルタ': ['Enabled filters', '启用的筛选器', '啟用的篩選器'],
+  'フィルタ行の表示ラベル': ['Filter row labels', '筛选器行显示标签', '篩選器列顯示標籤'],
+  'カードの縦横比': ['Card aspect ratio', '卡片纵横比', '卡片長寬比'],
+  '縦長': ['Portrait', '纵向', '直向'],
+  '横長': ['Landscape', '横向', '橫向'],
+  'ファイル名の表示行数': ['File-name lines', '文件名显示行数', '檔案名稱顯示行數'],
+  '横方向（%）': ['Horizontal (%)', '水平（%）', '水平（%）'],
+  '縦方向（%）': ['Vertical (%)', '垂直（%）', '垂直（%）'],
+  '縮尺（%）': ['Scale (%)', '缩放（%）', '縮放（%）'],
+
+  '処理中...': ['Processing...', '处理中...', '處理中...'],
+  '読み込み中...': ['Loading...', '加载中...', '載入中...'],
+  '更新中...': ['Updating...', '更新中...', '更新中...'],
+  '削除中...': ['Deleting...', '删除中...', '刪除中...'],
+  '登録中...': ['Registering...', '注册中...', '登錄中...'],
+  '準備中...': ['Preparing...', '准备中...', '準備中...'],
+  '計算中': ['Calculating', '计算中', '計算中'],
+  '検証中...': ['Validating...', '验证中...', '驗證中...'],
+  '再試行': ['Retry', '重试', '重試'],
+  '中断': ['Cancel operation', '中止', '中止'],
+  '中断中...': ['Cancelling...', '正在中止...', '正在中止...'],
+  '操作を完了できませんでした。': ['The operation could not be completed.', '无法完成操作。', '無法完成操作。'],
+  'URLを開けませんでした。': ['Could not open the URL.', '无法打开URL。', '無法開啟URL。'],
+  'ファイルを削除できませんでした。': ['Could not delete the file.', '无法删除文件。', '無法刪除檔案。'],
+  'Galleryを読み込めませんでした。': ['Could not load Gallery.', '无法加载Gallery。', '無法載入Gallery。'],
+  'Creatorsを読み込めませんでした。': ['Could not load Creators.', '无法加载Creators。', '無法載入Creators。'],
+  'Creator Trackingを読み込めませんでした。': ['Could not load Creator Tracking.', '无法加载Creator Tracking。', '無法載入Creator Tracking。'],
+  'User Metricsを読み込めませんでした。': ['Could not load User Metrics.', '无法加载User Metrics。', '無法載入User Metrics。'],
+  '候補が見つかりませんでした。検索語を変えてください。': ['No candidates were found. Try a different search term.', '未找到候选项。请更换搜索词。', '找不到候選項目。請更換搜尋詞。'],
+  '検索する名称を入力してください。': ['Enter a name to search for.', '请输入要搜索的名称。', '請輸入要搜尋的名稱。'],
+  '表示名を入力してください。': ['Enter a display name.', '请输入显示名称。', '請輸入顯示名稱。'],
+  'Tag名を入力してください。': ['Enter a Tag name.', '请输入Tag名称。', '請輸入Tag名稱。'],
+  'Category名を入力してください。': ['Enter a Category name.', '请输入Category名称。', '請輸入Category名稱。'],
+  'http または https のURLを入力してください。': ['Enter an http or https URL.', '请输入http或https URL。', '請輸入http或https URL。'],
+  '6指標のレーダーチャート': ['Six-metric radar chart', '六项指标雷达图', '六項指標雷達圖'],
+  'Category / Title / Character の一覧をCSVまたはTSVで出力します': ['Export the Category / Title / Character list as CSV or TSV.', '将Category / Title / Character列表导出为CSV或TSV。', '將Category / Title / Character清單匯出為CSV或TSV。'],
+  'CategoryでTitleを絞り込む': ['Filter Title by Category', '按Category筛选Title', '依Category篩選Title'],
+  'Categoryで絞り込み': ['Filter by Category', '按Category筛选', '依Category篩選'],
+  'Category一覧': ['Category list', 'Category列表', 'Category清單'],
+  'Category一覧をCSVまたはTSVで出力します': ['Export the Category list as CSV or TSV.', '将Category列表导出为CSV或TSV。', '將Category清單匯出為CSV或TSV。'],
+  'Category定義': ['Category definitions', 'Category定义', 'Category定義'],
+  'Characterを絞り込む': ['Filter Character', '筛选Character', '篩選Character'],
+  'Character登録に戻る': ['Return to Character registration', '返回Character注册', '返回Character登錄'],
+  'Creatorsから作者を追加': ['Add a Creator from Creators', '从Creators添加作者', '從Creators新增作者'],
+  'Creatorが持っているTitle': ['Titles assigned to the Creator', 'Creator拥有的Title', 'Creator擁有的Title'],
+  'CreatorとTitleに登録済みのCharacter': ['Characters assigned to the Creator and Title', '已分配给Creator和Title的Character', '已指派給Creator與Title的Character'],
+  'CreatorとTitleに登録済みのCharacterを絞り込む': ['Filter Characters assigned to the Creator and Title', '筛选已分配给Creator和Title的Character', '篩選已指派給Creator與Title的Character'],
+  'CreatorとTitleに登録済みのTag': ['Tags assigned to the Creator and Title', '已分配给Creator和Title的Tag', '已指派給Creator與Title的Tag'],
+  'CreatorとTitleに登録済みのTagを絞り込む': ['Filter Tags assigned to the Creator and Title', '筛选已分配给Creator和Title的Tag', '篩選已指派給Creator與Title的Tag'],
+  'Creatorに登録済みのTitleを絞り込む': ['Filter Titles assigned to the Creator', '筛选已分配给Creator的Title', '篩選已指派給Creator的Title'],
+  'ffmpeg.exe のフルパス': ['Full path to ffmpeg.exe', 'ffmpeg.exe的完整路径', 'ffmpeg.exe的完整路徑'],
+  'GalleryとStockroomをExplorerで分割表示': ['Open Gallery and Stockroom in a split Explorer view', '在Explorer分屏中打开Gallery和Stockroom', '在Explorer分割畫面中開啟Gallery與Stockroom'],
+  'Galleryのフィルタ候補を最新の設定で読み込み直します': ['Reload Gallery filter options using the latest settings.', '使用最新设置重新加载Gallery筛选选项。', '使用最新設定重新載入Gallery篩選選項。'],
+  'Galleryの操作': ['Gallery actions', 'Gallery操作', 'Gallery操作'],
+  'Galleryの操作メニューを閉じる': ['Close the Gallery actions menu', '关闭Gallery操作菜单', '關閉Gallery操作選單'],
+  '逆引きフィルタ': ['Reverse filter lookup', '反向查找筛选器', '反向查找篩選器'],
+  '作品のTitleでフィルター': ['Filter by the work Titles', '按作品Title筛选', '依作品Title篩選'],
+  '作品のCharacterでフィルター': ['Filter by the work Title and Character', '按作品Title和Character筛选', '依作品Title與Character篩選'],
+  'gid発番対象拡張子': ['Extensions eligible for gid assignment', 'gid编号适用的扩展名', 'gid編號適用的副檔名'],
+  'https://... または場所名': ['https://... or location name', 'https://...或地点名称', 'https://...或地點名稱'],
+  'pCloud DevelopersのClient ID': ['pCloud Developers Client ID', 'pCloud Developers Client ID', 'pCloud Developers Client ID'],
+  'SQLiteDBの保存先ディレクトリを指定': ['Choose the SQLiteDB storage directory', '选择SQLiteDB存储目录', '選擇SQLiteDB儲存目錄'],
+  'SQLiteDB更新ログ': ['SQLiteDB update log', 'SQLiteDB更新日志', 'SQLiteDB更新記錄'],
+  'tag_id / tag / New_tag / use_flg の4列を読み込みます': ['Import four columns: tag_id / tag / New_tag / use_flg.', '导入tag_id / tag / New_tag / use_flg四列。', '匯入tag_id / tag / New_tag / use_flg四欄。'],
+  'Tagを検索': ['Search Tags', '搜索Tag', '搜尋Tag'],
+  'Tagを絞り込む': ['Filter Tags', '筛选Tag', '篩選Tag'],
+  'Tag一覧をCSVまたはTSVで出力します': ['Export the Tag list as CSV or TSV.', '将Tag列表导出为CSV或TSV。', '將Tag清單匯出為CSV或TSV。'],
+  'Titleを絞り込む': ['Filter Title', '筛选Title', '篩選Title'],
+  '新規Characterの追加': ['Add new Character', '添加新Character', '新增Character'],
+  'この作者の最新データを反映': ['Refresh the latest data for this Creator', '刷新此Creator的最新数据', '重新整理此Creator的最新資料'],
+  'User Metricsに付箋を追加': ['Add a sticky note to User Metrics', '在User Metrics中添加便笺', '在User Metrics中新增便箋'],
+  'UTF-8（BOMなし）のCSV / TSVで、Category / Title / Character の3列を読み込みます': ['Import Category / Title / Character from a UTF-8 CSV / TSV file without a BOM.', '从不带BOM的UTF-8 CSV / TSV文件导入Category / Title / Character三列。', '從不含BOM的UTF-8 CSV / TSV檔案匯入Category / Title / Character三欄。'],
+  'UTF-8（BOMなし）のCSV / TSVで、filter_category_id / Category / New_Category / Add / Merge の5列を読み込みます': ['Import filter_category_id / Category / New_Category / Add / Merge from a UTF-8 CSV / TSV file without a BOM.', '从不带BOM的UTF-8 CSV / TSV文件导入filter_category_id / Category / New_Category / Add / Merge五列。', '從不含BOM的UTF-8 CSV / TSV檔案匯入filter_category_id / Category / New_Category / Add / Merge五欄。'],
+  'zip, mp4, mkv（空欄の場合はすべて）': ['zip, mp4, mkv (all when blank)', 'zip、mp4、mkv（留空时为全部）', 'zip、mp4、mkv（留空時為全部）'],
+  'Zipビューア': ['ZIP viewer', 'ZIP查看器', 'ZIP檢視器'],
+  'エディタ視点': ['Editor view', '编辑器视图', '編輯器視角'],
+  'キャッシュDBの保存先ディレクトリを指定': ['Choose the cache DB storage directory', '选择缓存DB存储目录', '選擇快取DB儲存目錄'],
+  'キャッシュの保存先を指定': ['Choose the cache storage location', '选择缓存存储位置', '選擇快取儲存位置'],
+  'サービス名': ['Service name', '服务名称', '服務名稱'],
+  'サブカラーを選択': ['Choose the secondary color', '选择辅助色', '選擇輔助色'],
+  'サブスク歴を削除': ['Delete subscription history', '删除订阅记录', '刪除訂閱記錄'],
+  'サムネイル一覧': ['Thumbnail list', '缩略图列表', '縮圖清單'],
+  'ストレージの用途': ['Storage purpose', '存储用途', '儲存用途'],
+  'ドラッグしてサブスク歴を並べ替え': ['Drag to reorder subscription history', '拖动以重新排列订阅记录', '拖曳以重新排列訂閱記錄'],
+  'ドラッグして活動場所を並べ替え': ['Drag to reorder activity locations', '拖动以重新排列活动地点', '拖曳以重新排列活動地點'],
+  'ドラッグして購入歴を並べ替え': ['Drag to reorder purchase history', '拖动以重新排列购买记录', '拖曳以重新排列購買記錄'],
+  'フォルダタブ': ['Folder tabs', '文件夹标签页', '資料夾分頁'],
+  'フォローアップアラート中のCreatorに絞り込む': ['Show Creators with follow-up alerts', '筛选有跟进提醒的Creator', '篩選有追蹤提醒的Creator'],
+  'フォローアップ警告中のCreatorに絞り込む': ['Show Creators with follow-up warnings', '筛选有跟进警告的Creator', '篩選有追蹤警告的Creator'],
+  'ブックマークを解除': ['Remove bookmark', '取消Bookmark', '移除Bookmark'],
+  'プラン名': ['Plan name', '方案名称', '方案名稱'],
+  'メインカラーを選択': ['Choose the primary color', '选择主色', '選擇主色'],
+  '圧縮と処理後削除': ['Compress and delete after processing', '压缩并在处理后删除', '壓縮並於處理後刪除'],
+  '右クリックでCharacterの定義を開く': ['Right-click to open the Character definition', '右键单击以打开Character定义', '按右鍵以開啟Character定義'],
+  '右側のサムネイル一覧': ['Right thumbnail list', '右侧缩略图列表', '右側縮圖清單'],
+  '課金額の推移': ['Spending trend', '消费金额趋势', '消費金額趨勢'],
+  '課金履歴の種類': ['Billing history type', '付费记录类型', '付費記錄類型'],
+  '開いているCreator Tracking': ['Open Creator Tracking pages', '已打开的Creator Tracking页面', '已開啟的Creator Tracking頁面'],
+  '割り当てを解除': ['Remove assignment', '取消分配', '移除指派'],
+  '既定のブラウザで開く': ['Open in the default browser', '在默认浏览器中打开', '在預設瀏覽器中開啟'],
+  '空欄の場合はフォルダ名': ['Folder name when blank', '留空时使用文件夹名称', '留空時使用資料夾名稱'],
+  '空欄の場合は標準のインストール場所を検出': ['Detect the default installation location when blank', '留空时检测默认安装位置', '留空時偵測預設安裝位置'],
+  '検索する名称': ['Name to search', '要搜索的名称', '要搜尋的名稱'],
+  '候補を検索して手動で選択': ['Search candidates and select manually', '搜索候选项并手动选择', '搜尋候選項目並手動選取'],
+  '更新（未実装）': ['Refresh (not implemented)', '刷新（尚未实现）', '重新整理（尚未實作）'],
+  '購入歴を削除': ['Delete purchase history', '删除购买记录', '刪除購買記錄'],
+  '左クリックでGalleryをCreator絞り込み表示 / 右クリックでCreator Trackingを開く': ['Left-click to filter Gallery by Creator / right-click to open Creator Tracking', '左键单击按Creator筛选Gallery / 右键单击打开Creator Tracking', '按左鍵依Creator篩選Gallery / 按右鍵開啟Creator Tracking'],
+  '左クリックでタブを複製 / 右クリックで候補を表示': ['Left-click to duplicate the tab / right-click to show options', '左键单击复制标签页 / 右键单击显示候选项', '按左鍵複製分頁 / 按右鍵顯示候選項目'],
+  '左クリックで追加・昇降順切替、右クリックで解除': ['Left-click to add or change sort direction; right-click to remove', '左键单击添加或切换排序方向；右键单击移除', '按左鍵新增或切換排序方向；按右鍵移除'],
+  '左クリックで追加、右クリックで解除': ['Left-click to add; right-click to remove', '左键单击添加；右键单击移除', '按左鍵新增；按右鍵移除'],
+  '左クリックで評価を上げ、右クリックで評価を下げる': ['Left-click to increase the rating; right-click to decrease it', '左键单击提高评分；右键单击降低评分', '按左鍵提高評分；按右鍵降低評分'],
+  '左側のサムネイル一覧': ['Left thumbnail list', '左侧缩略图列表', '左側縮圖清單'],
+  '作者に関するメモを入力': ['Enter notes about the Creator', '输入关于Creator的备注', '輸入關於Creator的備註'],
+  '作品の傾向の指標': ['Work tendency metrics', '作品倾向指标', '作品傾向指標'],
+  '集計区分': ['Aggregation section', '汇总分区', '彙總分區'],
+  '詳細一覧': ['Detailed list', '详细列表', '詳細清單'],
+  '新規フォルダを作成して移動': ['Create a new folder and move', '新建文件夹并移动', '建立新資料夾並移動'],
+  '先頭行はヘッダー': ['First row is a header', '首行为标题', '首列為標題'],
+  '選択したCharacter属性を解除': ['Remove the selected Character attributes', '移除所选Character属性', '移除所選Character屬性'],
+  '選択したTagを解除': ['Remove the selected Tags', '移除所选Tag', '移除所選Tag'],
+  '選択したTitle属性を解除': ['Remove the selected Title attributes', '移除所选Title属性', '移除所選Title屬性'],
+  '総ファイル数と総画像枚数の推移': ['Total file and image count trend', '总文件数与总图片数趋势', '總檔案數與總圖片數趨勢'],
+  '属性': ['Attributes', '属性', '屬性'],
+  '対象から外す': ['Exclude', '排除', '排除'],
+  '登録可能なCharacterを絞り込む': ['Filter available Characters', '筛选可分配的Character', '篩選可指派的Character'],
+  '登録可能なTagを絞り込む': ['Filter available Tags', '筛选可分配的Tag', '篩選可指派的Tag'],
+  '登録済みCharacter数で並び替え': ['Sort by assigned Character count', '按已分配Character数量排序', '依已指派Character數量排序'],
+  '登録済みのデータは保持され、同じ組み合わせを再登録すると復帰します。': ['Saved data is retained and restored when the same combination is registered again.', '已保存的数据会保留，重新注册相同组合时将恢复。', '已儲存的資料會保留，重新登錄相同組合時將恢復。'],
+  '登録済み起動プログラム': ['Registered launch programs', '已注册的启动程序', '已登錄的啟動程式'],
+  '任意。AI候補取得の接続用に保存します': ['Optional. Saved for connecting to AI candidate lookup.', '可选。保存用于连接AI候选项获取服务。', '選填。儲存供連線至AI候選項目取得服務。'],
+  '任意。API候補取得の接続用に保存します': ['Optional. Saved for connecting to API candidate lookup.', '可选。保存用于连接API候选项获取服务。', '選填。儲存供連線至API候選項目取得服務。'],
+  '表示列の設定': ['Visible column settings', '显示列设置', '顯示欄位設定'],
+  '別名義を入力': ['Enter an alias', '输入别名', '輸入別名'],
+  'https://... またはチャンネル名': ['https://... or channel name', 'https://... 或频道名称', 'https://... 或頻道名稱'],
+  '例：ファンアート': ['Example: Fan art', '示例：同人创作', '範例：同人創作'],
+  '外観': ['Appearance', '外观', '外觀'],
+  '操作': ['Actions', '操作', '操作'],
+  '処理': ['Process', '处理', '處理'],
+  '対象': ['Target', '目标', '目標'],
+  '変更': ['Change', '更改', '變更'],
+  '変更前': ['Before', '更改前', '變更前'],
+  '変更後': ['After', '更改后', '變更後'],
+  '並び替え': ['Sort', '排序', '排序'],
+  '不明': ['Unknown', '未知', '未知'],
+  '複数': ['Multiple', '多个', '多個'],
+  '平均': ['Average', '平均', '平均'],
+  '整数': ['Integer', '整数', '整數'],
+  '累計': ['Cumulative', '累计', '累計'],
+  '指標': ['Metric', '指标', '指標'],
+  '重み': ['Weight', '权重', '權重'],
+  '重みの合計': ['Total weight', '权重合计', '權重合計'],
+  '設定を保存': ['Save settings', '保存设置', '儲存設定'],
+  '適用': ['Apply', '应用', '套用'],
+  '接続確認': ['Test connection', '测试连接', '測試連線'],
+  '接続アカウント': ['Connected account', '已连接账户', '已連線帳戶'],
+  '連携解除': ['Disconnect', '断开连接', '中斷連線'],
+  '新規タブで開く': ['Open in a new tab', '在新标签页中打开', '在新分頁中開啟'],
+  '新規フォルダを作成': ['Create new folder', '新建文件夹', '建立新資料夾'],
+  '名前の変更': ['Rename', '重命名', '重新命名'],
+  'ファイル名変更': ['Rename file', '重命名文件', '重新命名檔案'],
+  'ファイルへ': ['To file', '至文件', '至檔案'],
+  '親フォルダのサムネイルとして設定する': ['Set as the parent folder thumbnail', '设为父文件夹缩略图', '設為上層資料夾縮圖'],
+  '圧縮して削除': ['Compress and delete', '压缩并删除', '壓縮並刪除'],
+  'WinRARで解凍': ['Extract with WinRAR', '使用WinRAR解压', '使用WinRAR解壓縮'],
+  'WinRARで開く': ['Open with WinRAR', '使用WinRAR打开', '使用WinRAR開啟'],
+  'DBから抹消': ['Remove from DB', '从DB中移除', '從DB中移除'],
+  'DB内のみ変更': ['Change in DB only', '仅更改DB', '僅變更DB'],
+  'DB作品': ['DB works', 'DB作品', 'DB作品'],
+  '再構築を実行': ['Run rebuild', '执行重建', '執行重建'],
+  'メンテナンスを実行': ['Run maintenance', '执行维护', '執行維護'],
+  'キャッシュの再構築': ['Rebuild cache', '重建缓存', '重建快取'],
+  'キャッシュのメンテナンス': ['Cache maintenance', '缓存维护', '快取維護'],
+  'キャッシュの保存先の変更': ['Change cache storage location', '更改缓存存储位置', '變更快取儲存位置'],
+  'キャッシュDBの保存先の変更': ['Change cache DB storage location', '更改缓存DB存储位置', '變更快取DB儲存位置'],
+  '本体DBの保存先の変更': ['Change primary DB storage location', '更改主DB存储位置', '變更主要DB儲存位置'],
+  '現在の本体DBの保存先': ['Current primary DB location', '当前主DB位置', '目前主要DB位置'],
+  '現在のキャッシュDBの保存先': ['Current cache DB location', '当前缓存DB位置', '目前快取DB位置'],
+  '現在のキャッシュの保存先': ['Current cache location', '当前缓存位置', '目前快取位置'],
+  '次回起動時:': ['On next launch:', '下次启动时：', '下次啟動時：'],
+  '最終バックアップ': ['Last backup', '上次备份', '上次備份'],
+  '使用容量': ['Storage used', '已用容量', '已用容量'],
+  'データ保存リージョン': ['Data region', '数据存储区域', '資料儲存區域'],
+  'pCloud 手動バックアップ': ['Manual pCloud backup', 'pCloud手动备份', 'pCloud手動備份'],
+  'pCloud内の保存先': ['Destination in pCloud', 'pCloud中的保存位置', 'pCloud中的儲存位置'],
+  'pCloudアプリに登録するRedirect URI': ['Redirect URI registered in the pCloud app', '在pCloud应用中注册的Redirect URI', '在pCloud應用程式中登錄的Redirect URI'],
+  'OAuth連携': ['OAuth connection', 'OAuth连接', 'OAuth連線'],
+  'OAuthアクセストークン（手動登録・任意）': ['OAuth access token (optional manual entry)', 'OAuth访问令牌（可选手动输入）', 'OAuth存取權杖（選填手動輸入）'],
+  'アプリ内ショートカット': ['In-app shortcuts', '应用内快捷键', '應用程式內快速鍵'],
+  'キー割り当て': ['Key assignments', '按键分配', '按鍵指派'],
+  'コマンド': ['Command', '命令', '命令'],
+  'ジェスチャ': ['Gesture', '手势', '手勢'],
+  'ジェスチャでコマンド追加': ['Add gesture command', '添加手势命令', '新增手勢命令'],
+  '線のプレビュー': ['Line preview', '线条预览', '線條預覽'],
+  '線の幅': ['Line width', '线宽', '線寬'],
+  '線の色': ['Line color', '线条颜色', '線條顏色'],
+  '閾値 (px)': ['Threshold (px)', '阈值 (px)', '閾值 (px)'],
+  '← 左': ['← Left', '← 左', '← 左'],
+  '→ 右': ['→ Right', '→ 右', '→ 右'],
+  '↑ 上': ['↑ Up', '↑ 上', '↑ 上'],
+  '↓ 下': ['↓ Down', '↓ 下', '↓ 下'],
+  '活動中': ['Active', '活跃', '活動中'],
+  '更新低下': ['Less active', '更新减少', '更新減少'],
+  '休止中': ['On hiatus', '暂停活动', '暫停活動'],
+  '活動終了': ['Inactive', '已停止活动', '已停止活動'],
+  '活動状況': ['Activity status', '活动状态', '活動狀態'],
+  '活動場所を登録する': ['Add activity location', '添加活动地点', '新增活動地點'],
+  'Pixiv、支援サイト、Discordなどの確認先': ['Sites to check, such as Pixiv, support platforms, and Discord', 'Pixiv、赞助平台、Discord等查看位置', 'Pixiv、贊助平台、Discord等查看位置'],
+  'Gallery・Stockroom・Temporaryの保管場所': ['Gallery, Stockroom, and Temporary storage locations', 'Gallery、Stockroom和Temporary存储位置', 'Gallery、Stockroom與Temporary儲存位置'],
+  '作者基本情報で使用するフォロー方針の候補を編集します': ['Edit follow policy options used in Creator basic information.', '编辑Creator基本信息中使用的跟进策略选项。', '編輯Creator基本資訊中使用的追蹤方針選項。'],
+  '作者基本情報とフォローの概要で使用': ['Used in Creator basics and follow-up overview', '用于Creator基本信息和跟进概览', '用於Creator基本資訊與追蹤概覽'],
+  '現在の活動状態と、自分側の確認進捗': ['Current activity and your follow-up progress', '当前活动状态和您的确认进度', '目前活動狀態與您的確認進度'],
+  '作者の活動・保管・評価・課金状況を一か所に集約します': ['Consolidate the Creator’s activity, storage, evaluation, and billing details in one place.', '集中管理Creator的活动、存储、评价和付费信息。', '集中管理Creator的活動、儲存、評價與付費資訊。'],
+  '作者フォルダ化しますか？': ['Convert to a Creator folder?', '要转换为Creator文件夹吗？', '要轉換為Creator資料夾嗎？'],
+  'Galleryへ移動': ['Go to Gallery', '前往Gallery', '前往Gallery'],
+  'Creator Trackingへ移動': ['Go to Creator Tracking', '前往Creator Tracking', '前往Creator Tracking'],
+  '作品の操作': ['Work actions', '作品操作', '作品操作'],
+  'タグの登録と解除': ['Assign or remove Tags', '分配或移除Tag', '指派或移除Tag'],
+  'サムネイルを削除する': ['Delete thumbnail', '删除缩略图', '刪除縮圖'],
+  'フォルダを読み込んでいます...': ['Loading folder...', '正在加载文件夹...', '正在載入資料夾...'],
+  '付箋はまだありません': ['No sticky notes yet', '暂无便笺', '尚無便箋'],
+  '付箋を読み込んでいます...': ['Loading sticky notes...', '正在加载便笺...', '正在載入便箋...'],
+  '保存したビューはここから同じフィルターやタブ構成で開けます。': ['Open saved views here with the same filters and tab layout.', '可从此处以相同筛选器和标签页布局打开已保存视图。', '可從此處以相同篩選器與分頁配置開啟已儲存檢視。'],
+  'Gallery、Explorer、Creators、Creator TrackingにあるBookmarkアイコンから保存してください。': ['Save from the Bookmark icon in Gallery, Explorer, Creators, or Creator Tracking.', '请使用Gallery、Explorer、Creators或Creator Tracking中的Bookmark图标保存。', '請使用Gallery、Explorer、Creators或Creator Tracking中的Bookmark圖示儲存。'],
+  'Gallery、Explorer、Creators、Creator Tracking、User Metricsから付箋を作成できます。': ['Create sticky notes from Gallery, Explorer, Creators, Creator Tracking, or User Metrics.', '可在Gallery、Explorer、Creators、Creator Tracking或User Metrics中创建便笺。', '可在Gallery、Explorer、Creators、Creator Tracking或User Metrics中建立便箋。'],
+  '一部の状態を復元できませんでした': ['Some state could not be restored', '部分状态无法恢复', '部分狀態無法還原'],
+  '復元できる状態は適用しました。次の項目を確認してください。': ['Restorable state was applied. Review the following items.', '已应用可恢复的状态。请检查以下项目。', '已套用可還原的狀態。請檢查以下項目。'],
+  '候補がありません': ['No options available', '没有可用选项', '沒有可用選項'],
+  '統合候補がありません': ['No merge candidates', '没有合并候选项', '沒有合併候選項'],
+  '新規タブ候補はまだ登録されていません。': ['No new-tab candidates have been registered.', '尚未注册新标签页候选项。', '尚未登錄新分頁候選項目。'],
+  '登録されているジェスチャはありません。': ['No gestures have been registered.', '尚未注册手势。', '尚未登錄手勢。'],
+  '4桁': ['4 digits', '4位', '4位'],
+  '5桁': ['5 digits', '5位', '5位'],
+  '6桁': ['6 digits', '6位', '6位'],
+  '6桁（初期値）': ['6 digits (default)', '6位（默认）', '6位（預設）'],
+  '7桁': ['7 digits', '7位', '7位'],
+  '8桁': ['8 digits', '8位', '8位'],
+  '桁': ['digits', '位', '位'],
+  '桁数': ['Number of digits', '位数', '位數'],
+  '桁数変更': ['Change digit count', '更改位数', '變更位數'],
+  '桁数の目安': ['Digit count guide', '位数参考', '位數參考'],
+  '扱えるファイル数': ['Supported file count', '可处理文件数', '可處理檔案數'],
+  '既存GIDの桁数変更': ['Change existing GID digit count', '更改现有GID位数', '變更現有GID位數'],
+  'gidを発行しますか？': ['Assign gids?', '要分配gid吗？', '要指派gid嗎？'],
+  '既にgidが付与されているファイルはスキップします。発行番号は台帳とGallery本体DBに照合し、重複しない番号を予約してからファイル名を変更します。': ['Files that already have a gid are skipped. New numbers are checked against the ledger and primary Gallery DB, then reserved before files are renamed.', '跳过已有gid的文件。新编号会与台账和Gallery主DB核对，预留无重复编号后再重命名文件。', '略過已有gid的檔案。新編號會與台帳及Gallery主要DB核對，預留不重複編號後再重新命名檔案。'],
+  'Explorerからgidを発行する対象ファイルと、既存GIDを含む桁数変更を管理します': ['Manage files eligible for gid assignment from Explorer and digit-count changes for existing GIDs.', '管理可从Explorer分配gid的文件以及现有GID的位数更改。', '管理可從Explorer指派gid的檔案與現有GID的位數變更。'],
+  '全作品へ指定桁数の新しいGIDを割り当て、ファイル名、Tag、フィルター割当、イベント履歴を同時に更新します。実行前に本体DBと旧新GID対応表をbackupsフォルダへ保存します。': ['Assign new GIDs of the selected length to all works and update filenames, Tags, filter assignments, and event history together. The primary DB and old-to-new GID map are saved to the backups folder first.', '为所有作品分配指定长度的新GID，并同时更新文件名、Tag、筛选分配和事件历史。执行前会将主DB及新旧GID对应表保存到backups文件夹。', '為所有作品指派指定長度的新GID，並同步更新檔名、Tag、篩選指派與事件歷程。執行前會將主要DB及新舊GID對照表儲存至backups資料夾。'],
+  '0～9・A～Zの36文字を使い、先頭0と短い桁数のgidを除外して、その桁数ちょうどの値だけを使用する場合の理論上限です。必要桁数は、実際の発番件数、廃番を再利用するか、用途別に発番空間を分けるかによって変わります。': ['Theoretical limit when using 0–9 and A–Z, excluding leading zeroes and shorter gids, and using only values of exactly that length. The required length depends on the actual assignment count, whether retired IDs are reused, and whether ID spaces are separated by purpose.', '使用0–9和A–Z共36个字符、排除前导0和较短gid、且仅使用恰好该长度的值时的理论上限。所需位数取决于实际分配数量、是否重复使用废弃ID以及是否按用途划分编号空间。', '使用0–9與A–Z共36個字元、排除開頭0與較短gid，且僅使用恰好該長度值時的理論上限。所需位數取決於實際指派數量、是否重複使用廢棄ID，以及是否依用途劃分編號空間。'],
+  '開始前にGallery本体DBをバックアップします。処理中はファイル操作やアプリ終了を行わないでください。': ['The primary Gallery DB is backed up before starting. Do not manipulate files or close the application during processing.', '开始前会备份Gallery主DB。处理期间请勿操作文件或关闭应用程序。', '開始前會備份Gallery主要DB。處理期間請勿操作檔案或關閉應用程式。'],
+  '移行全体': ['Overall migration', '整体迁移', '整體移轉'],
+  '経過時間': ['Elapsed time', '已用时间', '經過時間'],
+  '推定残り時間': ['Estimated time remaining', '预计剩余时间', '預估剩餘時間'],
+  '残り時間は現在までの処理速度から算出する概算です。': ['The remaining time is an estimate based on processing speed so far.', '剩余时间是根据目前处理速度计算的估算值。', '剩餘時間是依目前處理速度計算的估計值。'],
+  '再起動待ち': ['Restart pending', '等待重启', '等待重新啟動'],
+  '実体が見つからない': ['File not found', '找不到文件', '找不到檔案'],
+  'キャッシュ生成の対象ディレクトリ': ['Thumbnail cache target directories', '缩略图缓存目标目录', '縮圖快取目標目錄'],
+  '対象ディレクトリ': ['Target directory', '目标目录', '目標目錄'],
+  '対象ファイルの拡張子': ['Target file extensions', '目标文件扩展名', '目標檔案副檔名'],
+  '対応させるファイルの拡張子': ['Supported file extensions', '支持的文件扩展名', '支援的檔案副檔名'],
+  '対応させる動画ファイルの拡張子': ['Supported video extensions', '支持的视频扩展名', '支援的影片副檔名'],
+  '対象を登録すると、そのディレクトリ配下だけにキャッシュ生成を限定します': ['Register targets to limit cache generation to those directories.', '注册目标后，缓存生成将仅限于这些目录。', '登錄目標後，快取產生將僅限於這些目錄。'],
+  '対象ディレクトリ配下のフォルダと対応ファイルのサムネイルを保存します。対象未登録時はすべての場所が対象です': ['Store thumbnails for folders and supported files under target directories. All locations are included when no target is registered.', '保存目标目录下文件夹和支持文件的缩略图。未注册目标时包含所有位置。', '儲存目標目錄下資料夾與支援檔案的縮圖。未登錄目標時包含所有位置。'],
+  '対象未登録の区分は、既存SQLiteの同一区分すべてを表示します': ['Sections without targets show all matching entries in the existing SQLite DB.', '未注册目标的分区会显示现有SQLite DB中该分区的全部条目。', '未登錄目標的分區會顯示現有SQLite DB中該分區的所有項目。'],
+  '元ファイルが削除・更新されたキャッシュと、追跡されていない古いキャッシュを削除します': ['Delete caches whose source files were deleted or changed, along with old untracked caches.', '删除源文件已删除或更新的缓存，以及未跟踪的旧缓存。', '刪除來源檔案已刪除或更新的快取，以及未追蹤的舊快取。'],
+  '現在のキャッシュをすべて破棄し、登録済み対象ディレクトリを走査して作り直します': ['Discard all current cache data and rebuild it by scanning registered target directories.', '丢弃所有当前缓存，并扫描已注册目标目录重新生成。', '捨棄所有目前快取，並掃描已登錄目標目錄重新建立。'],
+  '動画ファイルからサムネイルを生成するための専用設定です。ffprobe.exe が同じフォルダにある場合は、動画中ほどのフレームを優先します': ['Dedicated settings for generating thumbnails from videos. When ffprobe.exe is in the same folder, a frame near the middle of the video is preferred.', '用于从视频生成缩略图的专用设置。当ffprobe.exe位于同一文件夹时，优先使用视频中段的帧。', '用於從影片產生縮圖的專用設定。當ffprobe.exe位於同一資料夾時，優先使用影片中段的影格。'],
+  'Gallery の本体DBとキャッシュDBの保存先、更新処理、クラウドバックアップを管理します': ['Manage the primary Gallery DB and cache DB locations, update operations, and cloud backups.', '管理Gallery主DB与缓存DB的位置、更新操作和云备份。', '管理Gallery主要DB與快取DB的位置、更新操作及雲端備份。'],
+  'キャッシュDBを指定先へコピーし、次回起動時から切り替えます。本体DBの保存先には影響しません': ['Copy the cache DB to the selected location and switch on the next launch. The primary DB location is unchanged.', '将缓存DB复制到指定位置并在下次启动时切换。不会影响主DB位置。', '將快取DB複製至指定位置，並於下次啟動時切換。不影響主要DB位置。'],
+  'パスを貼り付けて指定してください。適用時に、現在の SQLiteDB を新しい保存先へ移動します': ['Paste a path. Applying this setting moves the current SQLiteDB to the new location.', '请粘贴路径。应用时会将当前SQLiteDB移动到新位置。', '請貼上路徑。套用時會將目前SQLiteDB移至新位置。'],
+  'パスを貼り付けて指定してください。適用時に、現在のキャッシュを新しい保存先へ移動します': ['Paste a path. Applying this setting moves the current cache to the new location.', '请粘贴路径。应用时会将当前缓存移动到新位置。', '請貼上路徑。套用時會將目前快取移至新位置。'],
+  '使用中の本体DBから整合性のある一時スナップショットを作成し、pCloud公式APIへアップロードします': ['Create a consistent temporary snapshot of the active primary DB and upload it through the official pCloud API.', '从正在使用的主DB创建一致的临时快照，并通过pCloud官方API上传。', '從使用中的主要DB建立一致的暫存快照，並透過pCloud官方API上傳。'],
+  'VACUUM と ANALYZE を実行し、空き領域の回収とクエリ統計の更新を行います。通常は定期実行不要です': ['Run VACUUM and ANALYZE to reclaim free space and update query statistics. Regular execution is normally unnecessary.', '运行VACUUM和ANALYZE以回收空闲空间并更新查询统计信息。通常无需定期执行。', '執行VACUUM與ANALYZE以回收可用空間並更新查詢統計。通常無須定期執行。'],
+  '区分ごとの表示設定': ['Display settings by section', '分区显示设置', '分區顯示設定'],
+  '基準の中央位置からのトリミング位置と、カードの縦横比を設定します': ['Configure the crop offset from center and the card aspect ratio.', '设置相对于中心的裁剪位置及卡片纵横比。', '設定相對中心的裁切位置與卡片長寬比。'],
+  'トリミング領域の大きさに対する移動量です。初期値は縦方向 -10% です。保存後、表示中のカードは新しい位置でサムネイルを作り直します': ['Offset relative to the crop area size. The default vertical offset is -10%. After saving, visible cards rebuild thumbnails at the new position.', '相对于裁剪区域大小的偏移量。默认垂直偏移为-10%。保存后，当前显示的卡片会在新位置重新生成缩略图。', '相對裁切區域大小的位移量。預設垂直位移為-10%。儲存後，目前顯示的卡片會在新位置重新產生縮圖。'],
+  '100% が基準、値を大きくすると拡大': ['100% is the baseline; larger values zoom in', '100%为基准；数值越大放大越多', '100%為基準；數值越大放大越多'],
+  '負の値で上、正の値で下へ移動': ['Negative moves up; positive moves down', '负值向上移动；正值向下移动', '負值向上移動；正值向下移動'],
+  '負の値で左、正の値で右へ移動': ['Negative moves left; positive moves right', '负值向左移动；正值向右移动', '負值向左移動；正值向右移動'],
+  'Galleryの属性行とCreatorsのCore行に表示する名称です。フィルタの内容には影響しません。': ['Names shown on Gallery attribute rows and Creators Core rows. Filter data is not changed.', '用于Gallery属性行和Creators Core行的显示名称。不会更改筛选数据。', '用於Gallery屬性列與Creators Core列的顯示名稱。不會變更篩選資料。'],
+  '表示する区分': ['Sections to display', '显示的分区', '顯示的分區'],
+  '表示する小数桁': ['Decimal places to display', '显示小数位数', '顯示小數位數'],
+  '小数第1位': ['1 decimal place', '1位小数', '小數第1位'],
+  '小数第2位': ['2 decimal places', '2位小数', '小數第2位'],
+  '指定桁より下は切り捨て': ['Truncate below the selected precision', '截去指定位数以下部分', '捨去指定位數以下部分'],
+  '4段階評価を5点満点へ換算': ['Convert a four-level rating to a five-point scale', '将四级评分换算为5分制', '將四級評分換算為5分制'],
+  '評価倍率': ['Rating multiplier', '评分倍率', '評分倍率'],
+  '評価カバレッジ': ['Rating coverage', '评分覆盖率', '評分涵蓋率'],
+  '評価済み': ['Rated', '已评分', '已評分'],
+  'ランキング・グラフ表示': ['Ranking and chart display', '排名与图表显示', '排名與圖表顯示'],
+  'SUMMARYの順位装飾と推移グラフの初期表示': ['Ranking decoration and default trend chart display in SUMMARY', 'SUMMARY中的排名装饰与趋势图默认显示', 'SUMMARY中的排名裝飾與趨勢圖預設顯示'],
+  '集計・通貨': ['Aggregation and currency', '汇总与货币', '彙總與貨幣'],
+  '換算通貨': ['Conversion currency', '换算货币', '換算貨幣'],
+  '為替レートの保存': ['Exchange-rate storage', '汇率存储', '匯率儲存'],
+  '為替レート取得元': ['Exchange-rate source', '汇率来源', '匯率來源'],
+  'SQLiteDBへ決済年月単位でキャッシュ': ['Cache in SQLiteDB by payment month', '按支付月份缓存到SQLiteDB', '依付款月份快取至SQLiteDB'],
+  'SUMMARYの課金集計と為替換算に使用する既定値': ['Defaults used for spending aggregation and currency conversion in SUMMARY', 'SUMMARY中用于消费汇总和汇率换算的默认值', 'SUMMARY中用於消費彙總與匯率換算的預設值'],
+  '一部レート未取得': ['Some rates unavailable', '部分汇率未获取', '部分匯率未取得'],
+  '構成比ラベルの最大件数': ['Maximum composition labels', '构成比标签最大数量', '構成比標籤最大數量'],
+  'Title／Tagとも上位項目を表示し、残りを「その他」に集約': ['Show the leading Title and Tag items and group the rest as “Other”.', '显示排名靠前的Title和Tag，其余归为“其他”。', '顯示排名靠前的Title與Tag，其餘彙整為「其他」。'],
+  '時間スケール': ['Time scale', '时间刻度', '時間尺度'],
+  '書庫スナップショットを蓄積すると推移を表示します': ['Trends appear as archive snapshots accumulate.', '积累书库快照后将显示趋势。', '累積書庫快照後將顯示趨勢。'],
+  '推移データがありません': ['No trend data', '没有趋势数据', '沒有趨勢資料'],
+  '集計日時': ['Aggregated at', '汇总时间', '彙總時間'],
+  '集計対象を選択してください': ['Select an aggregation target', '请选择汇总目标', '請選擇彙總目標'],
+  '%以内': ['Within %', '%以内', '%以內'],
+  '1行': ['1 row', '1行', '1列'],
+  '2行': ['2 rows', '2行', '2列'],
+  '3行': ['3 rows', '3行', '3列'],
+  '4行': ['4 rows', '4行', '4列'],
+  '3か月ごと': ['Every 3 months', '每3个月', '每3個月'],
+  '6か月ごと': ['Every 6 months', '每6个月', '每6個月'],
+  '毎月': ['Monthly', '每月', '每月'],
+  '毎年': ['Yearly', '每年', '每年'],
+  '1 パッケージ化': ['Create one package', '打包为1个文件', '封裝為1個檔案'],
+  '1フォルダに集約': ['Collect into one folder', '汇总到一个文件夹', '彙整至一個資料夾'],
+  '個別フォルダへ分散': ['Distribute to separate folders', '分散到单独文件夹', '分散至個別資料夾'],
+  '個別に圧縮': ['Compress separately', '分别压缩', '個別壓縮'],
+  '個別に圧縮しますか？': ['Compress separately?', '要分别压缩吗？', '要個別壓縮嗎？'],
+  'CNY — 人民元': ['CNY — Chinese yuan', 'CNY — 人民币', 'CNY — 人民幣'],
+  'EUR — ユーロ': ['EUR — Euro', 'EUR — 欧元', 'EUR — 歐元'],
+  'JPY — 日本円': ['JPY — Japanese yen', 'JPY — 日元', 'JPY — 日圓'],
+  'KRW — 韓国ウォン': ['KRW — South Korean won', 'KRW — 韩元', 'KRW — 韓元'],
+  'USD — 米ドル': ['USD — US dollar', 'USD — 美元', 'USD — 美元'],
+  'Brave Search APIキー': ['Brave Search API key', 'Brave Search API密钥', 'Brave Search API金鑰'],
+  'Brave Search API（候補取得）': ['Brave Search API (candidate lookup)', 'Brave Search API（获取候选项）', 'Brave Search API（取得候選項目）'],
+  'Gemini APIキー': ['Gemini API key', 'Gemini API密钥', 'Gemini API金鑰'],
+  'Gemini API（AI候補生成）': ['Gemini API (AI candidate generation)', 'Gemini API（AI候选生成）', 'Gemini API（AI候選產生）'],
+  'Google検索URL': ['Google search URL', 'Google搜索URL', 'Google搜尋URL'],
+  'Google（ブラウザ検索）': ['Google (browser search)', 'Google（浏览器搜索）', 'Google（瀏覽器搜尋）'],
+  '標準名検索方法': ['Canonical-name lookup method', '标准名称搜索方式', '標準名稱搜尋方式'],
+  '標準名を検索': ['Search canonical name', '搜索标准名称', '搜尋標準名稱'],
+  'Settings の検索エンジン設定に従い、候補を取得します': ['Retrieve candidates using the search engine configured in Settings.', '根据Settings中的搜索引擎设置获取候选项。', '依Settings中的搜尋引擎設定取得候選項目。'],
+  'Google はブラウザ検索、Brave Search API と Gemini API はフィルタエディタ内へ候補を表示します': ['Google opens a browser search; Brave Search API and Gemini API show candidates inside the filter editor.', 'Google会打开浏览器搜索；Brave Search API和Gemini API会在筛选编辑器内显示候选项。', 'Google會開啟瀏覽器搜尋；Brave Search API與Gemini API會在篩選編輯器內顯示候選項目。'],
+  '同義・表記ゆれの既存フィルタを選択': ['Select existing filters with synonymous or variant spellings', '选择同义或不同写法的现有筛选器', '選擇同義或不同寫法的現有篩選器'],
+  '選択したフィルタを統合': ['Merge selected filters', '合并所选筛选器', '合併所選篩選器'],
+  '統合候補': ['Merge candidates', '合并候选项', '合併候選項目'],
+  '明示Merge': ['Explicit merge', '显式合并', '明確合併'],
+  '重複スキップ': ['Skip duplicates', '跳过重复项', '略過重複項目'],
+  '重複するキーの組み合わせは登録できません': ['Duplicate key combinations cannot be registered.', '无法注册重复的键组合。', '無法登錄重複的鍵值組合。'],
+  '変更をコミットしますか？': ['Commit these changes?', '要提交这些更改吗？', '要提交這些變更嗎？'],
+  'プレビュー内容を登録': ['Apply previewed changes', '注册预览内容', '套用預覽內容'],
+  '選択した候補を表示名へ転記': ['Copy the selected candidate to the display name', '将所选候选项复制到显示名称', '將所選候選項目複製至顯示名稱'],
+  'Categoryがありません': ['No Categories', '没有Category', '沒有Category'],
+  'Category は Title と Character の候補を揃えるためのマスタです。削除すると、そのCategoryに属するフィルタは未分類になります': ['Category is the master list used to organize Title and Character candidates. Deleting one leaves its filters uncategorized.', 'Category是用于整理Title和Character候选项的主数据。删除后，属于该Category的筛选器将变为未分类。', 'Category是用於整理Title與Character候選項目的主資料。刪除後，屬於該Category的篩選器將變成未分類。'],
+  'Categoryごとに Title の表示を管理します。Title の設定は従属する Character にも反映されます': ['Manage Title visibility by Category. Title settings also apply to dependent Characters.', '按Category管理Title的显示。Title设置也会应用于从属Character。', '依Category管理Title的顯示。Title設定也會套用至從屬Character。'],
+  'Category + Title が既存と一致する行は、Titleと従属Characterを統合します': ['Rows whose Category + Title match existing data merge the Title and dependent Characters.', 'Category + Title与现有数据匹配的行会合并Title及其从属Character。', 'Category + Title與現有資料相符的資料列會合併Title及其從屬Character。'],
+  '従属する Character も非表示になります。': ['Dependent Characters are also hidden.', '从属Character也会被隐藏。', '從屬Character也會被隱藏。'],
+  '選択中のTitleに従属するCharacter': ['Characters dependent on the selected Title', '从属于所选Title的Character', '從屬於所選Title的Character'],
+  'Character 数': ['Character count', 'Character数量', 'Character數量'],
+  'Tagを縦軸、Gallery区分を横軸にして割り当てます。複数行選択にも対応します': ['Assign Tags with Tags on the vertical axis and Gallery sections on the horizontal axis. Multiple row selection is supported.', '以Tag为纵轴、Gallery分区为横轴进行分配，并支持多行选择。', '以Tag為縱軸、Gallery分區為橫軸進行指派，並支援多列選取。'],
+  '登録・名称変更・削除・ドラッグで並べ替え': ['Add, rename, delete, and drag to reorder', '添加、重命名、删除及拖动排序', '新增、重新命名、刪除及拖曳排序'],
+  '有効Tag': ['Active Tags', '有效Tag', '有效Tag'],
+  'Titleデータがありません': ['No Title data', '没有Title数据', '沒有Title資料'],
+  'Titleデータなし': ['No Title data', '无Title数据', '無Title資料'],
+  'Title登録に戻る': ['Return to Title assignment', '返回Title分配', '返回Title指派'],
+  '登録済みCharacterはありません': ['No assigned Characters', '没有已分配的Character', '沒有已指派的Character'],
+  '共通するCharacter属性はありません': ['No Character attributes are shared', '没有共同的Character属性', '沒有共同的Character屬性'],
+  '共通するTagはありません': ['No Tags are shared', '没有共同的Tag', '沒有共同的Tag'],
+  '共通するTitle属性はありません': ['No Title attributes are shared', '没有共同的Title属性', '沒有共同的Title屬性'],
+  '選択したすべての作品に共通するCharacterを表示します': ['Show Characters shared by all selected works.', '显示所有所选作品共有的Character。', '顯示所有所選作品共有的Character。'],
+  '選択したすべての作品に共通するTagを表示します': ['Show Tags shared by all selected works.', '显示所有所选作品共有的Tag。', '顯示所有所選作品共有的Tag。'],
+  '選択したすべての作品に共通するTitleを表示します': ['Show Titles shared by all selected works.', '显示所有所选作品共有的Title。', '顯示所有所選作品共有的Title。'],
+  'URL／場所の背景文字': ['URL/location placeholder', 'URL/地点背景文字', 'URL/地點提示文字'],
+  '名称候補、URL／場所欄の背景文字、Creator Trackingで使うサイトアイコン': ['Name options, URL/location placeholders, and site icons used in Creator Tracking', '名称选项、URL/地点占位文字以及Creator Tracking使用的站点图标', '名稱選項、URL/地點提示文字，以及Creator Tracking使用的網站圖示'],
+  'Creator Tracking 設定の画面構成案': ['Creator Tracking settings draft', 'Creator Tracking设置草案', 'Creator Tracking設定草案'],
+  'Creator Tracking「作品の傾向」': ['Creator Tracking “Work tendencies”', 'Creator Tracking“作品倾向”', 'Creator Tracking「作品傾向」'],
+  'Creator Trackingの6指標評価': ['Creator Tracking six-metric evaluation', 'Creator Tracking六项指标评价', 'Creator Tracking六項指標評價'],
+  'レーダーチャートの指標名、重み、総合評価の計算方法': ['Radar-chart metric names, weights, and overall rating calculation', '雷达图指标名称、权重及综合评分计算方式', '雷達圖指標名稱、權重及綜合評分計算方式'],
+  '現在コード内で固定している値を用途ごとに整理しています。活動場所の候補・背景文字・取得したサイトアイコンは保存され、Creator Trackingへ反映されます。': ['Values currently fixed in code are organized by purpose. Activity-location options, placeholders, and retrieved site icons are saved and applied to Creator Tracking.', '按用途整理当前代码中固定的值。活动地点选项、占位文字及获取的站点图标会保存并应用于Creator Tracking。', '依用途整理目前程式碼中固定的值。活動地點選項、提示文字及取得的網站圖示會儲存並套用至Creator Tracking。'],
+  '作品規模・評価・Creator Tracking・課金記録を横断した区分別ダッシュボード': ['Section dashboards combining collection size, ratings, Creator Tracking, and billing records', '跨作品规模、评分、Creator Tracking和付费记录的分区仪表板', '整合作品規模、評分、Creator Tracking與付費記錄的分區儀表板'],
+  '現在のデータから見える特徴': ['Insights from current data', '当前数据呈现的特征', '目前資料呈現的特徵'],
+  '作品世界の広がり': ['Breadth of represented works', '作品覆盖广度', '作品涵蓋廣度'],
+  '作品横断の特徴量': ['Cross-work attributes', '跨作品特征', '跨作品特徵'],
+  '総ファイル数と総画像枚数の累積推移・直近24か月': ['Cumulative file and image counts over the last 24 months', '最近24个月总文件数与总图片数的累计趋势', '最近24個月總檔案數與總圖片數的累積趨勢'],
+  '総枚数': ['Total images', '总图片数', '總圖片數'],
+  '合計評価値 →': ['Total rating →', '总评分 →', '總評分 →'],
+  'Creator別1位': ['No. 1 Creator', 'Creator第1名', 'Creator第1名'],
+  '直近90日 +': ['Last 90 days +', '最近90天 +', '最近90天 +'],
+  '直近課金額の集計期間': ['Recent spending period', '近期消费汇总周期', '近期消費彙總期間'],
+  '月別課金額と累計課金額（保存済み為替レートで': ['Monthly and cumulative spending (using saved exchange rates', '月度及累计消费金额（使用已保存汇率', '每月及累計消費金額（使用已儲存匯率'],
+  '換算）': [' conversion)', '换算）', '換算）'],
+  '書庫名': ['Archive name', '书库名称', '書庫名稱'],
+  '最初の 2,000 件を表示しています。': ['Showing the first 2,000 items.', '正在显示前2,000项。', '正在顯示前2,000項。'],
+  '選択したギャラリー対象を走査し、作品情報を最新化します。既存の評価値は保持します': ['Scan the selected Gallery targets and refresh work information. Existing ratings are preserved.', '扫描所选Gallery目标并更新作品信息。保留现有评分。', '掃描所選Gallery目標並更新作品資訊。保留現有評分。'],
+  '選択したファイル本体と、Gallery用SQLiteDBの作品情報を削除します。この操作は元に戻せません。': ['Delete the selected files and their work records from the Gallery SQLiteDB. This cannot be undone.', '删除所选文件及Gallery SQLiteDB中的作品信息。此操作无法撤销。', '刪除所選檔案及Gallery SQLiteDB中的作品資訊。此操作無法復原。'],
+  'ファイルとフォルダの実体を削除します。この操作は元に戻せません。': ['Delete the actual files and folders. This cannot be undone.', '删除实际文件和文件夹。此操作无法撤销。', '刪除實際檔案與資料夾。此操作無法復原。'],
+  'フォルダ内の作品をDBへ再登録し、サムネイルキャッシュを作成します。Creator Trackingが未登録の場合は、作者名とフォルダパスを設定したテンプレートを作成します。': ['Re-register works in the folder to the DB and build thumbnail cache. If Creator Tracking is not registered, create a template with the Creator name and folder path.', '将文件夹内作品重新注册到DB并创建缩略图缓存。若Creator Tracking未注册，则创建已设置Creator名称和文件夹路径的模板。', '將資料夾內作品重新登錄至DB並建立縮圖快取。若Creator Tracking未登錄，則建立已設定Creator名稱與資料夾路徑的範本。'],
+  '編集中のアイテムに未保存の変更があります。はいを選ぶと更新してから画面を移動します。': ['The item being edited has unsaved changes. Choose Yes to save before leaving this screen.', '正在编辑的项目有未保存的更改。选择“是”将在离开此页面前保存。', '正在編輯的項目有未儲存的變更。選擇「是」會在離開此畫面前儲存。'],
+  'サブスクと買い切り購入を履歴単位で管理します': ['Manage subscriptions and one-time purchases as individual history entries.', '按记录管理订阅和一次性购买。', '以記錄為單位管理訂閱與一次性購買。'],
+  'サブスク歴を追加してください': ['Add a subscription history entry.', '请添加订阅记录。', '請新增訂閱記錄。'],
+  '購入歴を追加してください': ['Add a purchase history entry.', '请添加购买记录。', '請新增購買記錄。'],
+  '保存後は次回起動時にも同じテーマが復元されます。': ['The same theme will be restored on the next launch.', '保存后，下次启动时会恢复相同主题。', '儲存後，下次啟動時會還原相同主題。'],
+  '入力欄を選択して、割り当てたいキーの組み合わせを押してください': ['Select a field, then press the key combination to assign.', '选择输入框，然后按下要分配的按键组合。', '選取輸入欄，然後按下要指派的按鍵組合。'],
+  '開くフォルダを指定してください。': ['Choose a folder to open.', '请选择要打开的文件夹。', '請選擇要開啟的資料夾。'],
+  'ZipPla と同様に、クリック起動と右クリックメニューへの表示を個別に設定します': ['Configure click-to-launch and context-menu visibility independently, as in ZipPla.', '与ZipPla相同，可分别设置单击启动及是否显示在右键菜单中。', '與ZipPla相同，可分別設定點擊啟動及是否顯示於右鍵選單中。'],
+  'pCloud Developers の My Apps でアプリを作成し、上記Redirect URIを登録してください。OAuth連携ではアカウントのパスワードをGalleryBrowserへ渡しません': ['Create an app under My Apps in pCloud Developers and register the Redirect URI above. OAuth does not send your account password to GalleryBrowser.', '请在pCloud Developers的My Apps中创建应用并注册上述Redirect URI。OAuth连接不会将账户密码传递给GalleryBrowser。', '請在pCloud Developers的My Apps中建立應用程式並登錄上述Redirect URI。OAuth連線不會將帳戶密碼傳給GalleryBrowser。'],
+  'セミコロン（;）区切り。ピリオドは省略できます。保存時はピリオドなしに統一し、入力した左から順にExplorerの「DB管理機能 > gid発行」メニューへ表示します。': ['Separate entries with semicolons (;). Periods are optional and removed when saved. Extensions appear in the Explorer “DB Management > Assign gid” menu in input order.', '使用分号（;）分隔。句点可省略，保存时会统一移除句点。扩展名将按输入顺序显示在Explorer的“DB管理功能 > 分配gid”菜单中。', '使用分號（;）分隔。句點可省略，儲存時會統一移除句點。副檔名將依輸入順序顯示於Explorer的「DB管理功能 > 指派gid」選單中。'],
+  'ゴールド': ['Gold', '金色', '金色'],
+  'シルバー': ['Silver', '银色', '銀色'],
+  'ブロンズ': ['Bronze', '铜色', '銅色'],
+  'メイン': ['Primary', '主色', '主色'],
+  'サブ': ['Secondary', '辅助色', '輔助色'],
+  '用途': ['Purpose', '用途', '用途'],
+  '作品': ['Works', '作品', '作品'],
+  'ほか': ['Other', '其他', '其他'],
+  '日': ['days', '天', '天'],
+  '秒': ['seconds', '秒', '秒'],
+  '行': ['rows', '行', '列'],
+  '枚/作品': ['images/work', '图片/作品', '圖片/作品'],
+  'か月': ['months', '个月', '個月'],
+  '現在：': ['Current:', '当前：', '目前：'],
+  '内の集計と推移': [' summary and trends', '内的汇总与趋势', '內的彙總與趨勢'],
+  '件（先頭20件を表示）': ['items (showing first 20)', '项（显示前20项）', '項（顯示前20項）'],
+  '件': ['items', '项', '項'],
+  '件 /': ['items /', '项 /', '項 /'],
+  ': 評価': [': rating', '：评分', '：評分'],
+  'Creator Trackingの保存内容を取得できませんでした。': ['Could not retrieve the saved Creator Tracking data.', '无法获取Creator Tracking的保存内容。', '無法取得Creator Tracking的儲存內容。'],
+  '終了前にCreator Trackingの保存内容を取得できませんでした。': ['Could not retrieve Creator Tracking data before closing.', '关闭前无法获取Creator Tracking的保存内容。', '關閉前無法取得Creator Tracking的儲存內容。'],
+  'GID移行は既に実行中です。': ['A GID migration is already running.', 'GID迁移已在运行。', 'GID移轉已在執行。'],
+  'gid発番後のDB登録とサムネイルキャッシュ作成を開始します。': ['Starting DB registration and thumbnail cache generation after gid assignment.', '开始在分配gid后注册DB并创建缩略图缓存。', '開始在指派gid後登錄DB並建立縮圖快取。'],
+  'DB同期の対象はありませんでした。': ['There was nothing to synchronize with the DB.', '没有需要与DB同步的项目。', '沒有需要與DB同步的項目。'],
+  'Gallery走査対象外のため、DB登録とサムネイル作成は行いませんでした。': ['DB registration and thumbnail creation were skipped because this location is outside Gallery scan targets.', '由于此位置不在Gallery扫描目标中，已跳过DB注册和缩略图创建。', '由於此位置不在Gallery掃描目標中，已略過DB登錄與縮圖建立。'],
+  'RARからZIPへの変換後、DB登録とサムネイルを同期しています。': ['Synchronizing DB registration and thumbnails after RAR-to-ZIP conversion.', 'RAR转ZIP后正在同步DB注册和缩略图。', 'RAR轉ZIP後正在同步DB登錄與縮圖。'],
+  'RARからZIPへの変換処理を完了できませんでした。': ['Could not complete RAR-to-ZIP conversion.', '无法完成RAR转ZIP。', '無法完成RAR轉ZIP。'],
+  'RARファイルだけをZIPへ変換できます。': ['Only RAR files can be converted to ZIP.', '只能将RAR文件转换为ZIP。', '只能將RAR檔案轉換為ZIP。'],
+  'SQLiteDBのメンテナンスを完了しました。VACUUM と ANALYZE を実行しました。': ['SQLiteDB maintenance completed. VACUUM and ANALYZE were run.', 'SQLiteDB维护完成。已执行VACUUM和ANALYZE。', 'SQLiteDB維護完成。已執行VACUUM與ANALYZE。'],
+  'SQLiteDBの更新は既に実行中です。': ['A SQLiteDB update is already running.', 'SQLiteDB更新已在运行。', 'SQLiteDB更新已在執行。'],
+  'SQLiteDBの更新を中断しました。次回は同じ区分で更新を再実行してください。': ['SQLiteDB update was cancelled. Run the update again for the same section next time.', 'SQLiteDB更新已中止。下次请为同一分区重新执行更新。', 'SQLiteDB更新已中止。下次請針對相同分區重新執行更新。'],
+  'SQLiteDBの整合性を保ったスナップショットを作成しています...': ['Creating a consistent SQLiteDB snapshot...', '正在创建一致的SQLiteDB快照...', '正在建立一致的SQLiteDB快照...'],
+  'URL／場所の背景文字にhttpまたはhttpsのURLを入力してください。': ['Enter an http or https URL in the URL/location placeholder field.', '请在URL/地点背景文字栏中输入http或https URL。', '請在URL/地點提示文字欄中輸入http或https URL。'],
+  'pCloudバックアップ設定を保存しました。': ['pCloud backup settings saved.', 'pCloud备份设置已保存。', 'pCloud備份設定已儲存。'],
+  'pCloud連携を解除しました。': ['Disconnected from pCloud.', '已断开pCloud连接。', '已中斷pCloud連線。'],
+  'クリップボードへ格納できませんでした。': ['Could not copy to the clipboard.', '无法复制到剪贴板。', '無法複製到剪貼簿。'],
+  'コピーしました。': ['Copied.', '已复制。', '已複製。'],
+  'コピーまたはカットした項目がありません。': ['There are no copied or cut items.', '没有已复制或剪切的项目。', '沒有已複製或剪下的項目。'],
+  '移動しました。': ['Moved.', '已移动。', '已移動。'],
+  '一部の項目を移動できませんでした。': ['Some items could not be moved.', '部分项目无法移动。', '部分項目無法移動。'],
+  'サイトのアイコン画像を取得できませんでした。': ['Could not retrieve the site icon.', '无法获取站点图标。', '無法取得網站圖示。'],
+  '取得したSVG画像は保存上限を超えているため縮小できませんでした。': ['The retrieved SVG exceeds the storage limit and could not be resized.', '获取的SVG超过存储上限，无法缩小。', '取得的SVG超過儲存上限，無法縮小。'],
+  '取得したアイコン画像が空です。': ['The retrieved icon image is empty.', '获取的图标图像为空。', '取得的圖示影像為空。'],
+  '取得した画像形式を縮小できませんでした。': ['The retrieved image format could not be resized.', '无法缩小所获取的图像格式。', '無法縮小取得的影像格式。'],
+  '取得対象の画像サイズが上限を超えています。': ['The source image exceeds the size limit.', '源图像大小超过上限。', '來源影像大小超過上限。'],
+  '縮小後のアイコン画像サイズが保存上限を超えています。': ['The resized icon still exceeds the storage limit.', '缩小后的图标仍超过存储上限。', '縮小後的圖示仍超過儲存上限。'],
+  'ファイル本体は削除しましたが、関連するDBまたはキャッシュの整理を完了できませんでした。': ['The file was deleted, but related DB or cache cleanup could not be completed.', '文件已删除，但无法完成相关DB或缓存清理。', '檔案已刪除，但無法完成相關DB或快取清理。'],
+  'フォルダにカバー画像は設定されていません。': ['No cover image is set for this folder.', '此文件夹未设置封面图像。', '此資料夾未設定封面影像。'],
+  'フォルダのサムネイルを初期化しました。': ['Folder thumbnail reset.', '文件夹缩略图已重置。', '資料夾縮圖已重設。'],
+  'フォルダパスをクリップボードに格納しました。': ['Folder path copied to the clipboard.', '文件夹路径已复制到剪贴板。', '資料夾路徑已複製到剪貼簿。'],
+  '更新する付箋を読み取れませんでした。': ['Could not read the sticky note to update.', '无法读取要更新的便笺。', '無法讀取要更新的便箋。'],
+  '削除するCategoryを選択してください。': ['Select a Category to delete.', '请选择要删除的Category。', '請選擇要刪除的Category。'],
+  '削除するファイルまたはフォルダを選択してください。': ['Select files or folders to delete.', '请选择要删除的文件或文件夹。', '請選擇要刪除的檔案或資料夾。'],
+  '削除するフィルタを選択してください。': ['Select a filter to delete.', '请选择要删除的筛选器。', '請選擇要刪除的篩選器。'],
+  '削除する付箋を特定できませんでした。': ['Could not identify the sticky note to delete.', '无法确定要删除的便笺。', '無法識別要刪除的便箋。'],
+  '取り込み内容を確認してから実行してください。': ['Review the import contents before proceeding.', '请确认导入内容后再执行。', '請確認匯入內容後再執行。'],
+  '先にCSVファイルを選択してください。': ['Select a CSV file first.', '请先选择CSV文件。', '請先選擇CSV檔案。'],
+  '先にTagリストを選択してください。': ['Select a Tag list first.', '请先选择Tag列表。', '請先選擇Tag清單。'],
+  '選択した拡張子の一部または全部が現在のgid発番対象に含まれていません。': ['Some or all selected extensions are not currently eligible for gid assignment.', '部分或全部所选扩展名不在当前gid分配目标中。', '部分或全部所選副檔名不在目前gid指派目標中。'],
+  '選択項目がありません。': ['No items selected.', '未选择项目。', '未選擇項目。'],
+  '中断を要求しました。現在のファイル処理を停止しています...': ['Cancellation requested. Stopping the current file operation...', '已请求中止。正在停止当前文件操作...', '已要求中止。正在停止目前檔案操作...'],
+  '貼り付けが完了しました。': ['Paste completed.', '粘贴完成。', '貼上完成。'],
+  '統合先のフィルタを選択してください。': ['Select the destination filter for the merge.', '请选择合并目标筛选器。', '請選擇合併目標篩選器。'],
+  '同じフォルダ内のフォルダだけをまとめて圧縮できます。': ['Only folders in the same parent folder can be compressed together.', '只能将同一父文件夹中的文件夹一起压缩。', '只能將同一上層資料夾中的資料夾一起壓縮。'],
+  '別のDB管理機能を実行中です。完了してから再試行してください。': ['Another DB management operation is running. Try again after it finishes.', '另一项DB管理操作正在运行。请在完成后重试。', '另一項DB管理操作正在執行。請在完成後重試。'],
+  '別のRARからZIPへの変換を実行中です。完了してから再試行してください。': ['Another RAR-to-ZIP conversion is running. Try again after it finishes.', '另一项RAR转ZIP操作正在运行。请在完成后重试。', '另一項RAR轉ZIP操作正在執行。請在完成後重試。'],
+  '変換するRARファイルを選択してください。': ['Select RAR files to convert.', '请选择要转换的RAR文件。', '請選擇要轉換的RAR檔案。'],
+  '名前を変更しました。': ['Renamed.', '已重命名。', '已重新命名。'],
+  '作者フォルダ化するフォルダを選択してください。': ['Select folders to convert to Creator folders.', '请选择要转换为Creator文件夹的文件夹。', '請選擇要轉換為Creator資料夾的資料夾。'],
+  '作者情報をDBへ登録し、サムネイルキャッシュを作成しています。': ['Registering Creator information in the DB and creating thumbnail cache.', '正在将Creator信息注册到DB并创建缩略图缓存。', '正在將Creator資訊登錄至DB並建立縮圖快取。'],
+  '親フォルダのサムネイルに設定しました。': ['Set as the parent folder thumbnail.', '已设为父文件夹缩略图。', '已設為上層資料夾縮圖。'],
+  '区分の作成': ['Create sections', '创建分区', '建立分區'],
+  'Gallery、Creators、User Metricsで使用する区分を作成します': ['Create the sections used in Gallery, Creators, and User Metrics.', '创建Gallery、Creators和User Metrics中使用的分区。', '建立Gallery、Creators與User Metrics中使用的分區。'],
+  '区分の追加': ['Add section', '添加分区', '新增分區'],
+  '区分名': ['Section name', '分区名称', '分區名稱'],
+  '区分名を入力': ['Enter a section name', '输入分区名称', '輸入分區名稱'],
+  '新しい区分名': ['New section name', '新分区名称', '新分區名稱'],
+  '区分を削除': ['Delete section', '删除分区', '刪除分區'],
+  '入力行を削除': ['Delete input row', '删除输入行', '刪除輸入列'],
+  '区分は1件以上必要です': ['At least one section is required', '至少需要一个分区', '至少需要一個分區'],
+  '区分を追加しました。': ['Section added.', '分区已添加。', '分區已新增。'],
+  '区分名を変更しました。': ['Section name changed.', '分区名称已更改。', '分區名稱已變更。'],
+  '区分を削除しました。本体DBの作品データは保持されています。': ['Section deleted. Work data in the primary DB was retained.', '分区已删除。主DB中的作品数据已保留。', '分區已刪除。主要DB中的作品資料已保留。'],
+  '区分を更新できませんでした。': ['Could not update the section.', '无法更新分区。', '無法更新分區。'],
+  '区分名を入力してください。': ['Enter a section name.', '请输入分区名称。', '請輸入分區名稱。'],
+  '区分は1件以上必要なため削除できません。': ['A section cannot be deleted because at least one is required.', '无法删除；至少需要保留一个分区。', '無法刪除；至少需要保留一個分區。'],
+  '同じ名前の区分が既に存在します。': ['A section with the same name already exists.', '已存在同名分区。', '已存在同名分區。'],
+  '変更する区分が見つかりません。': ['The section to rename was not found.', '找不到要更改的分区。', '找不到要變更的分區。'],
+  '削除する区分が見つかりません。': ['The section to delete was not found.', '找不到要删除的分区。', '找不到要刪除的分區。'],
+  ...userGuideTranslations
+};
+
+const dynamicTranslations: Array<{
+  pattern: RegExp;
+  translate: (match: RegExpMatchArray, language: Exclude<AppLanguage, 'ja'>) => string;
+}> = [
+  {
+    pattern: /^(\d[\d,]*)\s*件をコピーしました。$/,
+    translate: (match, language) => language === 'en' ? `Copied ${match[1]} items.` : language === 'zh-CN' ? `已复制${match[1]}项。` : `已複製${match[1]}項。`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*件を移動用に選択しました。$/,
+    translate: (match, language) => language === 'en' ? `Selected ${match[1]} items to move.` : language === 'zh-CN' ? `已选择${match[1]}项用于移动。` : `已選擇${match[1]}項以供移動。`
+  },
+  {
+    pattern: /^(.+):\s*(\d[\d,]*)件のファイルに(\d+)桁のgidを付与しました。$/,
+    translate: (match, language) => language === 'en' ? `${match[1]}: Assigned ${match[3]}-digit gids to ${match[2]} files.` : language === 'zh-CN' ? `${match[1]}：已为${match[2]}个文件分配${match[3]}位gid。` : `${match[1]}：已為${match[2]}個檔案指派${match[3]}位gid。`
+  },
+  {
+    pattern: /^(.+):\s*gidを付与する対象ファイルはありませんでした。$/,
+    translate: (match, language) => language === 'en' ? `${match[1]}: No files were eligible for gid assignment.` : language === 'zh-CN' ? `${match[1]}：没有可分配gid的文件。` : `${match[1]}：沒有可指派gid的檔案。`
+  },
+  {
+    pattern: /^DBを(\d[\d,]*)件同期し、サムネイルを(\d[\d,]*)件準備しました。$/,
+    translate: (match, language) => language === 'en' ? `Synchronized ${match[1]} DB records and prepared ${match[2]} thumbnails.` : language === 'zh-CN' ? `已同步${match[1]}条DB记录并准备${match[2]}个缩略图。` : `已同步${match[1]}筆DB記錄並準備${match[2]}個縮圖。`
+  },
+  {
+    pattern: /^RAR\s+(\d[\d,]*)件をZIPへ変換しました（合計\s+(\d[\d,]*)ファイル）。$/,
+    translate: (match, language) => language === 'en' ? `Converted ${match[1]} RAR archives to ZIP (${match[2]} files total).` : language === 'zh-CN' ? `已将${match[1]}个RAR压缩包转换为ZIP（共${match[2]}个文件）。` : `已將${match[1]}個RAR壓縮檔轉換為ZIP（共${match[2]}個檔案）。`
+  },
+  {
+    pattern: /^キャッシュ\s+(\d[\d,]*)\s*件を新しい保存先へ移動しました。$/,
+    translate: (match, language) => language === 'en' ? `Moved ${match[1]} cache files to the new location.` : language === 'zh-CN' ? `已将${match[1]}个缓存文件移动到新位置。` : `已將${match[1]}個快取檔案移至新位置。`
+  },
+  {
+    pattern: /^フォルダを作成しました。:\s*(.+)$/,
+    translate: (match, language) => language === 'en' ? `Created folder: ${match[1]}` : language === 'zh-CN' ? `已创建文件夹：${match[1]}` : `已建立資料夾：${match[1]}`
+  },
+  {
+    pattern: /^(\d[\d,]*)フォルダを作者フォルダとして処理しました（名称変更\s+(\d[\d,]*)件）。$/,
+    translate: (match, language) => language === 'en' ? `Processed ${match[1]} Creator folders (${match[2]} renamed).` : language === 'zh-CN' ? `已处理${match[1]}个Creator文件夹（重命名${match[2]}个）。` : `已處理${match[1]}個Creator資料夾（重新命名${match[2]}個）。`
+  },
+  {
+    pattern: /^Creator Trackingを(\d[\d,]*)件作成しました。$/,
+    translate: (match, language) => language === 'en' ? `Created ${match[1]} Creator Tracking pages.` : language === 'zh-CN' ? `已创建${match[1]}个Creator Tracking页面。` : `已建立${match[1]}個Creator Tracking頁面。`
+  },
+  {
+    pattern: /^登録済みCreator Tracking\s+(\d[\d,]*)件は維持しました。$/,
+    translate: (match, language) => language === 'en' ? `Kept ${match[1]} existing Creator Tracking pages.` : language === 'zh-CN' ? `保留了${match[1]}个已注册Creator Tracking页面。` : `保留了${match[1]}個已登錄Creator Tracking頁面。`
+  },
+  {
+    pattern: /^(.+)\s+が指定されていません。$/,
+    translate: (match, language) => language === 'en' ? `${match[1]} is not specified.` : language === 'zh-CN' ? `未指定${match[1]}。` : `未指定${match[1]}。`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*件は処理できませんでした。$/,
+    translate: (match, language) => language === 'en' ? `${match[1]} items could not be processed.` : language === 'zh-CN' ? `有${match[1]}项无法处理。` : `有${match[1]}項無法處理。`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*件$/,
+    translate: (match, language) => language === 'en' ? `${match[1]} items` : `${match[1]}项`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*枚$/,
+    translate: (match, language) => language === 'en' ? `${match[1]} images` : `${match[1]}张`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*日$/,
+    translate: (match, language) => language === 'en' ? `${match[1]} days` : `${match[1]}天`
+  },
+  {
+    pattern: /^Bookmark「(.+)」を開きました。$/,
+    translate: (match, language) => language === 'en' ? `Opened bookmark “${match[1]}”.` : language === 'zh-CN' ? `已打开Bookmark“${match[1]}”。` : `已開啟Bookmark「${match[1]}」。`
+  },
+  {
+    pattern: /^Creator「(.+)」の情報を読み込んでいます。$/,
+    translate: (match, language) => language === 'en' ? `Loading information for Creator “${match[1]}”.` : language === 'zh-CN' ? `正在加载Creator“${match[1]}”的信息。` : `正在載入Creator「${match[1]}」的資訊。`
+  },
+  {
+    pattern: /^(.+)のCreator Trackingを作成しました。$/,
+    translate: (match, language) => language === 'en' ? `Created Creator Tracking for ${match[1]}.` : language === 'zh-CN' ? `已为${match[1]}创建Creator Tracking。` : `已為${match[1]}建立Creator Tracking。`
+  },
+  {
+    pattern: /^(.+)のCreator Trackingを保存しました。$/,
+    translate: (match, language) => language === 'en' ? `Saved Creator Tracking for ${match[1]}.` : language === 'zh-CN' ? `已保存${match[1]}的Creator Tracking。` : `已儲存${match[1]}的Creator Tracking。`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*件を削除しました。$/,
+    translate: (match, language) => language === 'en' ? `Deleted ${match[1]} items.` : language === 'zh-CN' ? `已删除${match[1]}项。` : `已刪除${match[1]}項。`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*件を削除しますか？$/,
+    translate: (match, language) => language === 'en' ? `Delete ${match[1]} items?` : language === 'zh-CN' ? `要删除${match[1]}项吗？` : `要刪除${match[1]}項嗎？`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*件に登録します$/,
+    translate: (match, language) => language === 'en' ? `Assign to ${match[1]} works` : language === 'zh-CN' ? `分配给${match[1]}个作品` : `指派給${match[1]}個作品`
+  },
+  {
+    pattern: /^既存GIDを(\d+)桁へ移行しますか？$/,
+    translate: (match, language) => language === 'en' ? `Migrate existing GIDs to ${match[1]} digits?` : language === 'zh-CN' ? `要将现有GID迁移为${match[1]}位吗？` : `要將現有GID移轉為${match[1]}位嗎？`
+  },
+  {
+    pattern: /^実体が見つからない(\d[\d,]*)件は、削除済みの作品としてバックアップ後に関連履歴を含めDBから抹消します。$/,
+    translate: (match, language) => language === 'en' ? `${match[1]} missing files will be backed up, treated as deleted works, and removed from the DB with their related history.` : language === 'zh-CN' ? `找不到的${match[1]}个文件将在备份后视为已删除作品，并连同相关历史从DB中移除。` : `找不到的${match[1]}個檔案會在備份後視為已刪除作品，並連同相關歷程從DB中移除。`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*件の(.+)を解除しました。$/,
+    translate: (match, language) => language === 'en' ? `Removed ${match[1]} ${match[2]} items.` : language === 'zh-CN' ? `已移除${match[1]}项${match[2]}。` : `已解除${match[1]}項${match[2]}。`
+  }
+];
+
+const translatedAttributes = ['title', 'aria-label', 'placeholder'] as const;
+const skippedContentSelector = [
+  '[data-i18n-skip]',
+  '.gallery-filter-buttons',
+  '.gallery-work-grid',
+  '.gallery-creator-summary-grid',
+  '.explorer-grid .explorer-tile-name',
+  '.explorer-detail-pane .file-name',
+  '.filter-editor-option-list',
+  '.filter-editor-matrix-row',
+  '.creator-tracking-tab-label',
+  '.creator-tracking-identity h1',
+  '.creator-tracking-radar-label',
+  '.creator-tracking-metric-row > div:first-child',
+  '.gallery-creator-summary-more-row > strong',
+  '.sticky-note-markdown',
+  '.board-note-body'
+].join(',');
+
+let activeLanguage: AppLanguage = 'ja';
+let localizationObserver: MutationObserver | null = null;
+let applyingLocalization = false;
+const textSources = new WeakMap<Text, { source: string; rendered: string }>();
+const attributeSources = new WeakMap<Element, Map<string, { source: string; rendered: string }>>();
+
+export function normalizeLanguage(value: unknown): AppLanguage {
+  return value === 'en' || value === 'zh-CN' || value === 'zh-TW' ? value : 'ja';
+}
+
+function translatedValue(translation: Translation, language: Exclude<AppLanguage, 'ja'>) {
+  return language === 'en' ? translation[0] : language === 'zh-CN' ? translation[1] : translation[2];
+}
+
+export function translateSystemText(value: string, language: AppLanguage = activeLanguage) {
+  if (language === 'ja' || !value) return value;
+
+  const leading = value.match(/^\s*/)?.[0] ?? '';
+  const trailing = value.match(/\s*$/)?.[0] ?? '';
+  const core = value.slice(leading.length, value.length - trailing.length);
+  if (!core) return value;
+
+  const exact = exactTranslations[core];
+  if (exact) return `${leading}${translatedValue(exact, language)}${trailing}`;
+
+  for (const dynamic of dynamicTranslations) {
+    const match = core.match(dynamic.pattern);
+    if (match) return `${leading}${dynamic.translate(match, language)}${trailing}`;
+  }
+
+  return value;
+}
+
+function shouldSkip(element: Element | null) {
+  return Boolean(element?.closest(skippedContentSelector));
+}
+
+function localizeTextNode(node: Text) {
+  if (shouldSkip(node.parentElement)) return;
+  const current = node.data;
+  let state = textSources.get(node);
+  if (!state) {
+    state = { source: current, rendered: current };
+    textSources.set(node, state);
+  }
+  else if (current !== state.rendered && current !== state.source) {
+    state.source = current;
+  }
+
+  const rendered = translateSystemText(state.source, activeLanguage);
+  state.rendered = rendered;
+  if (current !== rendered) {
+    if (node.parentElement instanceof HTMLOptionElement && !node.parentElement.hasAttribute('value')) {
+      node.parentElement.setAttribute('value', node.parentElement.value);
+    }
+    node.data = rendered;
+  }
+}
+
+function localizeAttribute(element: Element, attribute: typeof translatedAttributes[number]) {
+  if (shouldSkip(element)) return;
+  const current = element.getAttribute(attribute);
+  if (current === null) return;
+
+  let states = attributeSources.get(element);
+  if (!states) {
+    states = new Map();
+    attributeSources.set(element, states);
+  }
+  let state = states.get(attribute);
+  if (!state) {
+    state = { source: current, rendered: current };
+    states.set(attribute, state);
+  }
+  else if (current !== state.rendered && current !== state.source) {
+    state.source = current;
+  }
+
+  const rendered = translateSystemText(state.source, activeLanguage);
+  state.rendered = rendered;
+  if (current !== rendered) element.setAttribute(attribute, rendered);
+}
+
+function localizeTree(root: Node) {
+  if (root.nodeType === Node.TEXT_NODE) {
+    localizeTextNode(root as Text);
+    return;
+  }
+  if (!(root instanceof Element) && !(root instanceof DocumentFragment) && !(root instanceof Document)) return;
+
+  if (root instanceof Element) {
+    for (const attribute of translatedAttributes) localizeAttribute(root, attribute);
+  }
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      localizeTextNode(node as Text);
+    }
+    else if (node instanceof Element) {
+      for (const attribute of translatedAttributes) localizeAttribute(node, attribute);
+    }
+    node = walker.nextNode();
+  }
+}
+
+export function applySystemLanguage(language: AppLanguage, root: Node = document.body) {
+  activeLanguage = normalizeLanguage(language);
+  document.documentElement.lang = activeLanguage;
+  applyingLocalization = true;
+  try {
+    localizeTree(root);
+  }
+  finally {
+    applyingLocalization = false;
+  }
+}
+
+export function startSystemLocalization(language: AppLanguage) {
+  activeLanguage = normalizeLanguage(language);
+  applySystemLanguage(activeLanguage);
+  localizationObserver?.disconnect();
+  localizationObserver = new MutationObserver((mutations) => {
+    if (applyingLocalization) return;
+    applyingLocalization = true;
+    try {
+      for (const mutation of mutations) {
+        if (mutation.type === 'characterData') {
+          localizeTextNode(mutation.target as Text);
+        }
+        else if (mutation.type === 'attributes' && mutation.target instanceof Element && mutation.attributeName && translatedAttributes.includes(mutation.attributeName as typeof translatedAttributes[number])) {
+          localizeAttribute(mutation.target, mutation.attributeName as typeof translatedAttributes[number]);
+        }
+        else {
+          mutation.addedNodes.forEach(localizeTree);
+        }
+      }
+    }
+    finally {
+      applyingLocalization = false;
+    }
+  });
+  localizationObserver.observe(document.body, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: [...translatedAttributes]
+  });
+}
+
+export function stopSystemLocalization() {
+  localizationObserver?.disconnect();
+  localizationObserver = null;
+}
