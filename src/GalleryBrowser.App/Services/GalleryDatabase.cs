@@ -474,6 +474,12 @@ public sealed class GalleryDatabase
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS calendar_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                week_start_day INTEGER NOT NULL DEFAULT 0 CHECK (week_start_day BETWEEN 0 AND 6),
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS gid_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 target_extensions TEXT NOT NULL DEFAULT 'zip;rar;7z;cbz;cbr',
@@ -580,6 +586,12 @@ public sealed class GalleryDatabase
         {
             languageSettings.CommandText = "INSERT OR IGNORE INTO language_settings (id) VALUES (1);";
             languageSettings.ExecuteNonQuery();
+        }
+
+        using (var calendarSettings = connection.CreateCommand())
+        {
+            calendarSettings.CommandText = "INSERT OR IGNORE INTO calendar_settings (id) VALUES (1);";
+            calendarSettings.ExecuteNonQuery();
         }
 
         using (var gidSettings = connection.CreateCommand())
@@ -1595,6 +1607,7 @@ public sealed class GalleryDatabase
         EnsureUiNavigationStateColumn(connection, columns, "keyboardshortcutsettings", "keyboard_shortcut_settings TEXT NOT NULL DEFAULT ''");
         EnsureUiNavigationStateColumn(connection, columns, "galleryfiltersorts", "gallery_filter_sorts TEXT NOT NULL DEFAULT '[]'");
         EnsureUiNavigationStateColumn(connection, columns, "gallerythumbnailsorts", "gallery_thumbnail_sorts TEXT NOT NULL DEFAULT '[]'");
+        EnsureUiNavigationStateColumn(connection, columns, "creatortrackingtabs", "creator_tracking_tabs TEXT NOT NULL DEFAULT '{\"tabs\":[],\"activeIndex\":0}'");
     }
 
     private static void EnsureUiNavigationStateColumn(
@@ -2836,7 +2849,7 @@ public sealed class GalleryDatabase
 
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT active_view, explorer_bookmarks_expanded, explorer_detail_columns, mouse_gesture_settings, gallery_card_columns, explorer_card_columns, window_width, window_height, window_is_maximized, keyboard_shortcut_settings, gallery_filter_sorts, gallery_thumbnail_sorts FROM ui_navigation_state WHERE id = 1;";
+        command.CommandText = "SELECT active_view, explorer_bookmarks_expanded, explorer_detail_columns, mouse_gesture_settings, gallery_card_columns, explorer_card_columns, window_width, window_height, window_is_maximized, keyboard_shortcut_settings, gallery_filter_sorts, gallery_thumbnail_sorts, creator_tracking_tabs FROM ui_navigation_state WHERE id = 1;";
         using var reader = command.ExecuteReader();
         return reader.Read()
             ? new UiNavigationStateDto(
@@ -2851,8 +2864,9 @@ public sealed class GalleryDatabase
                 reader.GetInt64(8) != 0,
                 reader.GetString(9),
                 reader.GetString(10),
-                reader.GetString(11))
-            : new UiNavigationStateDto("library", true, "icon,name,pages,gid,modified,type,size", string.Empty, "{}", 5, 0, 0, false, string.Empty, "[]", "[]");
+                reader.GetString(11),
+                reader.GetString(12))
+            : new UiNavigationStateDto("library", true, "icon,name,pages,gid,modified,type,size", string.Empty, "{}", 5, 0, 0, false, string.Empty, "[]", "[]", "{\"tabs\":[],\"activeIndex\":0}");
     }
 
     public void SaveUiNavigationState(
@@ -2864,19 +2878,20 @@ public sealed class GalleryDatabase
         int explorerCardColumns,
         string keyboardShortcutSettings,
         string galleryFilterSorts,
-        string galleryThumbnailSorts)
+        string galleryThumbnailSorts,
+        string creatorTrackingTabs)
     {
         EnsureCreated();
 
-        var normalizedView = activeView is "library" or "bookmarks" or "creators" or "explorer" or "filters" or "tags" or "userMetrics" or "board" or "settings"
+        var normalizedView = activeView is "library" or "bookmarks" or "creators" or "creatorTracking" or "explorer" or "filters" or "tags" or "userMetrics" or "board" or "calendar" or "settings" or "userGuide"
             ? activeView
             : "library";
 
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO ui_navigation_state (id, active_view, explorer_bookmarks_expanded, explorer_detail_columns, mouse_gesture_settings, gallery_card_columns, explorer_card_columns, keyboard_shortcut_settings, gallery_filter_sorts, gallery_thumbnail_sorts)
-            VALUES (1, $activeView, $bookmarksExpanded, $detailColumns, $mouseGestureSettings, $galleryCardColumns, $explorerCardColumns, $keyboardShortcutSettings, $galleryFilterSorts, $galleryThumbnailSorts)
+            INSERT INTO ui_navigation_state (id, active_view, explorer_bookmarks_expanded, explorer_detail_columns, mouse_gesture_settings, gallery_card_columns, explorer_card_columns, keyboard_shortcut_settings, gallery_filter_sorts, gallery_thumbnail_sorts, creator_tracking_tabs)
+            VALUES (1, $activeView, $bookmarksExpanded, $detailColumns, $mouseGestureSettings, $galleryCardColumns, $explorerCardColumns, $keyboardShortcutSettings, $galleryFilterSorts, $galleryThumbnailSorts, $creatorTrackingTabs)
             ON CONFLICT(id) DO UPDATE SET
                 active_view = excluded.active_view,
                 explorer_bookmarks_expanded = excluded.explorer_bookmarks_expanded,
@@ -2886,7 +2901,8 @@ public sealed class GalleryDatabase
                 explorer_card_columns = excluded.explorer_card_columns,
                 keyboard_shortcut_settings = excluded.keyboard_shortcut_settings,
                 gallery_filter_sorts = excluded.gallery_filter_sorts,
-                gallery_thumbnail_sorts = excluded.gallery_thumbnail_sorts;
+                gallery_thumbnail_sorts = excluded.gallery_thumbnail_sorts,
+                creator_tracking_tabs = excluded.creator_tracking_tabs;
             """;
         command.Parameters.AddWithValue("$activeView", normalizedView);
         command.Parameters.AddWithValue("$bookmarksExpanded", explorerBookmarksExpanded ? 1 : 0);
@@ -2899,6 +2915,7 @@ public sealed class GalleryDatabase
         command.Parameters.AddWithValue("$keyboardShortcutSettings", keyboardShortcutSettings ?? string.Empty);
         command.Parameters.AddWithValue("$galleryFilterSorts", string.IsNullOrWhiteSpace(galleryFilterSorts) ? "[]" : galleryFilterSorts);
         command.Parameters.AddWithValue("$galleryThumbnailSorts", string.IsNullOrWhiteSpace(galleryThumbnailSorts) ? "[]" : galleryThumbnailSorts);
+        command.Parameters.AddWithValue("$creatorTrackingTabs", string.IsNullOrWhiteSpace(creatorTrackingTabs) ? "{\"tabs\":[],\"activeIndex\":0}" : creatorTrackingTabs);
         command.ExecuteNonQuery();
         PersistUiState();
     }
@@ -2986,6 +3003,39 @@ public sealed class GalleryDatabase
         command.ExecuteNonQuery();
         PersistApplicationSettings();
     }
+
+    public CalendarSettingsDto GetCalendarSettings()
+    {
+        EnsureCreated();
+
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT week_start_day FROM calendar_settings WHERE id = 1;";
+        var value = command.ExecuteScalar();
+        return new CalendarSettingsDto(NormalizeCalendarWeekStartDay(
+            value is null ? 0 : Convert.ToInt32(value, CultureInfo.InvariantCulture)));
+    }
+
+    public void SaveCalendarSettings(int weekStartDay)
+    {
+        EnsureCreated();
+
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO calendar_settings (id, week_start_day)
+            VALUES (1, $weekStartDay)
+            ON CONFLICT(id) DO UPDATE SET
+                week_start_day = excluded.week_start_day,
+                updated_at = CURRENT_TIMESTAMP;
+            """;
+        command.Parameters.AddWithValue("$weekStartDay", NormalizeCalendarWeekStartDay(weekStartDay));
+        command.ExecuteNonQuery();
+        PersistApplicationSettings();
+    }
+
+    private static int NormalizeCalendarWeekStartDay(int value) =>
+        value is >= 0 and <= 6 ? value : 0;
 
     public void SaveSearchEngineSettings(string provider, string googleSearchUrlTemplate, string braveApiKey, string geminiApiKey)
     {
@@ -4355,6 +4405,95 @@ public sealed class GalleryDatabase
         };
     }
 
+    public IReadOnlyList<CalendarSubscriptionEventDto> ListCalendarSubscriptionEvents()
+    {
+        EnsureCreated();
+
+        var events = new List<CalendarSubscriptionEventDto>();
+        using var connection = OpenApplicationDataConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                creator,
+                display_name,
+                alternate_name,
+                subscription_history_json,
+                monthly_support_amount,
+                currency,
+                support_started_on,
+                support_ended_on
+            FROM creator_tracking
+            ORDER BY creator COLLATE NOCASE;
+            """;
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var creator = reader.GetString(0).Trim();
+            if (string.IsNullOrWhiteSpace(creator))
+            {
+                continue;
+            }
+
+            var (displayName, _) = SplitLegacyCreatorTrackingDisplayName(
+                creator,
+                reader.GetString(1),
+                reader.GetString(2));
+            var subscriptions = DeserializeCreatorTrackingSubscriptions(reader.GetString(3));
+            if (subscriptions.Count == 0 && HasLegacyCreatorTrackingSubscription(
+                    reader.GetDouble(4),
+                    reader.GetString(6),
+                    reader.GetString(7)))
+            {
+                subscriptions =
+                [
+                    new CreatorTrackingSubscriptionDto(
+                        string.Empty,
+                        string.Empty,
+                        string.Empty,
+                        reader.GetString(5),
+                        reader.GetDouble(4),
+                        "monthly",
+                        reader.GetString(6),
+                        reader.GetString(7),
+                        !string.IsNullOrWhiteSpace(reader.GetString(7)),
+                        false)
+                ];
+            }
+
+            foreach (var subscription in subscriptions)
+            {
+                if (subscription.Wishlist ||
+                    !subscription.IsActive ||
+                    string.IsNullOrWhiteSpace(subscription.RenewalOn) ||
+                    !TryParseCreatorTrackingDate(subscription.RenewalOn, out _))
+                {
+                    continue;
+                }
+
+                events.Add(new CalendarSubscriptionEventDto(
+                    string.IsNullOrWhiteSpace(subscription.Id)
+                        ? $"{creator}|{subscription.Platform}|{subscription.RenewalOn}"
+                        : subscription.Id,
+                    creator,
+                    string.IsNullOrWhiteSpace(displayName) ? creator : displayName,
+                    subscription.Platform,
+                    subscription.Plan,
+                    subscription.Currency,
+                    subscription.Amount,
+                    subscription.RenewalOn,
+                    subscription.EndingPlanned,
+                    subscription.Reminder));
+            }
+        }
+
+        return events
+            .OrderBy(entry => entry.RenewalOn, StringComparer.Ordinal)
+            .ThenBy(entry => entry.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => entry.Platform, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     public async Task<CreatorTrackingDashboardDto> GetCreatorTrackingDashboardAsync(
         CreatorTrackingDto tracking,
         CreatorTrackingDashboardContextDto context,
@@ -4753,6 +4892,137 @@ public sealed class GalleryDatabase
         command.Parameters.AddWithValue("$supportEndedOn", primarySubscription?.RenewalOn ?? tracking.SupportEndedOn.Trim());
         command.Parameters.AddWithValue("$supportMemo", tracking.SupportMemo.Trim());
         command.ExecuteNonQuery();
+    }
+
+    public CreatorDataDeleteResultDto DeleteCreatorData(string creator)
+    {
+        EnsureCreated();
+
+        var normalizedCreator = creator.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedCreator))
+        {
+            throw new ArgumentException("Creatorが指定されていません。", nameof(creator));
+        }
+
+        using var connection = OpenApplicationDataConnection();
+        using var transaction = connection.BeginTransaction();
+        using (var createTemp = connection.CreateCommand())
+        {
+            createTemp.Transaction = transaction;
+            createTemp.CommandText = """
+                CREATE TEMP TABLE IF NOT EXISTS creator_data_delete_gids (
+                    gid TEXT PRIMARY KEY
+                );
+                DELETE FROM creator_data_delete_gids;
+                INSERT INTO creator_data_delete_gids (gid)
+                SELECT gid
+                FROM items
+                WHERE creator = $creator COLLATE NOCASE;
+                """;
+            createTemp.Parameters.AddWithValue("$creator", normalizedCreator);
+            createTemp.ExecuteNonQuery();
+        }
+
+        var itemTagsDeleted = ExecuteCreatorDataDelete(connection, transaction, """
+            DELETE FROM item_tags
+            WHERE gid IN (SELECT gid FROM creator_data_delete_gids);
+            """);
+        var itemEventsDeleted = ExecuteCreatorDataDelete(connection, transaction, """
+            DELETE FROM item_events
+            WHERE gid IN (SELECT gid FROM creator_data_delete_gids);
+            """);
+        var worksDeleted = ExecuteCreatorDataDelete(connection, transaction, """
+            DELETE FROM items
+            WHERE gid IN (SELECT gid FROM creator_data_delete_gids);
+            """);
+        var archiveSnapshotsDeleted = ExecuteCreatorDataDelete(
+            connection,
+            transaction,
+            "DELETE FROM creator_tracking_archive_snapshots WHERE creator = $creator COLLATE NOCASE;",
+            normalizedCreator);
+        var creatorTrackingRowsDeleted = ExecuteCreatorDataDelete(
+            connection,
+            transaction,
+            "DELETE FROM creator_tracking WHERE creator = $creator COLLATE NOCASE;",
+            normalizedCreator);
+
+        var stickyNoteIds = new List<long>();
+        using (var selectStickyNotes = connection.CreateCommand())
+        {
+            selectStickyNotes.Transaction = transaction;
+            selectStickyNotes.CommandText = """
+                SELECT note_id
+                FROM sticky_notes
+                WHERE view_type = 'creatorTracking'
+                  AND context_key = $contextKey COLLATE NOCASE;
+                """;
+            selectStickyNotes.Parameters.AddWithValue("$contextKey", normalizedCreator.ToLowerInvariant());
+            using var reader = selectStickyNotes.ExecuteReader();
+            while (reader.Read())
+            {
+                stickyNoteIds.Add(reader.GetInt64(0));
+            }
+        }
+
+        foreach (var stickyNoteId in stickyNoteIds)
+        {
+            UpdateBookmarkStickyNoteSnapshots(connection, transaction, new StickyNoteDto(
+                stickyNoteId,
+                "creatorTracking",
+                normalizedCreator,
+                normalizedCreator,
+                string.Empty,
+                0,
+                0,
+                250,
+                200,
+                "amber",
+                "plain",
+                string.Empty,
+                string.Empty), delete: true);
+        }
+
+        var stickyNotesDeleted = ExecuteCreatorDataDelete(
+            connection,
+            transaction,
+            """
+            DELETE FROM sticky_notes
+            WHERE view_type = 'creatorTracking'
+              AND context_key = $contextKey COLLATE NOCASE;
+            """,
+            parameterName: "$contextKey",
+            parameterValue: normalizedCreator.ToLowerInvariant());
+
+        transaction.Commit();
+        ClearGalleryDerivedCaches();
+
+        return new CreatorDataDeleteResultDto(
+            normalizedCreator,
+            creatorTrackingRowsDeleted,
+            worksDeleted,
+            itemTagsDeleted,
+            itemEventsDeleted,
+            archiveSnapshotsDeleted,
+            stickyNotesDeleted);
+    }
+
+    private static int ExecuteCreatorDataDelete(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string commandText,
+        string? creator = null,
+        string parameterName = "$creator",
+        string? parameterValue = null)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = commandText;
+        var value = parameterValue ?? creator;
+        if (value is not null)
+        {
+            command.Parameters.AddWithValue(parameterName, value);
+        }
+        return command.ExecuteNonQuery();
     }
 
     private static bool HasLegacyCreatorTrackingSubscription(SqliteDataReader reader)
@@ -9849,6 +10119,223 @@ public sealed class GalleryDatabase
             sourceTitles.Select(title => title.Name).ToArray());
     }
 
+    public GalleryCharacterAssignmentOptionsDto ListGalleryCharacterAssignmentOptionsForTitles(
+        string galleryCategory,
+        IReadOnlyList<string> creators,
+        IReadOnlyList<long> titleFilterIds,
+        IReadOnlyList<string> paths)
+    {
+        galleryCategory = galleryCategory.Trim();
+        var sourceTitleIds = titleFilterIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        var targetPaths = paths
+            .Select(value => value.Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (string.IsNullOrWhiteSpace(galleryCategory) ||
+            sourceTitleIds.Length == 0 ||
+            !File.Exists(ExternalGalleryDatabasePath))
+        {
+            return new GalleryCharacterAssignmentOptionsDto([], [], [], [], []);
+        }
+
+        EnsureExternalGalleryGidSchema();
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = ExternalGalleryDatabasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Cache = SqliteCacheMode.Shared
+        }.ConnectionString);
+        connection.Open();
+
+        var creatorNames = creators
+            .Select(value => value.Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (targetPaths.Length > 0)
+        {
+            using var creatorCommand = connection.CreateCommand();
+            var pathPlaceholders = string.Join(", ", targetPaths.Select((_, index) => $"$creatorPath{index}"));
+            creatorCommand.CommandText = $"""
+                SELECT COALESCE(creator, '')
+                FROM items
+                WHERE current_path IN ({pathPlaceholders})
+                  AND category = $galleryCategory;
+                """;
+            creatorCommand.Parameters.AddWithValue("$galleryCategory", galleryCategory);
+            for (var index = 0; index < targetPaths.Length; index++)
+            {
+                creatorCommand.Parameters.AddWithValue($"$creatorPath{index}", targetPaths[index]);
+            }
+
+            using var creatorReader = creatorCommand.ExecuteReader();
+            while (creatorReader.Read())
+            {
+                var creatorName = creatorReader.GetString(0).Trim();
+                if (!string.IsNullOrWhiteSpace(creatorName))
+                {
+                    creatorNames.Add(creatorName);
+                }
+            }
+        }
+
+        var resolvedCreatorNames = creatorNames
+            .OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+        if (resolvedCreatorNames.Length == 0)
+        {
+            throw new InvalidOperationException("選択した作品にCreator属性がありません。");
+        }
+
+        var sourceTitles = new List<(long Id, string Name)>();
+        using (var titleCommand = connection.CreateCommand())
+        {
+            var titlePlaceholders = string.Join(", ", sourceTitleIds.Select((_, index) => $"$title{index}"));
+            titleCommand.CommandText = $"""
+                SELECT filter_id, canonical_name
+                FROM gallery_filters
+                WHERE filter_type = 'title'
+                  AND filter_id IN ({titlePlaceholders})
+                ORDER BY canonical_name COLLATE NOCASE;
+                """;
+            for (var index = 0; index < sourceTitleIds.Length; index++)
+            {
+                titleCommand.Parameters.AddWithValue($"$title{index}", sourceTitleIds[index]);
+            }
+
+            using var reader = titleCommand.ExecuteReader();
+            while (reader.Read())
+            {
+                sourceTitles.Add((reader.GetInt64(0), reader.GetString(1)));
+            }
+        }
+
+        if (sourceTitles.Count == 0)
+        {
+            throw new InvalidOperationException("選択したTitle属性が見つかりません。");
+        }
+
+        sourceTitleIds = sourceTitles.Select(title => title.Id).ToArray();
+        var creatorTitleCharacters = new List<GalleryCharacterAssignmentOptionDto>();
+        using (var command = connection.CreateCommand())
+        {
+            var creatorPlaceholders = string.Join(", ", resolvedCreatorNames.Select((_, index) => $"$creator{index}"));
+            var titlePlaceholders = string.Join(", ", sourceTitleIds.Select((_, index) => $"$sourceTitle{index}"));
+            command.CommandText = $"""
+                SELECT character_filter.filter_id,
+                       character_filter.canonical_name,
+                       title_filter.canonical_name,
+                       COUNT(DISTINCT item.gid)
+                FROM items AS item
+                JOIN gallery_item_filter_combinations AS combination_map ON combination_map.gid = item.gid
+                JOIN gallery_filter_combinations AS combination
+                  ON combination.combination_id = combination_map.combination_id
+                 AND combination.use_flg <> 0
+                JOIN gallery_filters AS character_filter
+                  ON character_filter.filter_id = combination.character_filter_id
+                 AND character_filter.filter_type = 'character'
+                JOIN gallery_filters AS title_filter
+                  ON title_filter.filter_id = combination.title_filter_id
+                 AND title_filter.filter_type = 'title'
+                 AND character_filter.parent_filter_id = title_filter.filter_id
+                WHERE item.category = $galleryCategory
+                  AND COALESCE(item.creator, '') IN ({creatorPlaceholders})
+                  AND title_filter.filter_id IN ({titlePlaceholders})
+                GROUP BY character_filter.filter_id, title_filter.filter_id
+                ORDER BY COUNT(DISTINCT item.gid) DESC,
+                         character_filter.canonical_name COLLATE NOCASE,
+                         title_filter.canonical_name COLLATE NOCASE;
+                """;
+            command.Parameters.AddWithValue("$galleryCategory", galleryCategory);
+            for (var index = 0; index < resolvedCreatorNames.Length; index++)
+            {
+                command.Parameters.AddWithValue($"$creator{index}", resolvedCreatorNames[index]);
+            }
+            for (var index = 0; index < sourceTitleIds.Length; index++)
+            {
+                command.Parameters.AddWithValue($"$sourceTitle{index}", sourceTitleIds[index]);
+            }
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var character = reader.GetString(1);
+                var title = reader.GetString(2);
+                creatorTitleCharacters.Add(new GalleryCharacterAssignmentOptionDto(
+                    reader.GetInt64(0),
+                    character,
+                    title,
+                    reader.GetInt32(3),
+                    CreateGalleryCharacterSearchText(title, character)));
+            }
+        }
+
+        var creatorTitleCharacterIds = creatorTitleCharacters.Select(option => option.Id).ToArray();
+        var availableCharacters = new List<GalleryCharacterAssignmentOptionDto>();
+        using (var command = connection.CreateCommand())
+        {
+            var titlePlaceholders = string.Join(", ", sourceTitleIds.Select((_, index) => $"$availableTitle{index}"));
+            var excludedClause = creatorTitleCharacterIds.Length == 0
+                ? string.Empty
+                : "AND character_filter.filter_id NOT IN (" + string.Join(", ", creatorTitleCharacterIds.Select((_, index) => $"$excludedCharacter{index}")) + ")";
+            command.CommandText = $"""
+                SELECT character_filter.filter_id,
+                       character_filter.canonical_name,
+                       title_filter.canonical_name
+                FROM gallery_filters AS character_filter
+                JOIN gallery_filters AS title_filter
+                  ON title_filter.filter_id = character_filter.parent_filter_id
+                 AND title_filter.filter_type = 'title'
+                JOIN gallery_filter_combinations AS combination
+                  ON combination.title_filter_id = title_filter.filter_id
+                 AND combination.character_filter_id = character_filter.filter_id
+                 AND combination.use_flg <> 0
+                JOIN gallery_filter_section_visibility AS visibility
+                  ON visibility.filter_id = character_filter.filter_id
+                 AND visibility.gallery_category = $galleryCategory
+                 AND visibility.is_visible <> 0
+                WHERE character_filter.filter_type = 'character'
+                  AND title_filter.filter_id IN ({titlePlaceholders})
+                  {excludedClause}
+                GROUP BY character_filter.filter_id, title_filter.filter_id
+                ORDER BY character_filter.canonical_name COLLATE NOCASE,
+                         title_filter.canonical_name COLLATE NOCASE;
+                """;
+            command.Parameters.AddWithValue("$galleryCategory", galleryCategory);
+            for (var index = 0; index < sourceTitleIds.Length; index++)
+            {
+                command.Parameters.AddWithValue($"$availableTitle{index}", sourceTitleIds[index]);
+            }
+            for (var index = 0; index < creatorTitleCharacterIds.Length; index++)
+            {
+                command.Parameters.AddWithValue($"$excludedCharacter{index}", creatorTitleCharacterIds[index]);
+            }
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var character = reader.GetString(1);
+                var title = reader.GetString(2);
+                availableCharacters.Add(new GalleryCharacterAssignmentOptionDto(
+                    reader.GetInt64(0),
+                    character,
+                    title,
+                    0,
+                    CreateGalleryCharacterSearchText(title, character)));
+            }
+        }
+
+        return new GalleryCharacterAssignmentOptionsDto(
+            creatorTitleCharacters,
+            availableCharacters,
+            [],
+            resolvedCreatorNames,
+            sourceTitles.Select(title => title.Name).ToArray());
+    }
+
     public GalleryTagAssignmentOptionsDto ListGalleryTagAssignmentOptions(
         string galleryCategory,
         string sourcePath,
@@ -10626,6 +11113,31 @@ public sealed class GalleryDatabase
             AddPathDeletionParameters(clearCache, targetPaths);
             clearCache.ExecuteNonQuery();
             transaction.Commit();
+        }
+
+        lock (_creatorSummaryCacheLock)
+        {
+            _creatorSummaryMemorySignature = null;
+            _creatorSummaryMemorySnapshot = null;
+        }
+        lock (_derivedDataCacheLock)
+        {
+            _derivedDataMemoryCache.Clear();
+        }
+        _galleryWorksCache.Clear();
+        _galleryFiltersCache.Clear();
+    }
+
+    private void ClearGalleryDerivedCaches()
+    {
+        using (var connection = OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                DELETE FROM creator_summary_cache;
+                DELETE FROM derived_data_cache;
+                """;
+            command.ExecuteNonQuery();
         }
 
         lock (_creatorSummaryCacheLock)
@@ -12978,6 +13490,123 @@ public sealed class GalleryDatabase
         command.Transaction = transaction;
         command.CommandText = sql;
         command.ExecuteNonQuery();
+    }
+
+    public GalleryCreatorReassignmentResultDto ReassignGalleryCreatorForFolders(
+        IReadOnlyList<string> folders,
+        string sourceCreator,
+        string targetCreator)
+    {
+        var roots = folders
+            .Select(value => value.Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(NormalizeGalleryTargetPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var source = sourceCreator.Trim();
+        var target = targetCreator.Trim();
+        if (roots.Length == 0)
+        {
+            throw new ArgumentException("作者情報を付け替えるフォルダを選択してください。", nameof(folders));
+        }
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            throw new ArgumentException("現在のCreatorが指定されていません。", nameof(sourceCreator));
+        }
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            throw new ArgumentException("正しいCreatorが指定されていません。", nameof(targetCreator));
+        }
+        if (source.Equals(target, StringComparison.OrdinalIgnoreCase))
+        {
+            return new GalleryCreatorReassignmentResultDto(0, false, false, "現在のCreatorと正しいCreatorが同じため、変更はありません。");
+        }
+
+        EnsureExternalGalleryGidSchema();
+        using var connection = OpenExternalReadWriteConnection(ExternalGalleryDatabasePath);
+        using var transaction = connection.BeginTransaction();
+        var predicates = new List<string>();
+        for (var index = 0; index < roots.Length; index++)
+        {
+            predicates.Add($"(current_path = $root{index} OR current_path LIKE $childPath{index} ESCAPE '\\')");
+        }
+
+        using var updateItems = connection.CreateCommand();
+        updateItems.Transaction = transaction;
+        updateItems.CommandText = $"""
+            UPDATE items
+            SET creator = $targetCreator,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE COALESCE(creator, '') = $sourceCreator COLLATE NOCASE
+              AND ({string.Join(" OR ", predicates)});
+            """;
+        updateItems.Parameters.AddWithValue("$sourceCreator", source);
+        updateItems.Parameters.AddWithValue("$targetCreator", target);
+        for (var index = 0; index < roots.Length; index++)
+        {
+            updateItems.Parameters.AddWithValue($"$root{index}", roots[index]);
+            updateItems.Parameters.AddWithValue($"$childPath{index}", EscapeLike(roots[index]) + "\\%");
+        }
+        var itemCount = updateItems.ExecuteNonQuery();
+
+        var trackingRenamed = false;
+        var trackingConflict = false;
+        using (var sourceTracking = connection.CreateCommand())
+        {
+            sourceTracking.Transaction = transaction;
+            sourceTracking.CommandText = "SELECT EXISTS(SELECT 1 FROM creator_tracking WHERE creator = $creator COLLATE NOCASE);";
+            sourceTracking.Parameters.AddWithValue("$creator", source);
+            var hasSourceTracking = Convert.ToInt64(sourceTracking.ExecuteScalar()) != 0;
+            if (hasSourceTracking)
+            {
+                using var targetTracking = connection.CreateCommand();
+                targetTracking.Transaction = transaction;
+                targetTracking.CommandText = "SELECT EXISTS(SELECT 1 FROM creator_tracking WHERE creator = $creator COLLATE NOCASE);";
+                targetTracking.Parameters.AddWithValue("$creator", target);
+                var hasTargetTracking = Convert.ToInt64(targetTracking.ExecuteScalar()) != 0;
+                if (hasTargetTracking)
+                {
+                    trackingConflict = true;
+                }
+                else
+                {
+                    using var renameTracking = connection.CreateCommand();
+                    renameTracking.Transaction = transaction;
+                    renameTracking.CommandText = """
+                        UPDATE creator_tracking
+                        SET creator = $targetCreator,
+                            display_name = CASE
+                                WHEN TRIM(display_name) = '' OR display_name = $sourceCreator THEN $targetCreator
+                                ELSE display_name
+                            END,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE creator = $sourceCreator COLLATE NOCASE;
+                        """;
+                    renameTracking.Parameters.AddWithValue("$sourceCreator", source);
+                    renameTracking.Parameters.AddWithValue("$targetCreator", target);
+                    trackingRenamed = renameTracking.ExecuteNonQuery() > 0;
+                }
+            }
+        }
+
+        using (var clearCache = connection.CreateCommand())
+        {
+            clearCache.Transaction = transaction;
+            clearCache.CommandText = "DELETE FROM creator_summary_cache; DELETE FROM derived_data_cache;";
+            clearCache.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+        var message = $"{itemCount:N0}件の作品Creatorを「{source}」から「{target}」へ付け替えました。";
+        if (trackingRenamed)
+        {
+            message += " Creator Trackingも付け替えました。";
+        }
+        if (trackingConflict)
+        {
+            message += " 正しいCreatorのCreator Trackingが既にあるため、旧CreatorのCreator Trackingは残しました。";
+        }
+        return new GalleryCreatorReassignmentResultDto(itemCount, trackingRenamed, trackingConflict, message);
     }
 
     public void ApplyGalleryTargetCategories(IReadOnlyList<string> categories)

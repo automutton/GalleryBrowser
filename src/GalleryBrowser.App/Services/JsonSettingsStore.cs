@@ -29,6 +29,7 @@ internal sealed class JsonSettingsStore
         "search_engine_settings",
         "theme_settings",
         "language_settings",
+        "calendar_settings",
         "gid_settings",
         "creator_tracking_settings"
     ];

@@ -2,6 +2,7 @@ using System.IO;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Net.Http;
 using System.Reflection;
 using System.Text;
@@ -34,6 +35,11 @@ public partial class MainWindow : Window
     private const int SiteIconMaximumDimension = 96;
     private const int BookmarkThumbnailMaximumWidth = 560;
     private const int BookmarkThumbnailMaximumHeight = 315;
+#if DISABLE_GOOGLE_CALENDAR_SYNC
+    private static readonly bool GoogleCalendarSyncFeatureEnabled = false;
+#else
+    private static readonly bool GoogleCalendarSyncFeatureEnabled = true;
+#endif
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly HttpClient SiteIconHttpClient = CreateSiteIconHttpClient();
     private static readonly Regex HtmlLinkTagRegex = new("<link\\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -42,6 +48,7 @@ public partial class MainWindow : Window
     private readonly StorageSettingsStore _storageSettingsStore;
     private readonly GalleryDatabase _database;
     private readonly PCloudBackupService _pCloudBackupService;
+    private readonly GoogleCalendarSyncService _googleCalendarSyncService;
     private readonly PCloudStartupRestoreResult? _pCloudStartupRestoreResult;
     private readonly FileBrowserService _fileBrowser;
     private readonly ThumbnailService _thumbnailService;
@@ -49,6 +56,7 @@ public partial class MainWindow : Window
     private readonly FfmpegService _ffmpegService;
     private readonly StandardNameSearchService _standardNameSearchService;
     private readonly GalleryDatabaseUpdateService _galleryDatabaseUpdateService;
+    private readonly SemaphoreSlim _galleryDatabaseUpdateGate = new(1, 1);
     private CancellationTokenSource? _galleryDatabaseUpdateCancellation;
     private IReadOnlyDictionary<long, GalleryItemDto> _itemsById = new Dictionary<long, GalleryItemDto>();
     private readonly Dictionary<string, int> _galleryRatingBaselines = new(StringComparer.OrdinalIgnoreCase);
@@ -67,7 +75,10 @@ public partial class MainWindow : Window
     private int _explorerDatabaseManagementInProgress;
     private int _rarToZipBatchInProgress;
     private CancellationTokenSource? _pCloudAutoBackupCancellation;
+    private CancellationTokenSource? _databaseScanSchedulerCancellation;
+    private CancellationTokenSource? _googleCalendarSyncCancellation;
     private int _pCloudAutoBackupInProgress;
+    private int _googleCalendarSyncInProgress;
     private bool _pCloudStartupRestoreReported;
     private long _lastUserActivityUtcTicks = DateTime.UtcNow.Ticks;
 
@@ -78,6 +89,7 @@ public partial class MainWindow : Window
         _pCloudStartupRestoreResult = PCloudBackupService.ApplyPendingRestore(_dataDirectory);
         _database = new GalleryDatabase(_dataDirectory, _storageSettingsStore);
         _pCloudBackupService = new PCloudBackupService(_database, _storageSettingsStore, _dataDirectory);
+        _googleCalendarSyncService = new GoogleCalendarSyncService(_database, _storageSettingsStore);
         _fileBrowser = new FileBrowserService(_database);
         _winRarService = new WinRarService();
         _ffmpegService = new FfmpegService();
@@ -248,6 +260,11 @@ public partial class MainWindow : Window
                 });
             }
             StartPCloudAutoBackupScheduler();
+            StartDatabaseScanScheduler();
+            if (GoogleCalendarSyncFeatureEnabled)
+            {
+                StartGoogleCalendarSyncScheduler();
+            }
         }
         else if (type == "gallery.list.request")
         {
@@ -426,6 +443,64 @@ public partial class MainWindow : Window
                 PostMessage(new { type = "user.metrics.error", requestId, message = ex.Message });
             }
         }
+        else if (type == "calendar.subscriptions.list")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            try
+            {
+                var settings = _database.GetCalendarSettings();
+                var events = await Task.Run(_database.ListCalendarSubscriptionEvents);
+                PostMessage(new
+                {
+                    type = "calendar.subscriptions.result",
+                    requestId,
+                    settings,
+                    events
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "calendar.subscriptions.error", requestId, message = ex.Message });
+            }
+        }
+        else if (type == "calendar.ics.export")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            try
+            {
+                var events = await Task.Run(_database.ListCalendarSubscriptionEvents);
+                var dialog = new Microsoft.Win32.SaveFileDialog
+                {
+                    Title = "サブスク予定をiCalendar形式で保存",
+                    Filter = "iCalendar (*.ics)|*.ics",
+                    DefaultExt = ".ics",
+                    AddExtension = true,
+                    FileName = $"GalleryBrowser_subscriptions_{DateTime.Now:yyyyMMdd_HHmmss}.ics"
+                };
+                if (dialog.ShowDialog(this) == true)
+                {
+                    await File.WriteAllTextAsync(dialog.FileName, BuildSubscriptionCalendarIcs(events), Encoding.UTF8);
+                    PostMessage(new
+                    {
+                        type = "calendar.ics.exported",
+                        requestId,
+                        fileName = Path.GetFileName(dialog.FileName)
+                    });
+                }
+                else
+                {
+                    PostMessage(new { type = "calendar.ics.cancelled", requestId });
+                }
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "calendar.ics.error", requestId, message = ex.Message });
+            }
+        }
+        else if (type == "calendar.google.sync")
+        {
+            await RunGoogleCalendarSyncAsync(automatic: false, CancellationToken.None);
+        }
         else if (type == "creator.tracking.get")
         {
             var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
@@ -535,10 +610,31 @@ public partial class MainWindow : Window
                     summary = refreshedSummary,
                     scanMessage
                 });
+                QueueGoogleCalendarAutoSync();
             }
             catch (Exception ex)
             {
                 PostMessage(new { type = "creator.tracking.error", requestId, message = ex.Message });
+            }
+        }
+        else if (type == "creator.tracking.delete")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            try
+            {
+                var creator = ReadRequiredString(root, "creator");
+                var result = await Task.Run(() => _database.DeleteCreatorData(creator));
+                PostMessage(new
+                {
+                    type = "creator.tracking.deleted",
+                    requestId,
+                    result
+                });
+                QueueGoogleCalendarAutoSync();
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "creator.tracking.delete.error", requestId, message = ex.Message });
             }
         }
         else if (type == "creator.tracking.url.open")
@@ -613,6 +709,89 @@ public partial class MainWindow : Window
             catch (Exception ex)
             {
                 PostMessage(new { type = "settings.language.error", message = ex.Message });
+            }
+        }
+        else if (type == "settings.calendar.load")
+        {
+            PostCalendarSettings();
+        }
+        else if (type == "settings.calendar.save")
+        {
+            try
+            {
+                var weekStartDay = root.TryGetProperty("weekStartDay", out var weekStartProperty) &&
+                                   weekStartProperty.ValueKind == JsonValueKind.Number &&
+                                   weekStartProperty.TryGetInt32(out var parsedWeekStart)
+                    ? parsedWeekStart
+                    : 0;
+                _database.SaveCalendarSettings(weekStartDay);
+                if (GoogleCalendarSyncFeatureEnabled)
+                {
+                    SaveGoogleCalendarSettingsFromMessage(root);
+                }
+                PostCalendarSettings(updated: true);
+                if (GoogleCalendarSyncFeatureEnabled)
+                {
+                    QueueGoogleCalendarAutoSync();
+                }
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "settings.calendar.error", message = ex.Message });
+            }
+        }
+        else if (type == "settings.calendar.google.connect")
+        {
+            try
+            {
+                EnsureGoogleCalendarSyncFeatureEnabled();
+                SaveGoogleCalendarSettingsFromMessage(root);
+                PostMessage(new { type = "calendar.google.operation.progress", action = "connect", message = "ブラウザでGoogle Calendarへのアクセスを許可してください..." });
+                await _googleCalendarSyncService.ConnectAsync(
+                    ReadRequiredBoolean(root, "autoSyncEnabled"),
+                    ReadOptionalString(root, "clientId") ?? string.Empty,
+                    ReadOptionalString(root, "clientSecret"),
+                    ReadOptionalString(root, "calendarId") ?? "primary",
+                    CancellationToken.None);
+                PostCalendarSettings();
+                PostMessage(new { type = "calendar.google.operation.result", action = "connect", message = "Google Calendarと連携しました。" });
+                await RunGoogleCalendarSyncAsync(automatic: false, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "calendar.google.operation.error", action = "connect", message = ex.Message });
+                PostCalendarSettings();
+            }
+        }
+        else if (type == "settings.calendar.google.test")
+        {
+            try
+            {
+                EnsureGoogleCalendarSyncFeatureEnabled();
+                SaveGoogleCalendarSettingsFromMessage(root);
+                PostMessage(new { type = "calendar.google.operation.progress", action = "test", message = "Google Calendarとの接続を確認しています..." });
+                await _googleCalendarSyncService.TestConnectionAsync(CancellationToken.None);
+                PostCalendarSettings();
+                PostMessage(new { type = "calendar.google.operation.result", action = "test", message = "Google Calendarとの接続を確認しました。" });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "calendar.google.operation.error", action = "test", message = ex.Message });
+                PostCalendarSettings();
+            }
+        }
+        else if (type == "settings.calendar.google.disconnect")
+        {
+            try
+            {
+                EnsureGoogleCalendarSyncFeatureEnabled();
+                _googleCalendarSyncService.Disconnect();
+                PostCalendarSettings();
+                PostMessage(new { type = "calendar.google.operation.result", action = "disconnect", message = "Google Calendar連携を解除しました。Google側に同期済みの予定は残ります。" });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "calendar.google.operation.error", action = "disconnect", message = ex.Message });
             }
         }
         else if (type == "settings.creatorTracking.list")
@@ -792,21 +971,65 @@ public partial class MainWindow : Window
         {
             try
             {
+                var paths = ReadStringArray(root, "paths");
+                var characterId = root.TryGetProperty("characterId", out var characterElement) &&
+                                  characterElement.ValueKind != JsonValueKind.Null &&
+                                  characterElement.TryGetInt64(out var parsedCharacterId) &&
+                                  parsedCharacterId > 0
+                    ? parsedCharacterId
+                    : (long?)null;
                 var result = await Task.Run(() => _database.AssignGalleryWorkTitle(
-                    ReadStringArray(root, "paths"),
+                    paths,
                     ReadRequiredLong(root, "titleId"),
                     ReadLongArray(root, "removeTitleIds")));
+                GalleryCharacterAssignmentResultDto? characterResult = null;
+                if (characterId is not null)
+                {
+                    characterResult = await Task.Run(() => _database.AssignGalleryWorkCharacter(
+                        paths,
+                        characterId.Value,
+                        []));
+                }
                 PostMessage(new
                 {
                     type = "gallery.titleAssignment.applied",
                     addedCount = result.AddedCount,
                     skippedCount = result.SkippedCount,
-                    removedCount = result.RemovedCount
+                    removedCount = result.RemovedCount,
+                    characterAddedCount = characterResult?.AddedCount ?? 0,
+                    characterSkippedCount = characterResult?.SkippedCount ?? 0,
+                    characterRemovedCount = characterResult?.RemovedCount ?? 0
                 });
             }
             catch (Exception ex)
             {
                 PostMessage(new { type = "gallery.titleAssignment.error", message = ex.Message });
+            }
+        }
+        else if (type == "gallery.titleAssignment.characters.request")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            try
+            {
+                var options = await Task.Run(() => _database.ListGalleryCharacterAssignmentOptionsForTitles(
+                    ReadRequiredString(root, "category"),
+                    ReadStringArray(root, "creators"),
+                    ReadLongArray(root, "titleIds"),
+                    ReadStringArray(root, "paths")));
+                PostMessage(new
+                {
+                    type = "gallery.titleAssignment.characters.result",
+                    requestId,
+                    creatorTitleCharacters = options.CreatorTitleCharacters,
+                    availableCharacters = options.AvailableCharacters,
+                    commonAssignedCharacters = options.CommonAssignedCharacters,
+                    creators = options.Creators,
+                    titles = options.Titles
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "gallery.titleAssignment.characters.error", requestId, message = ex.Message });
             }
         }
         else if (type == "gallery.titleAssignment.remove")
@@ -1666,6 +1889,28 @@ public partial class MainWindow : Window
             PostGalleryDatabaseSettings();
             PostPCloudBackupSettings();
         }
+        else if (type == "settings.sqliteDatabase.schedules.save")
+        {
+            try
+            {
+                var schedules = root.GetProperty("schedules").Deserialize<DatabaseScanScheduleDto[]>(JsonOptions) ?? [];
+                _storageSettingsStore.SaveDatabaseScanSchedules(schedules);
+                PostGalleryDatabaseSettings();
+                PostMessage(new
+                {
+                    type = "settings.sqliteDatabase.schedules.saved",
+                    message = "フォルダ走査スケジュールを保存しました。"
+                });
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or JsonException or IOException)
+            {
+                PostMessage(new
+                {
+                    type = "settings.sqliteDatabase.schedules.error",
+                    message = ex.Message
+                });
+            }
+        }
         else if (type == "settings.sqliteDatabase.merge.pick")
         {
             var dialog = new Microsoft.Win32.OpenFileDialog
@@ -1768,7 +2013,7 @@ public partial class MainWindow : Window
         }
         else if (type == "settings.sqliteDatabase.update")
         {
-            if (_galleryDatabaseUpdateCancellation is not null)
+            if (!await _galleryDatabaseUpdateGate.WaitAsync(0))
             {
                 PostMessage(new { type = "settings.sqliteDatabase.operation.error", message = "SQLiteDBの更新は既に実行中です。" });
                 return;
@@ -1779,11 +2024,17 @@ public partial class MainWindow : Window
             try
             {
                 var categories = ReadStringArray(root, "categories");
-                var result = await _galleryDatabaseUpdateService.UpdateAsync(categories, progress =>
+                var scanStopwatch = Stopwatch.StartNew();
+                var result = await Task.Run(() => _galleryDatabaseUpdateService.UpdateAsync(categories, progress =>
                 {
                     Dispatcher.BeginInvoke(() =>
                         PostMessage(new { type = "settings.sqliteDatabase.update.progress", message = progress }));
-                }, cancellation.Token);
+                }, cancellation.Token), cancellation.Token);
+                scanStopwatch.Stop();
+                _storageSettingsStore.RecordDatabaseScanDuration(
+                    categories,
+                    DateTimeOffset.UtcNow,
+                    scanStopwatch.Elapsed);
                 PostMessage(new
                 {
                     type = "settings.sqliteDatabase.operation.result",
@@ -1806,6 +2057,7 @@ public partial class MainWindow : Window
             finally
             {
                 _galleryDatabaseUpdateCancellation = null;
+                _galleryDatabaseUpdateGate.Release();
             }
         }
         else if (type == "settings.sqliteDatabase.update.cancel")
@@ -2201,6 +2453,7 @@ public partial class MainWindow : Window
             var galleryCardColumns = ReadOptionalString(root, "galleryCardColumns") ?? "{}";
             var galleryFilterSorts = ReadOptionalString(root, "galleryFilterSorts") ?? "[]";
             var galleryThumbnailSorts = ReadOptionalString(root, "galleryThumbnailSorts") ?? "[]";
+            var creatorTrackingTabs = ReadOptionalString(root, "creatorTrackingTabs") ?? "{\"tabs\":[],\"activeIndex\":0}";
             var explorerCardColumns = root.TryGetProperty("explorerCardColumns", out var explorerCardColumnsProperty) &&
                 explorerCardColumnsProperty.ValueKind == JsonValueKind.Number &&
                 explorerCardColumnsProperty.TryGetInt32(out var parsedExplorerCardColumns)
@@ -2215,7 +2468,8 @@ public partial class MainWindow : Window
                 explorerCardColumns,
                 keyboardShortcutSettings,
                 galleryFilterSorts,
-                galleryThumbnailSorts);
+                galleryThumbnailSorts,
+                creatorTrackingTabs);
         }
         else if (type == "view.bookmarks.list")
         {
@@ -2777,7 +3031,44 @@ public partial class MainWindow : Window
                     Interlocked.Exchange(ref _explorerDatabaseManagementInProgress, 0);
                 }
             }
-        else if (type == "explorer.open")
+            else if (type == "explorer.creator.reassign")
+            {
+                if (Interlocked.Exchange(ref _explorerDatabaseManagementInProgress, 1) != 0)
+                {
+                    throw new InvalidOperationException("別のDB管理機能を実行中です。完了してから再試行してください。");
+                }
+
+                try
+                {
+                    var folders = ReadStringArray(root, "folders");
+                    if (folders.Count == 0)
+                    {
+                        throw new InvalidOperationException("作者情報を付け替えるフォルダを選択してください。");
+                    }
+
+                    var sourceCreator = ReadRequiredString(root, "sourceCreator");
+                    var targetCreator = ReadRequiredString(root, "targetCreator");
+                    PostExplorerDatabaseProgress($"作者情報を付け替えています: {sourceCreator} → {targetCreator}");
+                    var result = await Task.Run(() => _database.ReassignGalleryCreatorForFolders(
+                        folders,
+                        sourceCreator,
+                        targetCreator));
+                    PostMessage(new
+                    {
+                        type = "explorer.creator.reassign.result",
+                        itemCount = result.ItemCount,
+                        trackingRenamed = result.TrackingRenamed,
+                        trackingConflict = result.TrackingConflict,
+                        message = result.Message,
+                        hasWarnings = result.TrackingConflict
+                    });
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _explorerDatabaseManagementInProgress, 0);
+                }
+            }
+            else if (type == "explorer.open")
             {
                 var path = ReadRequiredString(root, "path");
                 var activation = string.Equals(ReadOptionalString(root, "activation"), "double", StringComparison.OrdinalIgnoreCase)
@@ -3736,7 +4027,9 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         _galleryDatabaseUpdateCancellation?.Cancel();
+        _databaseScanSchedulerCancellation?.Cancel();
         _pCloudAutoBackupCancellation?.Cancel();
+        _googleCalendarSyncCancellation?.Cancel();
         try
         {
             var bounds = WindowState == System.Windows.WindowState.Normal
@@ -3831,6 +4124,67 @@ public partial class MainWindow : Window
             UseShellExecute = false
         });
     }
+
+    private static string BuildSubscriptionCalendarIcs(IReadOnlyList<CalendarSubscriptionEventDto> events)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("BEGIN:VCALENDAR");
+        builder.AppendLine("VERSION:2.0");
+        builder.AppendLine("PRODID:-//GalleryBrowser//Subscription Calendar//JA");
+        builder.AppendLine("CALSCALE:GREGORIAN");
+        builder.AppendLine("METHOD:PUBLISH");
+        builder.AppendLine("X-WR-CALNAME:GalleryBrowser Subscriptions");
+        builder.AppendLine("X-WR-CALDESC:Creator Tracking subscription renewal schedule");
+        var timestamp = DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+        foreach (var entry in events)
+        {
+            if (!DateOnly.TryParse(entry.RenewalOn, CultureInfo.InvariantCulture, DateTimeStyles.None, out var renewalDate))
+            {
+                continue;
+            }
+
+            var endDate = renewalDate.AddDays(1);
+            var title = $"{entry.DisplayName} / {entry.Platform}";
+            if (!string.IsNullOrWhiteSpace(entry.Plan))
+            {
+                title += $" / {entry.Plan}";
+            }
+            if (entry.EndingPlanned)
+            {
+                title = $"[終了予定] {title}";
+            }
+
+            var description = new[]
+                {
+                    $"Creator: {entry.Creator}",
+                    $"Platform: {entry.Platform}",
+                    string.IsNullOrWhiteSpace(entry.Plan) ? string.Empty : $"Plan: {entry.Plan}",
+                    entry.Amount > 0 ? $"Amount: {entry.Amount:0.##} {entry.Currency}" : string.Empty,
+                    entry.EndingPlanned ? "Ending planned: ON" : string.Empty,
+                    entry.Reminder ? "Alert: ON" : string.Empty
+                }
+                .Where(line => !string.IsNullOrWhiteSpace(line));
+
+            builder.AppendLine("BEGIN:VEVENT");
+            builder.AppendLine($"UID:{EscapeIcsText(entry.Id)}-{renewalDate:yyyyMMdd}@gallerybrowser.local");
+            builder.AppendLine($"DTSTAMP:{timestamp}");
+            builder.AppendLine($"DTSTART;VALUE=DATE:{renewalDate:yyyyMMdd}");
+            builder.AppendLine($"DTEND;VALUE=DATE:{endDate:yyyyMMdd}");
+            builder.AppendLine($"SUMMARY:{EscapeIcsText(title)}");
+            builder.AppendLine($"DESCRIPTION:{EscapeIcsText(string.Join("\\n", description))}");
+            builder.AppendLine("END:VEVENT");
+        }
+        builder.AppendLine("END:VCALENDAR");
+        return builder.ToString();
+    }
+
+    private static string EscapeIcsText(string value) =>
+        value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\r\n", "\\n", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal)
+            .Replace(",", "\\,", StringComparison.Ordinal)
+            .Replace(";", "\\;", StringComparison.Ordinal);
 
     private void PostExternalAppRules()
     {
@@ -4713,7 +5067,8 @@ public partial class MainWindow : Window
                 databasePath = ApplicationPaths.ToEnvironmentVariablePath(settings.DatabasePath),
                 cacheDatabasePath = ApplicationPaths.ToEnvironmentVariablePath(settings.CacheDatabasePath),
                 configuredCacheDatabasePath = ApplicationPaths.ToEnvironmentVariablePath(settings.ConfiguredCacheDatabasePath),
-                settings.CacheDatabaseRestartRequired
+                settings.CacheDatabaseRestartRequired,
+                scanSchedules = _storageSettingsStore.GetDatabaseScanSchedules()
             }
         });
     }
@@ -4725,6 +5080,40 @@ public partial class MainWindow : Window
             type = "settings.pcloud.result",
             settings = _pCloudBackupService.GetSettings()
         });
+    }
+
+    private void PostCalendarSettings(bool updated = false)
+    {
+        PostMessage(new
+        {
+            type = "settings.calendar.result",
+            settings = _database.GetCalendarSettings(),
+            google = _googleCalendarSyncService.GetSettings(),
+            googleSyncFeatureEnabled = GoogleCalendarSyncFeatureEnabled,
+            updated
+        });
+    }
+
+    private static void EnsureGoogleCalendarSyncFeatureEnabled()
+    {
+        if (!GoogleCalendarSyncFeatureEnabled)
+        {
+            throw new InvalidOperationException("このビルドではGoogle Calendar同期機能は無効です。");
+        }
+    }
+
+    private void SaveGoogleCalendarSettingsFromMessage(JsonElement root)
+    {
+        var current = _googleCalendarSyncService.GetSettings();
+        var autoSyncEnabled = root.TryGetProperty("autoSyncEnabled", out var enabledProperty) &&
+                              enabledProperty.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? enabledProperty.GetBoolean()
+            : current.AutoSyncEnabled;
+        _googleCalendarSyncService.SaveSettings(
+            autoSyncEnabled,
+            ReadOptionalString(root, "clientId") ?? current.ClientId,
+            ReadOptionalString(root, "clientSecret"),
+            ReadOptionalString(root, "calendarId") ?? current.CalendarId);
     }
 
     private void SavePCloudSettingsFromMessage(JsonElement root)
@@ -4741,6 +5130,165 @@ public partial class MainWindow : Window
             ReadRequiredInt32(root, "idleThresholdMinutes"));
     }
 
+    private void StartDatabaseScanScheduler()
+    {
+        if (_databaseScanSchedulerCancellation is not null)
+        {
+            return;
+        }
+
+        _databaseScanSchedulerCancellation = new CancellationTokenSource();
+        _ = RunDatabaseScanSchedulerAsync(_databaseScanSchedulerCancellation.Token);
+    }
+
+    private async Task RunDatabaseScanSchedulerAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await TryRunDueDatabaseScanSchedulesAsync(cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    PostMessageOnDispatcher(new
+                    {
+                        type = "settings.sqliteDatabase.schedule.error",
+                        message = $"定期フォルダ走査の予定を確認できませんでした: {ex.Message}"
+                    });
+                }
+                await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Normal application shutdown.
+        }
+    }
+
+    private async Task TryRunDueDatabaseScanSchedulesAsync(CancellationToken schedulerCancellationToken)
+    {
+        var now = DateTimeOffset.Now;
+        var dueSchedules = _storageSettingsStore.GetDatabaseScanSchedules()
+            .Where(schedule => IsDatabaseScanScheduleDue(schedule, now))
+            .ToArray();
+        if (dueSchedules.Length == 0 ||
+            !await _galleryDatabaseUpdateGate.WaitAsync(0, schedulerCancellationToken))
+        {
+            return;
+        }
+
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(schedulerCancellationToken);
+        _galleryDatabaseUpdateCancellation = cancellation;
+        try
+        {
+            foreach (var schedule in dueSchedules)
+            {
+                _storageSettingsStore.MarkDatabaseScanScheduleStarted(schedule.Id, now);
+            }
+
+            var validCategoryIds = _database.ListGallerySections()
+                .Select(section => section.Id)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var categories = dueSchedules
+                .SelectMany(schedule => schedule.Categories)
+                .Where(validCategoryIds.Contains)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (categories.Length == 0)
+            {
+                PostMessageOnDispatcher(new
+                {
+                    type = "settings.sqliteDatabase.schedule.error",
+                    message = "定期フォルダ走査を開始できませんでした。対象区分が削除または無効化されています。"
+                });
+                return;
+            }
+
+            var categoryLabels = _database.ListGallerySections()
+                .Where(section => categories.Contains(section.Id, StringComparer.OrdinalIgnoreCase))
+                .Select(section => section.Label)
+                .ToArray();
+            var recentAverage = _storageSettingsStore.GetRecentDatabaseScanAverageDuration(categories);
+            var estimatedDurationSeconds = recentAverage.HasValue
+                ? Math.Max(1, (int)Math.Round(recentAverage.Value.TotalSeconds))
+                : (int?)null;
+            var scanStartedAt = DateTimeOffset.UtcNow;
+            var scanStopwatch = Stopwatch.StartNew();
+            PostMessageOnDispatcher(new
+            {
+                type = "settings.sqliteDatabase.schedule.started",
+                message = $"定期フォルダ走査を開始しました: {string.Join(" / ", categoryLabels)}",
+                startedAt = scanStartedAt,
+                estimatedDurationSeconds
+            });
+
+            var result = await Task.Run(() => _galleryDatabaseUpdateService.UpdateAsync(categories, progress =>
+            {
+                PostMessageOnDispatcher(new
+                {
+                    type = "settings.sqliteDatabase.update.progress",
+                    message = progress
+                });
+            }, cancellation.Token), cancellation.Token);
+            scanStopwatch.Stop();
+            _storageSettingsStore.RecordDatabaseScanDuration(
+                categories,
+                DateTimeOffset.UtcNow,
+                scanStopwatch.Elapsed);
+            PostMessageOnDispatcher(new
+            {
+                type = "settings.sqliteDatabase.schedule.finished",
+                message = $"定期フォルダ走査を完了しました。{result.ScanSummary} / {result.ErrorSummary}",
+                elapsedSeconds = Math.Max(1, (int)Math.Round(scanStopwatch.Elapsed.TotalSeconds))
+            });
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            if (!schedulerCancellationToken.IsCancellationRequested)
+            {
+                PostMessageOnDispatcher(new
+                {
+                    type = "settings.sqliteDatabase.operation.cancelled",
+                    message = "定期フォルダ走査を中断しました。次回の予定時刻に再実行します。"
+                });
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or SqliteException)
+        {
+            PostMessageOnDispatcher(new
+            {
+                type = "settings.sqliteDatabase.schedule.error",
+                message = $"定期フォルダ走査を完了できませんでした: {ex.Message}"
+            });
+        }
+        finally
+        {
+            _galleryDatabaseUpdateCancellation = null;
+            _galleryDatabaseUpdateGate.Release();
+        }
+    }
+
+    private static bool IsDatabaseScanScheduleDue(DatabaseScanScheduleDto schedule, DateTimeOffset now)
+    {
+        if (!schedule.Weekdays.Contains((int)now.DayOfWeek) ||
+            !TimeOnly.TryParseExact(
+                schedule.Time,
+                "HH:mm",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None,
+                out var scheduledTime) ||
+            TimeOnly.FromDateTime(now.LocalDateTime) < scheduledTime)
+        {
+            return false;
+        }
+
+        return schedule.LastStartedAt?.ToLocalTime().Date != now.Date;
+    }
+
     private void StartPCloudAutoBackupScheduler()
     {
         if (_pCloudAutoBackupCancellation is not null)
@@ -4750,6 +5298,106 @@ public partial class MainWindow : Window
 
         _pCloudAutoBackupCancellation = new CancellationTokenSource();
         _ = RunPCloudAutoBackupSchedulerAsync(_pCloudAutoBackupCancellation.Token);
+    }
+
+    private void StartGoogleCalendarSyncScheduler()
+    {
+        if (!GoogleCalendarSyncFeatureEnabled || _googleCalendarSyncCancellation is not null)
+        {
+            return;
+        }
+
+        _googleCalendarSyncCancellation = new CancellationTokenSource();
+        _ = RunGoogleCalendarSyncSchedulerAsync(_googleCalendarSyncCancellation.Token);
+    }
+
+    private async Task RunGoogleCalendarSyncSchedulerAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await RunGoogleCalendarSyncAsync(automatic: true, cancellationToken);
+                await Task.Delay(TimeSpan.FromMinutes(15), cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Normal application shutdown.
+        }
+    }
+
+    private void QueueGoogleCalendarAutoSync()
+    {
+        if (!GoogleCalendarSyncFeatureEnabled)
+        {
+            return;
+        }
+        var settings = _googleCalendarSyncService.GetSettings();
+        if (!settings.AutoSyncEnabled || !settings.HasRefreshToken)
+        {
+            return;
+        }
+        _ = RunGoogleCalendarSyncAsync(automatic: true, _googleCalendarSyncCancellation?.Token ?? CancellationToken.None);
+    }
+
+    private async Task RunGoogleCalendarSyncAsync(bool automatic, CancellationToken cancellationToken)
+    {
+        if (!GoogleCalendarSyncFeatureEnabled)
+        {
+            if (!automatic)
+            {
+                PostMessage(new { type = "calendar.google.operation.error", action = "sync", automatic, message = "このビルドではGoogle Calendar同期機能は無効です。" });
+            }
+            return;
+        }
+        var settings = _googleCalendarSyncService.GetSettings();
+        if (automatic && (!settings.AutoSyncEnabled || !settings.HasRefreshToken))
+        {
+            return;
+        }
+        if (Interlocked.CompareExchange(ref _googleCalendarSyncInProgress, 1, 0) != 0)
+        {
+            if (!automatic)
+            {
+                PostMessage(new { type = "calendar.google.operation.error", action = "sync", automatic, message = "Google Calendarとの同期は既に実行中です。" });
+            }
+            return;
+        }
+
+        try
+        {
+            PostMessage(new { type = "calendar.google.sync.started", automatic, message = "Google Calendarへサブスク予定を同期しています..." });
+            var result = automatic
+                ? await _googleCalendarSyncService.SyncIfEnabledAsync(cancellationToken)
+                : await _googleCalendarSyncService.SyncAsync(cancellationToken);
+            if (result is null)
+            {
+                return;
+            }
+            PostCalendarSettings();
+            PostMessage(new
+            {
+                type = "calendar.google.sync.result",
+                automatic,
+                result,
+                message = $"Google Calendarと同期しました（作成 {result.Created:N0} / 更新 {result.Updated:N0} / 削除 {result.Deleted:N0} / 変更なし {result.Unchanged:N0}）。"
+            });
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Normal application shutdown.
+        }
+        catch (Exception ex)
+        {
+            PostCalendarSettings();
+            PostMessage(new { type = "calendar.google.operation.error", action = "sync", automatic, message = ex.Message });
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _googleCalendarSyncInProgress, 0);
+        }
     }
 
     private void RestartPCloudAutoBackupScheduler()

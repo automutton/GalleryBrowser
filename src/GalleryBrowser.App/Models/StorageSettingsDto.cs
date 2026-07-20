@@ -65,3 +65,20 @@ public sealed record PCloudStartupRestoreResult(
     bool Succeeded,
     string Message,
     string BackupPath = "");
+
+public sealed record GoogleCalendarSyncSettingsDto(
+    bool AutoSyncEnabled,
+    string ClientId,
+    bool HasClientSecret,
+    bool HasRefreshToken,
+    string CalendarId,
+    string RedirectUri,
+    DateTimeOffset? LastSyncedAt,
+    string LastSyncError);
+
+public sealed record GoogleCalendarSyncResult(
+    int Created,
+    int Updated,
+    int Deleted,
+    int Unchanged,
+    DateTimeOffset SyncedAt);

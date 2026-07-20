@@ -127,6 +127,12 @@ public sealed record GalleryCharacterAssignmentResultDto(
     int SkippedCount,
     int RemovedCount);
 
+public sealed record GalleryCreatorReassignmentResultDto(
+    int ItemCount,
+    bool TrackingRenamed,
+    bool TrackingConflict,
+    string Message);
+
 public sealed record GalleryReverseCharacterFilterDto(
     string Value,
     string Label,

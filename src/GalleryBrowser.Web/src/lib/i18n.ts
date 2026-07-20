@@ -138,6 +138,7 @@ const exactTranslations: Record<string, Translation> = {
   'フィルタエディタで標準名を調べる検索方法を設定します': ['Configure how the Filter Editor searches for canonical names.', '设置筛选器编辑器查找标准名称的方式。', '設定篩選器編輯器查找標準名稱的方式。'],
   '対象ディレクトリ配下のフォルダと対応ファイルのサムネイルを保存します': ['Store thumbnails for folders and supported files under target directories.', '保存目标目录下文件夹及对应文件的缩略图。', '儲存目標目錄下資料夾及對應檔案的縮圖。'],
   '本体DB、キャッシュDB、クラウドバックアップを管理します': ['Manage the primary database, cache database, and cloud backups.', '管理主数据库、缓存数据库和云备份。', '管理主資料庫、快取資料庫與雲端備份。'],
+  '本体DB、キャッシュDB、走査スケジュール、クラウドバックアップを管理します': ['Manage the primary database, cache database, scan schedules, and cloud backups.', '管理主数据库、缓存数据库、扫描计划和云备份。', '管理主要資料庫、快取資料庫、掃描排程與雲端備份。'],
   'WinRAR の実行ファイルと右クリックメニューで扱う書庫形式を設定します': ['Configure the WinRAR executable and archive formats available from the context menu.', '设置WinRAR可执行文件及右键菜单中可用的压缩格式。', '設定WinRAR執行檔及右鍵選單中可用的壓縮格式。'],
 
   '外部DBの結合': ['Merge an external database', '合并外部数据库', '合併外部資料庫'],
@@ -871,6 +872,42 @@ const exactTranslations: Record<string, Translation> = {
   '同じ名前の区分が既に存在します。': ['A section with the same name already exists.', '已存在同名分区。', '已存在同名分區。'],
   '変更する区分が見つかりません。': ['The section to rename was not found.', '找不到要更改的分区。', '找不到要變更的分區。'],
   '削除する区分が見つかりません。': ['The section to delete was not found.', '找不到要删除的分区。', '找不到要刪除的分區。'],
+  'フォルダ走査のスケジュール': ['Folder scan schedule', '文件夹扫描计划', '資料夾掃描排程'],
+  '曜日・時刻・対象区分を指定して、アプリ起動中にSQLiteDBの更新を自動で開始します': ['Choose weekdays, a time, and target sections to start SQLiteDB updates automatically while the app is running.', '指定星期、时间和目标分区，在应用运行时自动开始更新SQLiteDB。', '指定星期、時間與目標分區，在應用程式執行時自動開始更新SQLiteDB。'],
+  '行を追加': ['Add row', '添加行', '新增列'],
+  'スケジュールは登録されていません。': ['No schedules are registered.', '尚未注册计划。', '尚未登錄排程。'],
+  '曜日': ['Weekdays', '星期', '星期'],
+  '日曜': ['Sun', '周日', '週日'],
+  '月曜': ['Mon', '周一', '週一'],
+  '火曜': ['Tue', '周二', '週二'],
+  '水曜': ['Wed', '周三', '週三'],
+  '木曜': ['Thu', '周四', '週四'],
+  '金曜': ['Fri', '周五', '週五'],
+  '土曜': ['Sat', '周六', '週六'],
+  '時刻': ['Time', '时间', '時間'],
+  '対象区分（複数可）': ['Target sections (multiple)', '目标分区（可多选）', '目標分區（可複選）'],
+  '対象区分を選択': ['Select target sections', '选择目标分区', '選取目標分區'],
+  '最終開始': ['Last started', '上次开始', '上次開始'],
+  '未実行': ['Not run', '未执行', '未執行'],
+  'スケジュールを削除': ['Delete schedule', '删除计划', '刪除排程'],
+  '保存中...': ['Saving...', '正在保存...', '正在儲存...'],
+  '予定時刻にアプリが起動していなかった場合は、次回起動後、その曜日のうちに未実行であれば開始します。手動更新や別のスケジュールと重なった場合は、実行中の走査が完了してから再判定します。': ['If the app was not running at the scheduled time, the scan starts after the next launch if it has not yet run on that weekday. If it overlaps a manual update or another schedule, it is checked again after the active scan finishes.', '如果计划时间应用未运行，则在下次启动后、当天尚未执行时开始扫描。如果与手动更新或其他计划重叠，将在当前扫描完成后重新检查。', '如果排程時間應用程式未執行，則在下次啟動後、當天尚未執行時開始掃描。如果與手動更新或其他排程重疊，會在目前掃描完成後重新檢查。'],
+  'フォルダ走査スケジュールを保存しました。': ['Folder scan schedules saved.', '文件夹扫描计划已保存。', '資料夾掃描排程已儲存。'],
+  'フォルダ走査スケジュールを保存できませんでした。': ['Could not save folder scan schedules.', '无法保存文件夹扫描计划。', '無法儲存資料夾掃描排程。'],
+  'フォルダ走査スケジュールを保存中...': ['Saving folder scan schedules...', '正在保存文件夹扫描计划...', '正在儲存資料夾掃描排程...'],
+  '各スケジュールに曜日を1つ以上指定してください。': ['Choose at least one weekday for every schedule.', '请为每个计划至少选择一个星期。', '請為每個排程至少選取一個星期。'],
+  '各スケジュールに有効な時刻を指定してください。': ['Enter a valid time for every schedule.', '请为每个计划输入有效时间。', '請為每個排程輸入有效時間。'],
+  '各スケジュールに対象区分を1つ以上指定してください。': ['Choose at least one target section for every schedule.', '请为每个计划至少选择一个目标分区。', '請為每個排程至少選取一個目標分區。'],
+  '定期フォルダ走査を開始しました。': ['Scheduled folder scan started.', '定期文件夹扫描已开始。', '定期資料夾掃描已開始。'],
+  '定期フォルダ走査を完了しました。': ['Scheduled folder scan completed.', '定期文件夹扫描已完成。', '定期資料夾掃描已完成。'],
+  '定期フォルダ走査を完了できませんでした。': ['Could not complete the scheduled folder scan.', '无法完成定期文件夹扫描。', '無法完成定期資料夾掃描。'],
+  '定期フォルダ走査を中断しました。次回の予定時刻に再実行します。': ['Scheduled folder scan cancelled. It will run again at the next scheduled time.', '定期文件夹扫描已中止。将在下一个计划时间重新执行。', '定期資料夾掃描已中止。將在下一個排程時間重新執行。'],
+  '定期フォルダ走査を安全に中断しています...': ['Safely stopping the scheduled folder scan...', '正在安全中止定期文件夹扫描...', '正在安全中止定期資料夾掃描...'],
+  '安全に中断': ['Stop safely', '安全中止', '安全中止'],
+  '予想所要時間': ['Estimated duration', '预计耗时', '預計所需時間'],
+  '所要時間': ['Duration', '耗时', '所需時間'],
+  '実績なし': ['No recent history', '无近期记录', '無近期記錄'],
+  '定期フォルダ走査を開始できませんでした。対象区分が削除または無効化されています。': ['The scheduled folder scan could not start because its target sections were deleted or disabled.', '无法开始定期文件夹扫描，因为目标分区已删除或禁用。', '無法開始定期資料夾掃描，因為目標分區已刪除或停用。'],
   ...userGuideTranslations
 };
 
@@ -878,6 +915,26 @@ const dynamicTranslations: Array<{
   pattern: RegExp;
   translate: (match: RegExpMatchArray, language: Exclude<AppLanguage, 'ja'>) => string;
 }> = [
+  {
+    pattern: /^(\d+)区分を選択$/,
+    translate: (match, language) => language === 'en' ? `${match[1]} sections selected` : language === 'zh-CN' ? `已选择${match[1]}个分区` : `已選取${match[1]}個分區`
+  },
+  {
+    pattern: /^定期フォルダ走査を開始しました:\s*(.+)$/,
+    translate: (match, language) => language === 'en' ? `Scheduled folder scan started: ${match[1]}` : language === 'zh-CN' ? `定期文件夹扫描已开始：${match[1]}` : `定期資料夾掃描已開始：${match[1]}`
+  },
+  {
+    pattern: /^定期フォルダ走査を完了しました。(.+)$/,
+    translate: (match, language) => language === 'en' ? `Scheduled folder scan completed. ${match[1]}` : language === 'zh-CN' ? `定期文件夹扫描已完成。${match[1]}` : `定期資料夾掃描已完成。${match[1]}`
+  },
+  {
+    pattern: /^定期フォルダ走査を完了できませんでした:\s*(.+)$/,
+    translate: (match, language) => language === 'en' ? `Could not complete the scheduled folder scan: ${match[1]}` : language === 'zh-CN' ? `无法完成定期文件夹扫描：${match[1]}` : `無法完成定期資料夾掃描：${match[1]}`
+  },
+  {
+    pattern: /^定期フォルダ走査の予定を確認できませんでした:\s*(.+)$/,
+    translate: (match, language) => language === 'en' ? `Could not check scheduled folder scans: ${match[1]}` : language === 'zh-CN' ? `无法检查定期文件夹扫描计划：${match[1]}` : `無法檢查定期資料夾掃描排程：${match[1]}`
+  },
   {
     pattern: /^(\d[\d,]*)\s*件をコピーしました。$/,
     translate: (match, language) => language === 'en' ? `Copied ${match[1]} items.` : language === 'zh-CN' ? `已复制${match[1]}项。` : `已複製${match[1]}項。`

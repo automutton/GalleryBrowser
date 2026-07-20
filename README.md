@@ -1,4 +1,4 @@
-# GalleryBrowser 1.1
+# GalleryBrowser 1.2
 
 GalleryBrowser is a Windows desktop application for managing gallery files, attributes, tags, creators, tracking records, bookmarks, notes, and analytics in one place.
 

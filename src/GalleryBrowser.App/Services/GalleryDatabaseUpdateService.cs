@@ -69,7 +69,7 @@ public sealed class GalleryDatabaseUpdateService
                 cancellationToken.ThrowIfCancellationRequested();
                 var plan = scanPlans[index];
                 reportProgress?.Invoke($"[区分 {index + 1}/{scanPlans.Length}] {GetCategoryLabel(plan.Category)} を開始: {plan.Targets.Length}フォルダ / {(plan.Extensions.Length == 0 ? "全対応形式" : $"{plan.Extensions.Length}形式")}");
-                AssignConfiguredGids(plan, reportProgress);
+                AssignConfiguredGids(plan, reportProgress, cancellationToken);
                 var result = await ScanCategoryAsync(plan, reportProgress, cancellationToken);
                 error.AddRange(result.Error);
                 scanSummaries.Add($"{GetCategoryLabel(plan.Category)}: {result.ScannedSummary}");
@@ -155,7 +155,7 @@ public sealed class GalleryDatabaseUpdateService
                 cancellationToken.ThrowIfCancellationRequested();
                 var plan = scanPlans[index];
                 reportProgress?.Invoke($"[DB同期 {index + 1}/{scanPlans.Length}] {GetCategoryLabel(plan.Category)}: {plan.Targets.Length}フォルダを走査します。");
-                AssignConfiguredGids(plan, reportProgress);
+                AssignConfiguredGids(plan, reportProgress, cancellationToken);
                 var result = await ScanCategoryAsync(plan, reportProgress, cancellationToken);
                 error.AddRange(result.Error);
                 scanSummaries.Add($"{GetCategoryLabel(plan.Category)}: {result.ScannedSummary}");
@@ -211,13 +211,20 @@ public sealed class GalleryDatabaseUpdateService
             errors);
     }
 
-    private void AssignConfiguredGids(GalleryScanPlan plan, Action<string>? reportProgress)
+    private void AssignConfiguredGids(
+        GalleryScanPlan plan,
+        Action<string>? reportProgress,
+        CancellationToken cancellationToken)
     {
         var extensions = plan.Extensions.Length > 0 ? plan.Extensions : DefaultSupportedExtensions;
         var settings = _database.GetGidSettings();
         reportProgress?.Invoke(
             $"[{GetCategoryLabel(plan.Category)}] DB走査前に{settings.DigitCount}桁gidを確認しています。");
-        var result = _fileBrowser.AssignGids(plan.Targets, extensions, settings.DigitCount);
+        var result = _fileBrowser.AssignGids(
+            plan.Targets,
+            extensions,
+            settings.DigitCount,
+            cancellationToken);
         if (result.Errors.Count > 0)
         {
             throw new InvalidOperationException(

@@ -12,4 +12,5 @@ public sealed record UiNavigationStateDto(
     bool WindowIsMaximized,
     string KeyboardShortcutSettings,
     string GalleryFilterSorts,
-    string GalleryThumbnailSorts);
+    string GalleryThumbnailSorts,
+    string CreatorTrackingTabs);

@@ -57,7 +57,9 @@
     Trophy,
     TriangleAlert,
     Upload,
+    UserPlus,
     UserRound,
+    UsersRound,
     Wrench,
     X
   } from 'lucide-svelte';
@@ -71,10 +73,10 @@
     translateSystemText
   } from './lib/i18n';
 
-  type ActiveView = 'library' | 'bookmarks' | 'creators' | 'creatorTracking' | 'explorer' | 'filters' | 'tags' | 'userMetrics' | 'board' | 'settings' | 'userGuide';
+  type ActiveView = 'library' | 'bookmarks' | 'creators' | 'creatorTracking' | 'explorer' | 'filters' | 'tags' | 'userMetrics' | 'board' | 'calendar' | 'settings' | 'userGuide';
   type BookmarkableView = 'library' | 'explorer' | 'creators' | 'creatorTracking';
   type StickyNoteView = BookmarkableView | 'userMetrics';
-  type SettingsSection = 'programs' | 'gestures' | 'keyboardShortcuts' | 'gid' | 'theme' | 'language' | 'tabCandidates' | 'galleryTargets' | 'creatorTracking' | 'winrar' | 'ffmpeg' | 'thumbnailCache' | 'sqliteDatabase' | 'searchEngine';
+  type SettingsSection = 'programs' | 'gestures' | 'keyboardShortcuts' | 'calendar' | 'gid' | 'theme' | 'language' | 'tabCandidates' | 'galleryTargets' | 'creatorTracking' | 'winrar' | 'ffmpeg' | 'thumbnailCache' | 'sqliteDatabase' | 'searchEngine';
   type UserGuideSectionId = 'overview' | 'firstSteps' | 'gallery' | 'explorer' | 'organize' | 'creators' | 'bookmarks' | 'metrics' | 'settings' | 'data' | 'shortcuts' | 'troubleshooting' | 'acknowledgements';
   type ColorTheme = 'light' | 'dark';
   type ThemeSettings = {
@@ -88,6 +90,14 @@
     fileName: string;
     sizeBytes: number;
     createdAt: string;
+  };
+
+  type DatabaseScanSchedule = {
+    id: string;
+    weekdays: number[];
+    time: string;
+    categories: string[];
+    lastStartedAt?: string | null;
   };
 
   type GalleryItem = {
@@ -268,6 +278,36 @@
     purchasedOn: string;
     wishlist: boolean;
   };
+
+  type CalendarSettings = {
+    weekStartDay: number;
+  };
+
+  type GoogleCalendarSyncSettings = {
+    autoSyncEnabled: boolean;
+    clientId: string;
+    hasClientSecret: boolean;
+    hasRefreshToken: boolean;
+    calendarId: string;
+    redirectUri: string;
+    lastSyncedAt: string;
+    lastSyncError: string;
+  };
+
+  type CalendarSubscriptionEvent = {
+    id: string;
+    creator: string;
+    displayName: string;
+    platform: string;
+    plan: string;
+    currency: string;
+    amount: number;
+    renewalOn: string;
+    endingPlanned: boolean;
+    reminder: boolean;
+  };
+
+  type CalendarViewMode = 'month' | 'focus';
 
   type CreatorTrackingDashboardContext = {
     category: string;
@@ -558,19 +598,27 @@
 
   type GalleryTitleAssignment = {
     requestId: string;
+    characterRequestId: string;
     works: GalleryWork[];
     category: string;
     creators: string[];
     creatorTitles: GalleryTitleAssignmentOption[];
     availableTitles: GalleryTitleAssignmentOption[];
     commonAssignedTitles: GalleryTitleAssignmentOption[];
+    creatorTitleCharacters: GalleryCharacterAssignmentOption[];
+    availableCharacters: GalleryCharacterAssignmentOption[];
     creatorQuery: string;
     query: string;
+    characterCreatorQuery: string;
+    characterQuery: string;
     categoryFilter: string;
     selectedTitleId: number | null;
+    selectedCharacterId: number | null;
     selectedAssignedTitleIds: number[];
     assignedTitlesPanelOpen: boolean;
+    characterPanelOpen: boolean;
     isLoading: boolean;
+    isCharacterLoading: boolean;
     isSaving: boolean;
   };
 
@@ -924,10 +972,11 @@
     tabCandidates: { title: '新規タブ候補', description: 'Explorer の新規タブメニューに表示するフォルダを登録します' },
     galleryTargets: { title: '区分別の設定', description: '区分ごとの走査対象、使用フィルタ、カード表示とサムネイルの調整を設定します' },
     creatorTracking: { title: 'Creator Tracking', description: '評価・集計・活動場所・表示に関する既定値を設定します' },
+    calendar: { title: 'Calendar', description: 'サブスク更新予定の表示とGoogleカレンダー連携用の出力を設定します' },
     winrar: { title: 'WinRAR設定', description: 'WinRAR の実行ファイルと右クリックメニューで扱う書庫形式を設定します' },
     ffmpeg: { title: 'FFmpeg設定', description: '動画サムネイル生成に使用する FFmpeg の実行ファイルと対応形式を設定します' },
     thumbnailCache: { title: 'サムネイルキャッシュ', description: '対象ディレクトリ配下のフォルダと対応ファイルのサムネイルを保存します' },
-    sqliteDatabase: { title: 'データベース', description: '本体DB、キャッシュDB、クラウドバックアップを管理します' },
+    sqliteDatabase: { title: 'データベース', description: '本体DB、キャッシュDB、走査スケジュール、クラウドバックアップを管理します' },
     searchEngine: { title: '検索エンジン', description: 'フィルタエディタで標準名を調べる検索方法を設定します' }
   };
 
@@ -1045,6 +1094,16 @@
     stateJson: string;
   };
 
+  const databaseScheduleWeekdays = [
+    { value: 0, label: '日曜' },
+    { value: 1, label: '月曜' },
+    { value: 2, label: '火曜' },
+    { value: 3, label: '水曜' },
+    { value: 4, label: '木曜' },
+    { value: 5, label: '金曜' },
+    { value: 6, label: '土曜' }
+  ];
+
   type NavigationHistoryEntry = {
     view: ActiveView;
     capture: BookmarkCapture | null;
@@ -1111,7 +1170,13 @@
 
   type CreatorTrackingBookmarkState = {
     version: number;
-    tabs: Array<{ creator: string; billingView: 'subscriptions' | 'purchases'; archiveScale: 'week' | 'month' | 'year' }>;
+    tabs: Array<{
+      creator: string;
+      category?: string;
+      creatorFolder?: string;
+      billingView: 'subscriptions' | 'purchases';
+      archiveScale: 'week' | 'month' | 'year';
+    }>;
     activeIndex: number;
     stickyNotes?: StickyNoteItem[];
   };
@@ -1150,6 +1215,13 @@
   type CreatorFolderConversionConfirmation = {
     pane: 'left' | 'right';
     folderPaths: string[];
+  };
+
+  type CreatorReassignmentConfirmation = {
+    pane: 'left' | 'right';
+    folderPaths: string[];
+    sourceCreator: string;
+    targetCreator: string;
   };
 
   type ExplorerBlankContextMenu = {
@@ -1338,6 +1410,28 @@
   let userMetricsError = '';
   let userMetricsRequestId = '';
   let nextUserMetricsRequestId = 1;
+  let calendarSettings: CalendarSettings = { weekStartDay: 0 };
+  let calendarWeekStartDraft = 0;
+  let calendarEvents: CalendarSubscriptionEvent[] = [];
+  let calendarIsLoading = false;
+  let calendarError = '';
+  let calendarRequestId = '';
+  let calendarIcsRequestId = '';
+  let nextCalendarRequestId = 1;
+  let calendarMonthCursor = toLocalDateInputValue(new Date()).slice(0, 7);
+  let calendarViewMode: CalendarViewMode = 'month';
+  let googleCalendarAutoSyncEnabled = false;
+  let googleCalendarSyncFeatureEnabled = false;
+  let googleCalendarClientId = '';
+  let googleCalendarClientSecretDraft = '';
+  let googleCalendarHasClientSecret = false;
+  let googleCalendarHasRefreshToken = false;
+  let googleCalendarId = 'primary';
+  let googleCalendarRedirectUri = '';
+  let googleCalendarLastSyncedAt = '';
+  let googleCalendarLastSyncError = '';
+  let googleCalendarBusy = false;
+  let googleCalendarStatus = '';
   let userMetricsFileEntity: UserMetricsEntity = 'creators';
   let userMetricsImageEntity: UserMetricsEntity = 'creators';
   let userMetricsRatingEntity: UserMetricsEntity = 'creators';
@@ -1357,6 +1451,13 @@
   let creatorTrackingRefreshRequestIds = new Set<string>();
   let creatorTrackingTabs: CreatorTrackingTab[] = [];
   let activeCreatorTrackingTabId = '';
+  let creatorTrackingNewDialogOpen = false;
+  let creatorTrackingNewCreator = '';
+  let creatorTrackingNewCategory = galleryCreatorSummarySection;
+  let creatorTrackingDeleteStep: 0 | 1 | 2 = 0;
+  let creatorTrackingDeleteTarget: { creator: string; label: string } | null = null;
+  let creatorTrackingDeleteRequestId = '';
+  let creatorTrackingDeleteInProgress = false;
   let creatorTrackingArchiveScrollElement: HTMLDivElement | null = null;
   let draggedCreatorTrackingActivityLinkIndex: number | null = null;
   let draggedCreatorTrackingBillingRow: { view: 'subscriptions' | 'purchases'; index: number } | null = null;
@@ -1419,6 +1520,8 @@
   let galleryTitleAssignment: GalleryTitleAssignment | null = null;
   let visibleGalleryTitleAssignmentCreatorTitles: GalleryTitleAssignmentOption[] = [];
   let visibleGalleryTitleAssignmentAvailableTitles: GalleryTitleAssignmentOption[] = [];
+  let visibleGalleryTitleAssignmentCreatorTitleCharacters: GalleryCharacterAssignmentOption[] = [];
+  let visibleGalleryTitleAssignmentAvailableCharacters: GalleryCharacterAssignmentOption[] = [];
   let galleryTitleAssignmentCategoryOptions: string[] = [];
   let galleryTitleAssignmentCreatorFilterCache: {
     source: GalleryTitleAssignmentOption[];
@@ -1432,6 +1535,16 @@
     result: GalleryTitleAssignmentOption[];
   } | null = null;
   const galleryTitleAssignmentCategoryCache = new WeakMap<GalleryTitleAssignmentOption[], string[]>();
+  let galleryTitleAssignmentCharacterCreatorFilterCache: {
+    source: GalleryCharacterAssignmentOption[];
+    query: string;
+    result: GalleryCharacterAssignmentOption[];
+  } | null = null;
+  let galleryTitleAssignmentCharacterAvailableFilterCache: {
+    source: GalleryCharacterAssignmentOption[];
+    query: string;
+    result: GalleryCharacterAssignmentOption[];
+  } | null = null;
   let galleryCharacterAssignment: GalleryCharacterAssignment | null = null;
   let visibleGalleryCharacterAssignmentCreatorTitleCharacters: GalleryCharacterAssignmentOption[] = [];
   let visibleGalleryCharacterAssignmentAvailableCharacters: GalleryCharacterAssignmentOption[] = [];
@@ -1447,8 +1560,11 @@
   } | null = null;
   let galleryTitleAssignmentReturnPending = false;
   let pendingGalleryTitleAssignmentCategory = '';
+  let pendingGalleryTitleAssignmentSelectedTitleId: number | null = null;
+  let pendingGalleryTitleAssignmentSelectedCharacterId: number | null = null;
   let galleryCharacterAssignmentReturnPending = false;
   let pendingGalleryCharacterAssignmentCategory = '';
+  let pendingGalleryCharacterAssignmentSelectedId: number | null = null;
   let galleryContextMenu: GalleryContextMenu | null = null;
   let galleryContextTargetWork: GalleryWork | null = null;
   let galleryReverseFilterRequest: GalleryReverseFilterRequest | null = null;
@@ -1457,6 +1573,7 @@
   let gallerySingleClickLaunches: Record<string, number> = {};
   let nextGalleryTagAssignmentRequestId = 1;
   let nextGalleryTitleAssignmentRequestId = 1;
+  let nextGalleryTitleAssignmentCharacterRequestId = 1;
   let nextGalleryCharacterAssignmentRequestId = 1;
   let nextGalleryReverseFilterRequestId = 1;
   let galleryPinnedCreators: string[] = [];
@@ -1557,6 +1674,13 @@
   let sqliteDatabaseUpdateInProgress = false;
   let sqliteDatabaseCancelRequested = false;
   let sqliteDatabaseUpdateCategories: string[] = [];
+  let databaseScanSchedules: DatabaseScanSchedule[] = [];
+  let databaseScanScheduleSaving = false;
+  let databaseScheduledScanInProgress = false;
+  let databaseScheduledScanStartedAt = 0;
+  let databaseScheduledScanEstimatedSeconds: number | null = null;
+  let databaseScheduledScanBaseMessage = '';
+  let databaseScheduledScanToastTimer: ReturnType<typeof setInterval> | undefined;
   let sqliteMergeDatabasePath = '';
   let sqliteMergeCanonical: 'current' | 'selected' = 'current';
   let pCloudApiHost = 'eapi.pcloud.com';
@@ -1611,6 +1735,7 @@
   let explorerIsTruncated = false;
   let explorerToastMessage = '';
   let explorerToastKind: 'success' | 'error' | 'progress' = 'success';
+  let explorerToastAction: 'cancelDatabaseScan' | null = null;
   let explorerToastTimer: ReturnType<typeof setTimeout> | undefined;
   let explorerPasteInProgress: { pane: 'left' | 'right'; path: string } | null = null;
   let winRarProgressLabel = '';
@@ -1670,6 +1795,7 @@
   let pendingExplorerBookmarkRestore: { bookmark: ViewBookmark; state: ExplorerBookmarkState; requestId: string } | null = null;
   let pendingCreatorSummaryBookmarkRestore: { bookmark: ViewBookmark; state: CreatorSummaryBookmarkState } | null = null;
   let pendingCreatorTrackingBookmarkRestore: { bookmark: ViewBookmark; state: CreatorTrackingBookmarkState } | null = null;
+  let pendingCreatorTrackingSessionRestore: { state: CreatorTrackingBookmarkState; activate: boolean } | null = null;
   let pendingGalleryCreatorTracking: { creator: string; category: string; creatorFolder?: string } | null = null;
   let pendingGalleryCreatorStorageRequest: { requestId: string; creator: string } | null = null;
   let nextViewBookmarkRestoreRequestId = 1;
@@ -1727,6 +1853,8 @@
   let gidAssignmentInProgress = false;
   let creatorFolderConversionConfirmation: CreatorFolderConversionConfirmation | null = null;
   let creatorFolderConversionInProgress = false;
+  let creatorReassignmentConfirmation: CreatorReassignmentConfirmation | null = null;
+  let creatorReassignmentInProgress = false;
   let pendingWinRarIndividualCompression: WinRarCompressionRequest | null = null;
   let pendingWinRarPackageCompression: WinRarCompressionRequest | null = null;
   let winRarPackageName = '';
@@ -1853,6 +1981,16 @@
   $: visibleGalleryTitleAssignmentAvailableTitles = galleryTitleAssignment
     ? getGalleryTitleAssignmentAvailableTitles(galleryTitleAssignment)
     : [];
+  $: visibleGalleryTitleAssignmentCreatorTitleCharacters = galleryTitleAssignment
+    ? getGalleryTitleAssignmentCreatorTitleCharacters(galleryTitleAssignment)
+    : [];
+  $: visibleGalleryTitleAssignmentAvailableCharacters = galleryTitleAssignment
+    ? getGalleryTitleAssignmentAvailableCharacters(galleryTitleAssignment)
+    : [];
+  $: selectedGalleryTitleAssignmentTitleName = galleryTitleAssignment?.selectedTitleId
+    ? ([...galleryTitleAssignment.creatorTitles, ...galleryTitleAssignment.availableTitles, ...galleryTitleAssignment.commonAssignedTitles]
+      .find((option) => option.id === galleryTitleAssignment?.selectedTitleId)?.title ?? '')
+    : '';
   $: galleryTitleAssignmentCategoryOptions = galleryTitleAssignment
     ? getGalleryTitleAssignmentCategories(galleryTitleAssignment)
     : [];
@@ -2062,6 +2200,11 @@
           const pending = pendingCreatorTrackingBookmarkRestore;
           restoreCreatorTrackingBookmark(pending.bookmark, pending.state);
         }
+        else if (event.data.isLast !== false && pendingCreatorTrackingSessionRestore) {
+          const pending = pendingCreatorTrackingSessionRestore;
+          pendingCreatorTrackingSessionRestore = null;
+          restoreCreatorTrackingSession(pending.state, pending.activate);
+        }
         else if (event.data.isLast !== false && pendingCreatorSummaryBookmarkRestore) {
           const pending = pendingCreatorSummaryBookmarkRestore;
           pendingCreatorSummaryBookmarkRestore = null;
@@ -2076,6 +2219,11 @@
           bookmarkRestoreWarnings = [`Creator情報を読み込めなかったため、Bookmarkを復元できませんでした: ${galleryCreatorSummaryError}`];
           pendingCreatorSummaryBookmarkRestore = null;
           pendingCreatorTrackingBookmarkRestore = null;
+        }
+        if (pendingCreatorTrackingSessionRestore) {
+          const pending = pendingCreatorTrackingSessionRestore;
+          pendingCreatorTrackingSessionRestore = null;
+          restoreCreatorTrackingSession(pending.state, pending.activate);
         }
         const pending = pendingGalleryCreatorTracking;
         pendingGalleryCreatorTracking = null;
@@ -2103,6 +2251,31 @@
         userMetricsError = event.data.message ?? 'User Metricsを読み込めませんでした。';
         userMetricsIsLoading = false;
         showExplorerToast(userMetricsError, 'error');
+      }
+
+      if (event.data?.type === 'calendar.subscriptions.result' && event.data.requestId === calendarRequestId) {
+        calendarSettings = parseCalendarSettings(event.data.settings);
+        calendarWeekStartDraft = calendarSettings.weekStartDay;
+        calendarEvents = Array.isArray(event.data.events)
+          ? event.data.events.map(normalizeCalendarEvent).filter((item): item is CalendarSubscriptionEvent => item !== null)
+          : [];
+        calendarIsLoading = false;
+        calendarError = '';
+      }
+
+      if (event.data?.type === 'calendar.subscriptions.error' && event.data.requestId === calendarRequestId) {
+        calendarEvents = [];
+        calendarIsLoading = false;
+        calendarError = event.data.message ?? 'Calendarを読み込めませんでした。';
+        showExplorerToast(calendarError, 'error');
+      }
+
+      if (event.data?.type === 'calendar.ics.exported' && event.data.requestId === calendarIcsRequestId) {
+        showExplorerToast(`${event.data.fileName ?? 'iCalendarファイル'}を保存しました。Googleカレンダーへインポートできます。`, 'success');
+      }
+
+      if (event.data?.type === 'calendar.ics.error' && event.data.requestId === calendarIcsRequestId) {
+        showExplorerToast(event.data.message ?? 'iCalendarファイルを保存できませんでした。', 'error');
       }
 
       if (event.data?.type === 'creator.tracking.result') {
@@ -2205,6 +2378,38 @@
             queueMicrotask(() => saveCreatorTrackingTab(savedTab.id));
           }
         }
+      }
+
+      if (event.data?.type === 'creator.tracking.deleted') {
+        if (event.data.requestId !== creatorTrackingDeleteRequestId) {
+          return;
+        }
+
+        const result = event.data.result ?? {};
+        const deletedCreator = String(result.creator ?? creatorTrackingDeleteTarget?.creator ?? '').trim();
+        const deletedWorks = Number(result.worksDeleted ?? 0);
+        const deletedTrackingRows = Number(result.creatorTrackingRowsDeleted ?? 0);
+        creatorTrackingDeleteInProgress = false;
+        creatorTrackingDeleteStep = 0;
+        creatorTrackingDeleteTarget = null;
+        creatorTrackingDeleteRequestId = '';
+        removeDeletedCreatorTrackingTabs(deletedCreator);
+        galleryFilterSnapshotSections = new Set();
+        loadGalleryCreatorSummaries(true);
+        loadGalleryWorks(false, galleryRatingFilters, true);
+        if (userMetricsDashboard) loadUserMetrics(userMetricsCategory, true);
+        showExplorerToast(
+          `Creator「${deletedCreator}」のDBデータを削除しました。Creator Tracking ${deletedTrackingRows}件 / 作品 ${deletedWorks}件`,
+          'success');
+      }
+
+      if (event.data?.type === 'creator.tracking.delete.error') {
+        if (event.data.requestId !== creatorTrackingDeleteRequestId) {
+          return;
+        }
+
+        creatorTrackingDeleteInProgress = false;
+        showExplorerToast(event.data.message ?? 'Creatorデータを削除できませんでした。', 'error');
       }
 
       if (event.data?.type === 'creator.tracking.error') {
@@ -2385,6 +2590,15 @@
           selectedAssignedTitleIds: galleryTitleAssignment.selectedAssignedTitleIds.filter((id) => commonTitleIds.has(id)),
           isLoading: false
         };
+        if (pendingGalleryTitleAssignmentSelectedTitleId !== null) {
+          const selectedId = pendingGalleryTitleAssignmentSelectedTitleId;
+          pendingGalleryTitleAssignmentSelectedTitleId = null;
+          const hasSelectedTitle = [...galleryTitleAssignment.creatorTitles, ...galleryTitleAssignment.availableTitles, ...galleryTitleAssignment.commonAssignedTitles]
+            .some((option) => option.id === selectedId);
+          if (hasSelectedTitle) {
+            selectGalleryTitleAssignment(selectedId);
+          }
+        }
       }
 
       if (event.data?.type === 'gallery.titleAssignment.options.error' && event.data.requestId === galleryTitleAssignment?.requestId) {
@@ -2392,16 +2606,53 @@
         showExplorerToast(event.data.message ?? 'Title候補を取得できませんでした。', 'error');
       }
 
+      if (event.data?.type === 'gallery.titleAssignment.characters.result' && event.data.requestId === galleryTitleAssignment?.characterRequestId) {
+        galleryTitleAssignment = {
+          ...galleryTitleAssignment,
+          creatorTitleCharacters: event.data.creatorTitleCharacters ?? [],
+          availableCharacters: event.data.availableCharacters ?? [],
+          isCharacterLoading: false
+        };
+        if (pendingGalleryTitleAssignmentSelectedCharacterId !== null) {
+          const selectedId = pendingGalleryTitleAssignmentSelectedCharacterId;
+          pendingGalleryTitleAssignmentSelectedCharacterId = null;
+          const hasSelectedCharacter = [...galleryTitleAssignment.creatorTitleCharacters, ...galleryTitleAssignment.availableCharacters]
+            .some((option) => option.id === selectedId);
+          if (hasSelectedCharacter) {
+            galleryTitleAssignment = { ...galleryTitleAssignment, selectedCharacterId: selectedId };
+          }
+        }
+      }
+
+      if (event.data?.type === 'gallery.titleAssignment.characters.error' && event.data.requestId === galleryTitleAssignment?.characterRequestId) {
+        galleryTitleAssignment = {
+          ...galleryTitleAssignment,
+          creatorTitleCharacters: [],
+          availableCharacters: [],
+          selectedCharacterId: null,
+          isCharacterLoading: false
+        };
+        showExplorerToast(event.data.message ?? 'Character候補を取得できませんでした。', 'error');
+      }
+
       if (event.data?.type === 'gallery.titleAssignment.applied' && galleryTitleAssignment) {
         const selectedTitle = [...galleryTitleAssignment.creatorTitles, ...galleryTitleAssignment.availableTitles]
           .find((option) => option.id === galleryTitleAssignment?.selectedTitleId);
+        const selectedCharacter = [...galleryTitleAssignment.creatorTitleCharacters, ...galleryTitleAssignment.availableCharacters]
+          .find((option) => option.id === galleryTitleAssignment?.selectedCharacterId);
         const addedCount = Number(event.data.addedCount ?? 0);
         const skippedCount = Number(event.data.skippedCount ?? 0);
         const removedCount = Number(event.data.removedCount ?? 0);
+        const characterAddedCount = Number(event.data.characterAddedCount ?? 0);
+        const characterSkippedCount = Number(event.data.characterSkippedCount ?? 0);
         galleryTitleAssignment = null;
         galleryContextMenu = null;
         const title = selectedTitle?.title ?? '';
         const resultParts = [`${addedCount} 件にTitle「${title}」を登録しました。`];
+        if (selectedCharacter) {
+          resultParts.push(`${characterAddedCount} 件にCharacter「${selectedCharacter.character}」を登録しました。`);
+          if (characterSkippedCount > 0) resultParts.push(`${characterSkippedCount} 件のCharacterは既に登録済みのためスキップしました。`);
+        }
         if (removedCount > 0) resultParts.push(`${removedCount} 件のTitle属性を解除しました。`);
         if (skippedCount > 0) resultParts.push(`${skippedCount} 件は既に登録済みのためスキップしました。`);
         const message = resultParts.join('');
@@ -2447,6 +2698,15 @@
           selectedAssignedCharacterIds: galleryCharacterAssignment.selectedAssignedCharacterIds.filter((id) => commonCharacterIds.has(id)),
           isLoading: false
         };
+        if (pendingGalleryCharacterAssignmentSelectedId !== null) {
+          const selectedId = pendingGalleryCharacterAssignmentSelectedId;
+          pendingGalleryCharacterAssignmentSelectedId = null;
+          const hasSelectedCharacter = [...galleryCharacterAssignment.creatorTitleCharacters, ...galleryCharacterAssignment.availableCharacters]
+            .some((option) => option.id === selectedId);
+          if (hasSelectedCharacter) {
+            galleryCharacterAssignment = { ...galleryCharacterAssignment, selectedCharacterId: selectedId };
+          }
+        }
       }
 
       if (event.data?.type === 'gallery.characterAssignment.options.error' && event.data.requestId === galleryCharacterAssignment?.requestId) {
@@ -2605,6 +2865,8 @@
           loadGalleryWorks();
         }
         if (galleryTitleAssignmentReturnPending && event.data.updated && galleryTitleAssignment) {
+          const selectedId = Number(event.data.selectedId ?? 0);
+          pendingGalleryTitleAssignmentSelectedTitleId = Number.isFinite(selectedId) && selectedId > 0 ? selectedId : null;
           galleryTitleAssignmentReturnPending = false;
           pendingGalleryTitleAssignmentCategory = '';
           activeView = 'library';
@@ -2612,6 +2874,8 @@
           requestGalleryTitleAssignmentOptions(galleryTitleAssignment);
         }
         if (galleryCharacterAssignmentReturnPending && event.data.updated && galleryCharacterAssignment) {
+          const selectedId = Number(event.data.selectedId ?? 0);
+          pendingGalleryCharacterAssignmentSelectedId = Number.isFinite(selectedId) && selectedId > 0 ? selectedId : null;
           galleryCharacterAssignmentReturnPending = false;
           pendingGalleryCharacterAssignmentCategory = '';
           activeView = 'library';
@@ -2818,6 +3082,66 @@
         sqliteConfiguredCacheDatabasePath = event.data.settings?.configuredCacheDatabasePath ?? sqliteCacheDatabasePath;
         sqliteCacheDatabasePathDraft = '';
         sqliteCacheDatabaseRestartRequired = Boolean(event.data.settings?.cacheDatabaseRestartRequired);
+        databaseScanSchedules = Array.isArray(event.data.settings?.scanSchedules)
+          ? event.data.settings.scanSchedules.map((schedule: DatabaseScanSchedule) => ({
+              id: String(schedule.id ?? ''),
+              weekdays: Array.isArray(schedule.weekdays) ? schedule.weekdays.map(Number) : [],
+              time: String(schedule.time ?? '03:00'),
+              categories: Array.isArray(schedule.categories) ? schedule.categories.map(String) : [],
+              lastStartedAt: schedule.lastStartedAt ?? null
+            }))
+          : [];
+      }
+
+      if (event.data?.type === 'settings.sqliteDatabase.schedules.saved') {
+        databaseScanScheduleSaving = false;
+        sqliteDatabaseStatus = event.data.message ?? 'フォルダ走査スケジュールを保存しました。';
+      }
+
+      if (event.data?.type === 'settings.sqliteDatabase.schedules.error') {
+        databaseScanScheduleSaving = false;
+        sqliteDatabaseStatus = event.data.message ?? 'フォルダ走査スケジュールを保存できませんでした。';
+      }
+
+      if (event.data?.type === 'settings.sqliteDatabase.schedule.started') {
+        sqliteDatabaseBusy = true;
+        sqliteDatabaseUpdateInProgress = true;
+        sqliteDatabaseCancelRequested = false;
+        sqliteDatabaseStatus = event.data.message ?? '定期フォルダ走査を開始しました。';
+        sqliteDatabaseProgressLog = [sqliteDatabaseStatus];
+        startDatabaseScheduledScanToast(
+          sqliteDatabaseStatus,
+          Number.isFinite(Number(event.data.estimatedDurationSeconds))
+            ? Number(event.data.estimatedDurationSeconds)
+            : null);
+      }
+
+      if (event.data?.type === 'settings.sqliteDatabase.schedule.finished') {
+        const elapsedSeconds = Math.max(0, Number(event.data.elapsedSeconds ?? 0));
+        finishDatabaseScheduledScanToast();
+        sqliteDatabaseBusy = false;
+        sqliteDatabaseUpdateInProgress = false;
+        sqliteDatabaseCancelRequested = false;
+        sqliteDatabaseStatus = event.data.message ?? '定期フォルダ走査を完了しました。';
+        appendSqliteDatabaseProgress(sqliteDatabaseStatus);
+        showExplorerToast(
+          elapsedSeconds > 0
+            ? `${sqliteDatabaseStatus}\n${translateSystemText('所要時間', appLanguage)} ${formatGidMigrationDuration(elapsedSeconds)}`
+            : sqliteDatabaseStatus,
+          'success',
+          5_000);
+        loadGalleryWorks();
+        if (activeView === 'creators') loadGalleryCreatorSummaries(true);
+      }
+
+      if (event.data?.type === 'settings.sqliteDatabase.schedule.error') {
+        finishDatabaseScheduledScanToast();
+        sqliteDatabaseBusy = false;
+        sqliteDatabaseUpdateInProgress = false;
+        sqliteDatabaseCancelRequested = false;
+        sqliteDatabaseStatus = event.data.message ?? '定期フォルダ走査を完了できませんでした。';
+        appendSqliteDatabaseProgress(sqliteDatabaseStatus);
+        showExplorerToast(sqliteDatabaseStatus, 'error', 7_000);
       }
 
       if (event.data?.type === 'settings.pcloud.result') {
@@ -2914,11 +3238,16 @@
       }
 
       if (event.data?.type === 'settings.sqliteDatabase.operation.cancelled') {
+        const wasScheduledScan = databaseScheduledScanInProgress;
+        finishDatabaseScheduledScanToast();
         sqliteDatabaseBusy = false;
         sqliteDatabaseUpdateInProgress = false;
         sqliteDatabaseCancelRequested = false;
         sqliteDatabaseStatus = event.data.message ?? 'SQLiteDBの更新を中断しました。';
         appendSqliteDatabaseProgress(sqliteDatabaseStatus);
+        if (wasScheduledScan) {
+          showExplorerToast(sqliteDatabaseStatus, 'success', 5_000);
+        }
       }
 
       if (event.data?.type === 'settings.galleryTargets.result') {
@@ -3029,11 +3358,57 @@
         showExplorerToast(event.data.message ?? '言語設定を保存できませんでした。', 'error');
       }
 
+      if (event.data?.type === 'settings.calendar.result') {
+        calendarSettings = parseCalendarSettings(event.data.settings);
+        calendarWeekStartDraft = calendarSettings.weekStartDay;
+        googleCalendarSyncFeatureEnabled = event.data.googleSyncFeatureEnabled !== false;
+        applyGoogleCalendarSettings(event.data.google);
+        if (event.data.updated) {
+          showExplorerToast('Calendar設定を保存しました。', 'success');
+          if (activeView === 'calendar') loadCalendarSubscriptions();
+        }
+      }
+
+      if (event.data?.type === 'settings.calendar.error') {
+        showExplorerToast(event.data.message ?? 'Calendar設定を保存できませんでした。', 'error');
+      }
+
+      if (event.data?.type === 'calendar.google.operation.progress') {
+        googleCalendarBusy = true;
+        googleCalendarStatus = event.data.message ?? 'Google Calendarを処理しています...';
+      }
+
+      if (event.data?.type === 'calendar.google.operation.result') {
+        googleCalendarBusy = false;
+        googleCalendarClientSecretDraft = '';
+        googleCalendarStatus = event.data.message ?? '';
+        showExplorerToast(googleCalendarStatus, 'success');
+      }
+
+      if (event.data?.type === 'calendar.google.sync.started') {
+        googleCalendarBusy = true;
+        googleCalendarStatus = event.data.message ?? 'Google Calendarへ同期しています...';
+      }
+
+      if (event.data?.type === 'calendar.google.sync.result') {
+        googleCalendarBusy = false;
+        googleCalendarStatus = event.data.message ?? 'Google Calendarと同期しました。';
+        if (activeView === 'calendar') loadCalendarSubscriptions();
+        if (!event.data.automatic) showExplorerToast(googleCalendarStatus, 'success');
+      }
+
+      if (event.data?.type === 'calendar.google.operation.error') {
+        googleCalendarBusy = false;
+        googleCalendarStatus = event.data.message ?? 'Google Calendarの操作を完了できませんでした。';
+        googleCalendarLastSyncError = googleCalendarStatus;
+        if (!event.data.automatic) showExplorerToast(googleCalendarStatus, 'error');
+      }
+
       if (event.data?.type === 'ui.navigation.result') {
         const restoredView = event.data.state?.activeView;
-        if (restoredView === 'library' || restoredView === 'bookmarks' || restoredView === 'creators' || restoredView === 'explorer' || restoredView === 'filters' || restoredView === 'tags' || restoredView === 'userMetrics' || restoredView === 'board' || restoredView === 'settings' || restoredView === 'userGuide') {
+        if (restoredView === 'library' || restoredView === 'bookmarks' || restoredView === 'creators' || restoredView === 'creatorTracking' || restoredView === 'explorer' || restoredView === 'filters' || restoredView === 'tags' || restoredView === 'userMetrics' || restoredView === 'board' || restoredView === 'calendar' || restoredView === 'settings' || restoredView === 'userGuide') {
           activeView = restoredView;
-          if (restoredView === 'creators') {
+          if (restoredView === 'creators' || restoredView === 'creatorTracking') {
             loadGalleryCreatorSummaries();
           }
           if (restoredView === 'userMetrics') {
@@ -3041,6 +3416,9 @@
           }
           if (restoredView === 'board') {
             loadStickyNoteBoard();
+          }
+          if (restoredView === 'calendar') {
+            loadCalendarSubscriptions();
           }
         }
         else if (restoredView === 'programs') {
@@ -3058,6 +3436,18 @@
         galleryCardColumnModes = parseGalleryCardColumnModes(event.data.state?.galleryCardColumns);
         galleryFilterSorts = parseGalleryFilterSortState(event.data.state?.galleryFilterSorts);
         galleryThumbnailSorts = parseGalleryThumbnailSortState(event.data.state?.galleryThumbnailSorts);
+        const creatorTrackingTabsState = parseCreatorTrackingSessionState(event.data.state?.creatorTrackingTabs);
+        if (creatorTrackingTabsState && creatorTrackingTabsState.tabs.length > 0) {
+          pendingCreatorTrackingSessionRestore = { state: creatorTrackingTabsState, activate: restoredView === 'creatorTracking' };
+          if (galleryCreatorSummaries.length > 0 && !galleryCreatorSummaryIsLoading) {
+            const pending = pendingCreatorTrackingSessionRestore;
+            pendingCreatorTrackingSessionRestore = null;
+            restoreCreatorTrackingSession(pending.state, pending.activate);
+          }
+          else if (!galleryCreatorSummaryIsLoading) {
+            loadGalleryCreatorSummaries();
+          }
+        }
         const restoredExplorerCardColumns = Number(event.data.state?.explorerCardColumns);
         if ([4, 5, 6, 7].includes(restoredExplorerCardColumns)) {
           explorerCardColumns = restoredExplorerCardColumns;
@@ -3336,6 +3726,16 @@
         );
       }
 
+      if (event.data?.type === 'explorer.creator.reassign.result') {
+        creatorReassignmentInProgress = false;
+        creatorReassignmentConfirmation = null;
+        showExplorerToast(
+          event.data.message ?? '作者情報を付け替えました。',
+          event.data.hasWarnings === true ? 'error' : 'success'
+        );
+        loadGalleryWorks(false, galleryRatingFilters, true);
+      }
+
       if (event.data?.type === 'explorer.dbManagement.progress') {
         showExplorerToast(event.data.message ?? 'DB管理機能を実行しています。', 'progress', null);
       }
@@ -3345,6 +3745,8 @@
         gidAssignmentConfirmation = null;
         creatorFolderConversionInProgress = false;
         creatorFolderConversionConfirmation = null;
+        creatorReassignmentInProgress = false;
+        creatorReassignmentConfirmation = null;
         if (event.data.operation === 'explorer.winrar.convertRarToZip') {
           rarToZipBatchInProgress = false;
           finishWinRarProgress();
@@ -3382,6 +3784,7 @@
     postHostMessage({ type: 'settings.creatorTracking.list' });
     postHostMessage({ type: 'settings.theme.load' });
     postHostMessage({ type: 'settings.language.load' });
+    postHostMessage({ type: 'settings.calendar.load' });
     postHostMessage({ type: 'ui.navigation.load' });
     postHostMessage({ type: 'view.bookmarks.list' });
     postHostMessage({ type: 'stickyNotes.list' });
@@ -3875,6 +4278,205 @@
     postHostMessage({ type: 'user.metrics.get', requestId: userMetricsRequestId, category, forceRefresh });
   }
 
+  function loadCalendarSubscriptions() {
+    calendarIsLoading = true;
+    calendarError = '';
+    calendarRequestId = `calendar-${nextCalendarRequestId++}`;
+    postHostMessage({ type: 'calendar.subscriptions.list', requestId: calendarRequestId });
+  }
+
+  function exportCalendarIcs() {
+    calendarIcsRequestId = `calendar-ics-${nextCalendarRequestId++}`;
+    postHostMessage({ type: 'calendar.ics.export', requestId: calendarIcsRequestId });
+  }
+
+  function saveCalendarSettings() {
+    calendarWeekStartDraft = normalizeWeekStartDay(calendarWeekStartDraft);
+    postHostMessage(getGoogleCalendarSettingsMessage('settings.calendar.save', {
+      weekStartDay: calendarWeekStartDraft
+    }));
+  }
+
+  function getGoogleCalendarSettingsMessage(type: string, extra: Record<string, unknown> = {}) {
+    return {
+      type,
+      autoSyncEnabled: googleCalendarAutoSyncEnabled,
+      clientId: googleCalendarClientId.trim(),
+      clientSecret: googleCalendarClientSecretDraft.trim(),
+      calendarId: googleCalendarId.trim() || 'primary',
+      ...extra
+    };
+  }
+
+  function connectGoogleCalendar() {
+    googleCalendarBusy = true;
+    googleCalendarStatus = 'ブラウザでGoogle Calendarへのアクセスを許可してください...';
+    postHostMessage(getGoogleCalendarSettingsMessage('settings.calendar.google.connect'));
+  }
+
+  function testGoogleCalendarConnection() {
+    googleCalendarBusy = true;
+    googleCalendarStatus = 'Google Calendarとの接続を確認しています...';
+    postHostMessage(getGoogleCalendarSettingsMessage('settings.calendar.google.test'));
+  }
+
+  function syncGoogleCalendar() {
+    googleCalendarBusy = true;
+    googleCalendarStatus = 'Google Calendarへサブスク予定を同期しています...';
+    postHostMessage({ type: 'calendar.google.sync' });
+  }
+
+  function disconnectGoogleCalendar() {
+    googleCalendarBusy = true;
+    googleCalendarStatus = 'Google Calendar連携を解除しています...';
+    postHostMessage({ type: 'settings.calendar.google.disconnect' });
+  }
+
+  function applyGoogleCalendarSettings(value: unknown) {
+    const settings = value as Partial<GoogleCalendarSyncSettings> | null | undefined;
+    if (!settings) return;
+    googleCalendarAutoSyncEnabled = settings.autoSyncEnabled === true;
+    googleCalendarClientId = String(settings.clientId ?? '');
+    googleCalendarHasClientSecret = settings.hasClientSecret === true;
+    googleCalendarHasRefreshToken = settings.hasRefreshToken === true;
+    googleCalendarId = String(settings.calendarId ?? 'primary') || 'primary';
+    googleCalendarRedirectUri = String(settings.redirectUri ?? '');
+    googleCalendarLastSyncedAt = String(settings.lastSyncedAt ?? '');
+    googleCalendarLastSyncError = String(settings.lastSyncError ?? '');
+  }
+
+  function normalizeWeekStartDay(value: unknown) {
+    const parsed = Math.round(Number(value));
+    return Number.isFinite(parsed) && parsed >= 0 && parsed <= 6 ? parsed : 0;
+  }
+
+  function parseCalendarSettings(value: unknown): CalendarSettings {
+    const settings = value as Partial<CalendarSettings> | null | undefined;
+    return { weekStartDay: normalizeWeekStartDay(settings?.weekStartDay) };
+  }
+
+  function normalizeCalendarEvent(value: Partial<CalendarSubscriptionEvent> | null | undefined): CalendarSubscriptionEvent | null {
+    if (!value?.creator || !value.renewalOn) return null;
+    return {
+      id: String(value.id ?? `${value.creator}-${value.renewalOn}`),
+      creator: String(value.creator ?? '').trim(),
+      displayName: String(value.displayName ?? value.creator ?? '').trim(),
+      platform: String(value.platform ?? '').trim(),
+      plan: String(value.plan ?? '').trim(),
+      currency: String(value.currency ?? '').trim(),
+      amount: Number(value.amount ?? 0),
+      renewalOn: String(value.renewalOn ?? '').trim(),
+      endingPlanned: value.endingPlanned === true,
+      reminder: value.reminder === true
+    };
+  }
+
+  function toLocalDateInputValue(date: Date) {
+    const year = date.getFullYear();
+    const month = `${date.getMonth() + 1}`.padStart(2, '0');
+    const day = `${date.getDate()}`.padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function parseCalendarDate(value: string) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (!match) return null;
+    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  }
+
+  function addCalendarDays(date: Date, days: number) {
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+  }
+
+  function getCalendarWeekStart(date: Date, weekStartDay = calendarSettings.weekStartDay) {
+    const normalizedWeekStart = normalizeWeekStartDay(weekStartDay);
+    const diff = (date.getDay() - normalizedWeekStart + 7) % 7;
+    return addCalendarDays(date, -diff);
+  }
+
+  function getCalendarMonthCells(monthValue = calendarMonthCursor) {
+    const [yearText, monthText] = monthValue.split('-');
+    const first = new Date(Number(yearText), Number(monthText) - 1, 1);
+    if (Number.isNaN(first.getTime())) return [];
+    const start = getCalendarWeekStart(first);
+    const last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
+    const end = addCalendarDays(getCalendarWeekStart(last), 6);
+    const cells: Array<{ date: string; day: number; inMonth: boolean; isToday: boolean; events: CalendarSubscriptionEvent[] }> = [];
+    const today = toLocalDateInputValue(new Date());
+    for (let cursor = start; cursor <= end; cursor = addCalendarDays(cursor, 1)) {
+      const date = toLocalDateInputValue(cursor);
+      cells.push({
+        date,
+        day: cursor.getDate(),
+        inMonth: cursor.getMonth() === first.getMonth(),
+        isToday: date === today,
+        events: calendarEventsForDate(date)
+      });
+    }
+    return cells;
+  }
+
+  function getCalendarFocusCells() {
+    const todayDate = new Date();
+    const start = getCalendarWeekStart(todayDate);
+    const today = toLocalDateInputValue(todayDate);
+    return Array.from({ length: 14 }, (_, index) => {
+      const cursor = addCalendarDays(start, index);
+      const date = toLocalDateInputValue(cursor);
+      return {
+        date,
+        day: cursor.getDate(),
+        inMonth: true,
+        isToday: date === today,
+        events: calendarEventsForDate(date)
+      };
+    });
+  }
+
+  function calendarEventsForDate(date: string) {
+    return calendarEvents
+      .filter((event) => event.renewalOn === date)
+      .sort((left, right) =>
+        left.displayName.localeCompare(right.displayName, 'ja-JP') ||
+        left.platform.localeCompare(right.platform, 'ja-JP'));
+  }
+
+  function getCalendarWeekdayLabels() {
+    const labels = ['日', '月', '火', '水', '木', '金', '土'];
+    const start = normalizeWeekStartDay(calendarSettings.weekStartDay);
+    return Array.from({ length: 7 }, (_, index) => labels[(start + index) % 7]);
+  }
+
+  function shiftCalendarMonth(offset: number) {
+    const [yearText, monthText] = calendarMonthCursor.split('-');
+    const next = new Date(Number(yearText), Number(monthText) - 1 + offset, 1);
+    calendarMonthCursor = `${next.getFullYear()}-${`${next.getMonth() + 1}`.padStart(2, '0')}`;
+  }
+
+  function resetCalendarMonthToToday() {
+    calendarMonthCursor = toLocalDateInputValue(new Date()).slice(0, 7);
+  }
+
+  function getCalendarMonthTitle() {
+    const [yearText, monthText] = calendarMonthCursor.split('-');
+    return `${yearText}年${Number(monthText)}月`;
+  }
+
+  function formatCalendarEventAmount(event: CalendarSubscriptionEvent) {
+    return event.amount > 0 ? `${event.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${event.currency}` : '';
+  }
+
+  function openCalendarEventCreator(event: CalendarSubscriptionEvent) {
+    const summary = galleryCreatorSummaries.find((item) =>
+      item.creator.trim().localeCompare(event.creator.trim(), 'ja-JP', { sensitivity: 'base' }) === 0);
+    if (summary) {
+      openCreatorTrackingForSummary(summary);
+      return;
+    }
+
+    openCreatorTrackingForSummary(createCreatorTrackingTemplateSummary(event.creator, galleryCreatorSummarySection || gallerySection || defaultGallerySectionId, ''));
+  }
+
   function selectUserMetricsCategory(category: string) {
     if (category === userMetricsCategory && userMetricsDashboard && !userMetricsIsLoading) {
       return;
@@ -4252,6 +4854,24 @@
       : tab);
   }
 
+  function captureCreatorTrackingTabSessionState() {
+    captureActiveCreatorTrackingTab();
+    const activeIndex = Math.max(0, creatorTrackingTabs.findIndex((tab) => tab.id === activeCreatorTrackingTabId));
+    const state: CreatorTrackingBookmarkState = {
+      version: 4,
+      tabs: creatorTrackingTabs.map((tab) => ({
+        creator: tab.creator,
+        category: tab.summary.category,
+        creatorFolder: tab.summary.creatorFolder,
+        billingView: tab.id === activeCreatorTrackingTabId ? creatorTrackingBillingView : tab.billingView,
+        archiveScale: tab.id === activeCreatorTrackingTabId ? creatorTrackingArchiveScale : tab.archiveScale
+      })),
+      activeIndex,
+      stickyNotes: []
+    };
+    return JSON.stringify(state);
+  }
+
   function applyCreatorTrackingTab(tab: CreatorTrackingTab) {
     activeCreatorTrackingTabId = tab.id;
     creatorTrackingSummary = tab.summary;
@@ -4276,6 +4896,7 @@
     if (!tab) return;
     applyCreatorTrackingTab(tab);
     activateView('creatorTracking');
+    persistNavigationState();
     queueMicrotask(scrollCreatorTrackingArchiveToEnd);
   }
 
@@ -4405,6 +5026,7 @@
     const nextTab = creatorTrackingTabs[Math.min(closingIndex, creatorTrackingTabs.length - 1)];
     if (nextTab) {
       applyCreatorTrackingTab(nextTab);
+      persistNavigationState();
       return;
     }
     activeCreatorTrackingTabId = '';
@@ -4413,12 +5035,103 @@
     creatorTrackingDashboard = null;
     creatorTrackingDashboardContext = null;
     activateView('creators');
+    persistNavigationState();
+  }
+
+  function removeDeletedCreatorTrackingTabs(creator: string) {
+    const normalizedCreator = creator.trim().toLocaleLowerCase('ja-JP');
+    const activeIndex = creatorTrackingTabs.findIndex((tab) => tab.id === activeCreatorTrackingTabId);
+    creatorTrackingTabs = creatorTrackingTabs.filter((tab) =>
+      tab.creator.trim().toLocaleLowerCase('ja-JP') !== normalizedCreator);
+
+    if (creatorTrackingTabs.length === 0) {
+      activeCreatorTrackingTabId = '';
+      creatorTrackingSummary = null;
+      creatorTracking = null;
+      creatorTrackingDashboard = null;
+      creatorTrackingDashboardContext = null;
+      creatorTrackingIsLoading = false;
+      creatorTrackingIsSaving = false;
+      creatorTrackingDirty = false;
+      creatorTrackingError = '';
+      activateView('creators');
+      persistNavigationState();
+      return;
+    }
+
+    if (!creatorTrackingTabs.some((tab) => tab.id === activeCreatorTrackingTabId)) {
+      const nextTab = creatorTrackingTabs[Math.min(Math.max(0, activeIndex), creatorTrackingTabs.length - 1)];
+      applyCreatorTrackingTab(nextTab);
+    }
+    persistNavigationState();
+  }
+
+  function requestCreatorTrackingDelete() {
+    const creator = creatorTracking?.creator?.trim()
+      || creatorTrackingSummary?.creator?.trim()
+      || creatorTrackingTabs.find((tab) => tab.id === activeCreatorTrackingTabId)?.creator?.trim()
+      || '';
+    if (!creator) {
+      showExplorerToast('削除するCreatorを特定できませんでした。', 'error');
+      return;
+    }
+
+    creatorTrackingDeleteTarget = {
+      creator,
+      label: creatorTracking?.displayName?.trim() || creatorTrackingSummary?.creator || creator
+    };
+    creatorTrackingDeleteStep = 1;
+    creatorTrackingDeleteInProgress = false;
+  }
+
+  function cancelCreatorTrackingDelete() {
+    if (creatorTrackingDeleteInProgress) return;
+    creatorTrackingDeleteStep = 0;
+    creatorTrackingDeleteTarget = null;
+  }
+
+  function advanceCreatorTrackingDeleteConfirmation() {
+    if (!creatorTrackingDeleteTarget || creatorTrackingDeleteInProgress) return;
+    creatorTrackingDeleteStep = 2;
+  }
+
+  function executeCreatorTrackingDelete() {
+    if (!creatorTrackingDeleteTarget || creatorTrackingDeleteInProgress) return;
+    creatorTrackingDeleteInProgress = true;
+    creatorTrackingDeleteRequestId = `creator-delete-${nextCreatorTrackingRequestId++}`;
+    postHostMessage({
+      type: 'creator.tracking.delete',
+      requestId: creatorTrackingDeleteRequestId,
+      creator: creatorTrackingDeleteTarget.creator
+    });
   }
 
   function openCreatorTrackingPicker() {
     saveCreatorTracking();
     captureActiveCreatorTrackingTab();
     activateView('creators');
+  }
+
+  function openCreatorTrackingNewDialog() {
+    saveCreatorTracking();
+    captureActiveCreatorTrackingTab();
+    creatorTrackingNewCreator = '';
+    creatorTrackingNewCategory = galleryCreatorSummarySection || gallerySection || gallerySections[0]?.id || defaultGallerySectionId;
+    creatorTrackingNewDialogOpen = true;
+  }
+
+  function createNewCreatorTracking() {
+    const creator = creatorTrackingNewCreator.trim();
+    if (!creator) {
+      showExplorerToast('Creator名を入力してください。', 'error');
+      return;
+    }
+
+    creatorTrackingNewDialogOpen = false;
+    const category = gallerySections.some((section) => section.id === creatorTrackingNewCategory)
+      ? creatorTrackingNewCategory
+      : gallerySections[0]?.id ?? defaultGallerySectionId;
+    openCreatorTrackingForSummary(createCreatorTrackingTemplateSummary(creator, category, ''));
   }
 
   function openCreatorTracking(event: MouseEvent, item: GalleryCreatorSummary) {
@@ -4428,7 +5141,9 @@
   }
 
   function openCreatorTrackingForSummary(item: GalleryCreatorSummary) {
-    const existingTab = creatorTrackingTabs.find(tab => tab.creator.trim().localeCompare(item.creator.trim(), 'ja-JP', { sensitivity: 'base' }) === 0);
+    const existingTab = creatorTrackingTabs.find(tab =>
+      tab.summary.category === item.category &&
+      tab.creator.trim().localeCompare(item.creator.trim(), 'ja-JP', { sensitivity: 'base' }) === 0);
     if (existingTab) {
       activateCreatorTrackingTab(existingTab.id);
       return;
@@ -4439,6 +5154,7 @@
     creatorTrackingTabs = [...creatorTrackingTabs, tab];
     applyCreatorTrackingTab(tab);
     activateView('creatorTracking');
+    persistNavigationState();
   }
 
   function openSelectedGalleryCreatorTracking() {
@@ -5782,19 +6498,27 @@
       const creator = (targetWork.creator ?? '').trim();
       const assignment: GalleryTitleAssignment = {
         requestId: '',
+        characterRequestId: '',
         works,
         category: targetWork.category,
         creators: creator ? [creator] : [],
         creatorTitles: [],
         availableTitles: [],
         commonAssignedTitles: [],
+        creatorTitleCharacters: [],
+        availableCharacters: [],
         creatorQuery: '',
         query: '',
+        characterCreatorQuery: '',
+        characterQuery: '',
         categoryFilter: '',
         selectedTitleId: null,
+        selectedCharacterId: null,
         selectedAssignedTitleIds: [],
         assignedTitlesPanelOpen: false,
+        characterPanelOpen: false,
         isLoading: true,
+        isCharacterLoading: false,
         isSaving: false
       };
       flushSync(() => {
@@ -5885,7 +6609,72 @@
     if (!galleryTitleAssignment || galleryTitleAssignment.isSaving) {
       return;
     }
-    galleryTitleAssignment = { ...galleryTitleAssignment, selectedTitleId: titleId };
+    galleryTitleAssignment = {
+      ...galleryTitleAssignment,
+      selectedTitleId: titleId,
+      selectedCharacterId: null,
+      creatorTitleCharacters: [],
+      availableCharacters: [],
+      characterPanelOpen: true,
+      isCharacterLoading: true
+    };
+    requestGalleryTitleAssignmentCharacters(galleryTitleAssignment, titleId);
+  }
+
+  function requestGalleryTitleAssignmentCharacters(assignment = galleryTitleAssignment, titleId = assignment?.selectedTitleId ?? null) {
+    if (!assignment || titleId === null) {
+      return;
+    }
+
+    const requestId = `gallery-title-assignment-characters-${nextGalleryTitleAssignmentCharacterRequestId++}`;
+    galleryTitleAssignment = {
+      ...assignment,
+      characterRequestId: requestId,
+      isCharacterLoading: true
+    };
+    postHostMessage({
+      type: 'gallery.titleAssignment.characters.request',
+      requestId,
+      category: assignment.category,
+      creators: assignment.creators,
+      titleIds: [titleId],
+      paths: assignment.works.map((work) => work.path)
+    });
+  }
+
+  function getGalleryTitleAssignmentCreatorTitleCharacters(assignment: GalleryTitleAssignment) {
+    const query = assignment.characterCreatorQuery.trim().toLocaleLowerCase('ja-JP');
+    const cached = galleryTitleAssignmentCharacterCreatorFilterCache;
+    if (cached?.source === assignment.creatorTitleCharacters && cached.query === query) {
+      return cached.result;
+    }
+
+    const result = query
+      ? assignment.creatorTitleCharacters.filter((option) => option.searchText.includes(query))
+      : assignment.creatorTitleCharacters;
+    galleryTitleAssignmentCharacterCreatorFilterCache = { source: assignment.creatorTitleCharacters, query, result };
+    return result;
+  }
+
+  function getGalleryTitleAssignmentAvailableCharacters(assignment: GalleryTitleAssignment) {
+    const query = assignment.characterQuery.trim().toLocaleLowerCase('ja-JP');
+    const cached = galleryTitleAssignmentCharacterAvailableFilterCache;
+    if (cached?.source === assignment.availableCharacters && cached.query === query) {
+      return cached.result;
+    }
+
+    const result = query
+      ? assignment.availableCharacters.filter((option) => option.searchText.includes(query))
+      : assignment.availableCharacters;
+    galleryTitleAssignmentCharacterAvailableFilterCache = { source: assignment.availableCharacters, query, result };
+    return result;
+  }
+
+  function selectGalleryTitleAssignmentCharacter(characterId: number) {
+    if (!galleryTitleAssignment || galleryTitleAssignment.isSaving) {
+      return;
+    }
+    galleryTitleAssignment = { ...galleryTitleAssignment, selectedCharacterId: characterId };
   }
 
   function toggleGalleryAssignedTitleSelection(titleId: number) {
@@ -5945,6 +6734,7 @@
       type: 'gallery.titleAssignment.apply',
       paths: galleryTitleAssignment.works.map((work) => work.path),
       titleId: galleryTitleAssignment.selectedTitleId,
+      characterId: galleryTitleAssignment.selectedCharacterId,
       removeTitleIds: galleryTitleAssignment.selectedAssignedTitleIds
     });
   }
@@ -5957,6 +6747,8 @@
     galleryTitleAssignment = null;
     galleryTitleAssignmentReturnPending = false;
     pendingGalleryTitleAssignmentCategory = '';
+    pendingGalleryTitleAssignmentSelectedTitleId = null;
+    pendingGalleryTitleAssignmentSelectedCharacterId = null;
   }
 
   function openGalleryCharacterAssignment(sourceWork: GalleryWork | null = galleryContextTargetWork ?? galleryContextMenu?.work ?? null) {
@@ -6153,6 +6945,7 @@
     galleryCharacterAssignment = null;
     galleryCharacterAssignmentReturnPending = false;
     pendingGalleryCharacterAssignmentCategory = '';
+    pendingGalleryCharacterAssignmentSelectedId = null;
   }
 
   function setGalleryCreatorFilter(creator: string, event: MouseEvent) {
@@ -7550,9 +8343,11 @@
     captureActiveCreatorTrackingTab();
     const activeIndex = Math.max(0, creatorTrackingTabs.findIndex((tab) => tab.id === activeCreatorTrackingTabId));
     const state: CreatorTrackingBookmarkState = {
-      version: 3,
+      version: 4,
       tabs: creatorTrackingTabs.map((tab) => ({
         creator: tab.creator,
+        category: tab.summary.category,
+        creatorFolder: tab.summary.creatorFolder,
         billingView: tab.id === activeCreatorTrackingTabId ? creatorTrackingBillingView : tab.billingView,
         archiveScale: tab.id === activeCreatorTrackingTabId ? creatorTrackingArchiveScale : tab.archiveScale
       })),
@@ -7716,6 +8511,42 @@
     }
     catch {
       bookmarkRestoreWarnings = [`「${bookmark.name}」の保存データを読み取れませんでした。`];
+      return null;
+    }
+  }
+
+  function parseCreatorTrackingSessionState(rawValue: unknown): CreatorTrackingBookmarkState | null {
+    if (typeof rawValue !== 'string' || !rawValue.trim()) {
+      return null;
+    }
+
+    try {
+      const state = JSON.parse(rawValue) as CreatorTrackingBookmarkState;
+      const tabs = Array.isArray(state.tabs)
+        ? state.tabs
+            .map((tab) => {
+              const billingView: 'subscriptions' | 'purchases' = tab.billingView === 'purchases' ? 'purchases' : 'subscriptions';
+              const archiveScale: 'week' | 'month' | 'year' = tab.archiveScale === 'week' || tab.archiveScale === 'year'
+                ? tab.archiveScale
+                : 'month';
+              return {
+                creator: String(tab.creator ?? '').trim(),
+                category: String(tab.category ?? '').trim(),
+                creatorFolder: String(tab.creatorFolder ?? '').trim(),
+                billingView,
+                archiveScale
+              };
+            })
+            .filter((tab) => tab.creator)
+        : [];
+      return {
+        version: Number(state.version ?? 4),
+        tabs,
+        activeIndex: Math.max(0, Math.min(tabs.length - 1, Math.round(Number(state.activeIndex ?? 0)))),
+        stickyNotes: []
+      };
+    }
+    catch {
       return null;
     }
   }
@@ -8094,11 +8925,13 @@
     const warnings: string[] = [];
     const restored: CreatorTrackingTab[] = [];
     for (const savedTab of state.tabs ?? []) {
-      const summary = galleryCreatorSummaries.find((item) => item.creator.trim().localeCompare(savedTab.creator.trim(), 'ja-JP', { sensitivity: 'base' }) === 0);
-      if (!summary) {
-        warnings.push(`Creator「${savedTab.creator}」が現在のCreatorsにないためタブを復元できませんでした。`);
-        continue;
-      }
+      const category = savedTab.category && gallerySections.some((section) => section.id === savedTab.category)
+        ? savedTab.category
+        : galleryCreatorSummarySection || gallerySections[0]?.id || defaultGallerySectionId;
+      const summary = galleryCreatorSummaries.find((item) =>
+        item.category === category &&
+        item.creator.trim().localeCompare(savedTab.creator.trim(), 'ja-JP', { sensitivity: 'base' }) === 0)
+        ?? createCreatorTrackingTemplateSummary(savedTab.creator, category, savedTab.creatorFolder ?? '');
       restored.push(createCreatorTrackingTab(summary, savedTab.billingView, savedTab.archiveScale));
     }
     if (restored.length === 0) {
@@ -8107,8 +8940,10 @@
     }
     else {
       creatorTrackingTabs = restored;
-      const originalActiveCreator = state.tabs?.[Math.max(0, state.activeIndex)]?.creator;
-      const activeTab = restored.find((tab) => tab.creator === originalActiveCreator) ?? restored[0];
+      const originalActiveTab = state.tabs?.[Math.max(0, state.activeIndex)];
+      const activeTab = restored.find((tab) =>
+        tab.creator === originalActiveTab?.creator &&
+        (!originalActiveTab.category || tab.summary.category === originalActiveTab.category)) ?? restored[0];
       applyCreatorTrackingTab(activeTab);
       activeView = 'creatorTracking';
       restoreStickyNotesFromBookmark(state.stickyNotes, 'creatorTracking', activeTab.creator, warnings);
@@ -8116,6 +8951,42 @@
     persistNavigationState();
     bookmarkRestoreWarnings = warnings;
     if (bookmark.id >= 0) showExplorerToast(`Bookmark「${bookmark.name}」を開きました。`, 'success');
+  }
+
+  function restoreCreatorTrackingSession(state: CreatorTrackingBookmarkState, activate: boolean) {
+    saveCreatorTracking();
+    captureActiveCreatorTrackingTab();
+    creatorTrackingTabs = [];
+    activeCreatorTrackingTabId = '';
+    const restored: CreatorTrackingTab[] = [];
+    for (const savedTab of state.tabs ?? []) {
+      const category = savedTab.category && gallerySections.some((section) => section.id === savedTab.category)
+        ? savedTab.category
+        : galleryCreatorSummarySection || gallerySections[0]?.id || defaultGallerySectionId;
+      const summary = galleryCreatorSummaries.find((item) =>
+        item.category === category &&
+        item.creator.trim().localeCompare(savedTab.creator.trim(), 'ja-JP', { sensitivity: 'base' }) === 0)
+        ?? createCreatorTrackingTemplateSummary(savedTab.creator, category, savedTab.creatorFolder ?? '');
+      restored.push(createCreatorTrackingTab(summary, savedTab.billingView, savedTab.archiveScale));
+    }
+
+    if (restored.length === 0) {
+      return;
+    }
+
+    creatorTrackingTabs = restored;
+    const originalActiveTab = state.tabs?.[Math.max(0, state.activeIndex)];
+    const activeTab = restored.find((tab) =>
+      tab.creator === originalActiveTab?.creator &&
+      (!originalActiveTab.category || tab.summary.category === originalActiveTab.category)) ?? restored[0];
+    applyCreatorTrackingTab(activeTab);
+    if (activate) {
+      activeView = 'creatorTracking';
+      queueMicrotask(scrollCreatorTrackingArchiveToEnd);
+    }
+    else if (activeView === 'creatorTracking') {
+      activeView = 'creators';
+    }
   }
 
   function setView(view: ActiveView) {
@@ -8211,6 +9082,9 @@
     }
     if (view === 'board') {
       loadStickyNoteBoard();
+    }
+    if (view === 'calendar') {
+      loadCalendarSubscriptions();
     }
   }
 
@@ -8551,7 +9425,7 @@
   function persistNavigationState() {
     postHostMessage({
       type: 'ui.navigation.save',
-      activeView: activeView === 'creatorTracking' ? 'creators' : activeView,
+      activeView,
       explorerBookmarksExpanded,
       explorerDetailColumns: explorerDetailColumns.join(','),
       mouseGestureSettings: JSON.stringify(mouseGestureSettings),
@@ -8559,6 +9433,7 @@
       galleryCardColumns: JSON.stringify(galleryCardColumnModes),
       galleryFilterSorts: JSON.stringify(galleryFilterSorts),
       galleryThumbnailSorts: JSON.stringify(galleryThumbnailSorts),
+      creatorTrackingTabs: captureCreatorTrackingTabSessionState(),
       explorerCardColumns
     });
   }
@@ -9900,6 +10775,12 @@
     explorerGidSubmenuOpen = false;
   }
 
+  function inferCreatorNameFromFolderPath(path: string) {
+    const originalName = getExplorerPathLabel(path).trim();
+    const creatorMatch = /^【(.+)】$/.exec(originalName);
+    return (creatorMatch?.[1] ?? originalName).trim();
+  }
+
   function requestGidAssignment(extensions: string[]) {
     const pane = explorerContextMenu?.pane ?? 'left';
     const folderPaths = getSelectedExplorerFoldersForPane(pane);
@@ -9969,10 +10850,50 @@
     if (!creatorFolderConversionInProgress) creatorFolderConversionConfirmation = null;
   }
 
+  function requestCreatorReassignment() {
+    const pane = explorerContextMenu?.pane ?? 'left';
+    const folderPaths = getSelectedExplorerFoldersForPane(pane);
+    explorerContextMenu = null;
+    explorerDbManagementSubmenuOpen = false;
+    explorerGidSubmenuOpen = false;
+    if (folderPaths.length === 0) {
+      showExplorerToast('作者情報を付け替えるフォルダを選択してください。', 'error');
+      return;
+    }
+
+    const sourceCreator = inferCreatorNameFromFolderPath(folderPaths[0]);
+    creatorReassignmentConfirmation = {
+      pane,
+      folderPaths,
+      sourceCreator,
+      targetCreator: ''
+    };
+  }
+
+  function confirmCreatorReassignment() {
+    const request = creatorReassignmentConfirmation;
+    if (!request || creatorReassignmentInProgress) return;
+    const targetCreator = request.targetCreator.trim();
+    if (!targetCreator) {
+      showExplorerToast('正しいCreator名を入力してください。', 'error');
+      return;
+    }
+
+    creatorReassignmentInProgress = true;
+    postHostMessage({
+      type: 'explorer.creator.reassign',
+      folders: request.folderPaths,
+      sourceCreator: request.sourceCreator,
+      targetCreator
+    });
+  }
+
+  function closeCreatorReassignmentConfirmation() {
+    if (!creatorReassignmentInProgress) creatorReassignmentConfirmation = null;
+  }
+
   function getCreatorFolderTargetName(path: string) {
-    const originalName = getExplorerPathLabel(path).trim();
-    const alreadyConverted = /^【(.+)】$/.exec(originalName);
-    const creatorName = (alreadyConverted?.[1] ?? originalName).trim();
+    const creatorName = inferCreatorNameFromFolderPath(path);
     return creatorName ? `【${creatorName}】` : '【元の名前】';
   }
 
@@ -10586,19 +11507,26 @@
     }, 140);
   }
 
-  function showExplorerToast(message: string, kind: 'success' | 'error' | 'progress', duration: number | null = 3_200) {
+  function showExplorerToast(
+    message: string,
+    kind: 'success' | 'error' | 'progress',
+    duration: number | null = 3_200,
+    action: 'cancelDatabaseScan' | null = null
+  ) {
     if (!message) {
       return;
     }
 
     explorerToastMessage = translateSystemText(message, appLanguage);
     explorerToastKind = kind;
+    explorerToastAction = action;
     if (explorerToastTimer) {
       clearTimeout(explorerToastTimer);
     }
     if (duration !== null) {
       explorerToastTimer = setTimeout(() => {
         explorerToastMessage = '';
+        explorerToastAction = null;
       }, duration);
     }
   }
@@ -11393,7 +12321,7 @@
   }
 
   function isExplorerFolderUpdateLocked() {
-    return explorerPasteInProgress !== null || gidAssignmentInProgress || creatorFolderConversionInProgress;
+    return explorerPasteInProgress !== null || gidAssignmentInProgress || creatorFolderConversionInProgress || creatorReassignmentInProgress;
   }
 
   function beginExplorerPaste(pane: 'left' | 'right', path: string) {
@@ -11637,6 +12565,10 @@
     const firstSection = sections[0].id;
     const exists = (section: string) => sections.some(candidate => candidate.id === section);
     sqliteDatabaseUpdateCategories = sqliteDatabaseUpdateCategories.filter(exists);
+    databaseScanSchedules = databaseScanSchedules.map(schedule => ({
+      ...schedule,
+      categories: schedule.categories.filter(exists)
+    }));
     filterEditorVisibleCategoriesDraft = filterEditorVisibleCategoriesDraft.filter(exists);
     gallerySection = exists(gallerySection) ? gallerySection : firstSection;
     galleryCreatorSummarySection = exists(galleryCreatorSummarySection) ? galleryCreatorSummarySection : firstSection;
@@ -11981,6 +12913,126 @@
     postHostMessage({ type: 'settings.pcloud.disconnect' });
   }
 
+  function startDatabaseScheduledScanToast(message: string, estimatedSeconds: number | null) {
+    finishDatabaseScheduledScanToast();
+    databaseScheduledScanInProgress = true;
+    databaseScheduledScanStartedAt = Date.now();
+    databaseScheduledScanEstimatedSeconds = estimatedSeconds !== null && estimatedSeconds > 0
+      ? Math.round(estimatedSeconds)
+      : null;
+    databaseScheduledScanBaseMessage = message;
+    updateDatabaseScheduledScanToast();
+    databaseScheduledScanToastTimer = setInterval(updateDatabaseScheduledScanToast, 1_000);
+  }
+
+  function updateDatabaseScheduledScanToast() {
+    if (!databaseScheduledScanInProgress) return;
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - databaseScheduledScanStartedAt) / 1_000));
+    const elapsedLabel = translateSystemText('経過時間', appLanguage);
+    const estimateLabel = translateSystemText('予想所要時間', appLanguage);
+    const estimate = databaseScheduledScanEstimatedSeconds === null
+      ? translateSystemText('実績なし', appLanguage)
+      : formatGidMigrationDuration(databaseScheduledScanEstimatedSeconds);
+    const baseMessage = sqliteDatabaseCancelRequested
+      ? translateSystemText('定期フォルダ走査を安全に中断しています...', appLanguage)
+      : translateSystemText(databaseScheduledScanBaseMessage, appLanguage);
+    showExplorerToast(
+      `${baseMessage}\n${elapsedLabel} ${formatGidMigrationDuration(elapsedSeconds)} / ${estimateLabel} ${estimate}`,
+      'progress',
+      null,
+      'cancelDatabaseScan');
+  }
+
+  function finishDatabaseScheduledScanToast() {
+    if (databaseScheduledScanToastTimer) {
+      clearInterval(databaseScheduledScanToastTimer);
+      databaseScheduledScanToastTimer = undefined;
+    }
+    databaseScheduledScanInProgress = false;
+    databaseScheduledScanStartedAt = 0;
+    databaseScheduledScanEstimatedSeconds = null;
+    databaseScheduledScanBaseMessage = '';
+    if (explorerToastAction === 'cancelDatabaseScan') {
+      explorerToastAction = null;
+    }
+  }
+
+  function addDatabaseScanSchedule() {
+    const id = typeof crypto?.randomUUID === 'function'
+      ? crypto.randomUUID().replaceAll('-', '')
+      : `schedule-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    databaseScanSchedules = [
+      ...databaseScanSchedules,
+      {
+        id,
+        weekdays: [new Date().getDay()],
+        time: '03:00',
+        categories: gallerySections.map(section => section.id),
+        lastStartedAt: null
+      }
+    ];
+  }
+
+  function removeDatabaseScanSchedule(id: string) {
+    databaseScanSchedules = databaseScanSchedules.filter(schedule => schedule.id !== id);
+  }
+
+  function updateDatabaseScanScheduleTime(id: string, time: string) {
+    databaseScanSchedules = databaseScanSchedules.map(schedule =>
+      schedule.id === id ? { ...schedule, time } : schedule);
+  }
+
+  function toggleDatabaseScanScheduleWeekday(id: string, weekday: number) {
+    databaseScanSchedules = databaseScanSchedules.map(schedule => {
+      if (schedule.id !== id) return schedule;
+      const weekdays = schedule.weekdays.includes(weekday)
+        ? schedule.weekdays.filter(value => value !== weekday)
+        : [...schedule.weekdays, weekday].sort((left, right) => left - right);
+      return { ...schedule, weekdays };
+    });
+  }
+
+  function toggleDatabaseScanScheduleCategory(id: string, category: string) {
+    databaseScanSchedules = databaseScanSchedules.map(schedule => {
+      if (schedule.id !== id) return schedule;
+      const categories = schedule.categories.includes(category)
+        ? schedule.categories.filter(value => value !== category)
+        : [...schedule.categories, category];
+      return { ...schedule, categories };
+    });
+  }
+
+  function databaseScanScheduleCategorySummary(schedule: DatabaseScanSchedule) {
+    const labels = gallerySections
+      .filter(section => schedule.categories.includes(section.id))
+      .map(section => section.label);
+    if (labels.length === 0) return '対象区分を選択';
+    if (labels.length <= 2) return labels.join(' / ');
+    return `${labels.length}区分を選択`;
+  }
+
+  function saveDatabaseScanSchedules() {
+    if (databaseScanSchedules.some(schedule => schedule.weekdays.length === 0)) {
+      sqliteDatabaseStatus = '各スケジュールに曜日を1つ以上指定してください。';
+      return;
+    }
+    if (databaseScanSchedules.some(schedule => !/^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.time))) {
+      sqliteDatabaseStatus = '各スケジュールに有効な時刻を指定してください。';
+      return;
+    }
+    if (databaseScanSchedules.some(schedule => schedule.categories.length === 0)) {
+      sqliteDatabaseStatus = '各スケジュールに対象区分を1つ以上指定してください。';
+      return;
+    }
+
+    databaseScanScheduleSaving = true;
+    sqliteDatabaseStatus = 'フォルダ走査スケジュールを保存中...';
+    postHostMessage({
+      type: 'settings.sqliteDatabase.schedules.save',
+      schedules: databaseScanSchedules
+    });
+  }
+
   function maintainSqliteDatabase() {
     sqliteDatabaseBusy = true;
     sqliteDatabaseStatus = 'SQLiteDBをメンテナンス中...';
@@ -12009,6 +13061,9 @@
     sqliteDatabaseCancelRequested = true;
     sqliteDatabaseStatus = 'SQLiteDB更新の中断を要求しています...';
     appendSqliteDatabaseProgress(sqliteDatabaseStatus);
+    if (databaseScheduledScanInProgress) {
+      updateDatabaseScheduledScanToast();
+    }
     postHostMessage({ type: 'settings.sqliteDatabase.update.cancel' });
   }
 
@@ -12419,6 +13474,9 @@
       <button class:nav-active={activeView === 'board'} onclick={() => setView('board')}>
         <LayoutGrid size={17} /> Board
       </button>
+      <button class:nav-active={activeView === 'calendar'} onclick={() => setView('calendar')}>
+        <CalendarCheck size={17} /> Calendar
+      </button>
       <button class:nav-active={activeView === 'settings'} onclick={() => setView('settings')}>
         <Settings size={17} /> Settings
       </button>
@@ -12463,6 +13521,9 @@
           </button>
           <button class:settings-active={settingsSection === 'keyboardShortcuts'} onclick={() => (settingsSection = 'keyboardShortcuts')}>
             キーボードショートカット
+          </button>
+          <button class:settings-active={settingsSection === 'calendar'} onclick={() => (settingsSection = 'calendar')}>
+            Calendar
           </button>
         </div>
       {/if}
@@ -12629,6 +13690,18 @@
             <button class:active={stickyNoteBoardMode === 'grouped'} onclick={() => stickyNoteBoardMode = 'grouped'}><Layers3 size={16} />機能別</button>
           </div>
         </div>
+      {:else if activeView === 'calendar'}
+        <div class="calendar-toolbar">
+          <div class="filters-toolbar-heading">
+            <strong>Calendar</strong>
+            <span>Creator Trackingの有効なサブスク更新予定を月・週ビューで確認します</span>
+          </div>
+          <div class="calendar-toolbar-actions">
+            <button title="Calendarを更新" disabled={calendarIsLoading} onclick={loadCalendarSubscriptions}><RefreshCw size={18} /></button>
+            <button class:connected={googleCalendarHasRefreshToken} title="Google Calendarへ今すぐ同期" disabled={googleCalendarBusy || !googleCalendarHasRefreshToken} onclick={syncGoogleCalendar}><CloudUpload size={18} />Google</button>
+            <button title="Google Calendarへ取り込めるiCalendarファイルを保存" onclick={exportCalendarIcs}><CalendarCheck size={18} />ICS</button>
+          </div>
+        </div>
       {:else if activeView === 'userGuide'}
         <div class="filters-toolbar-heading">
           <strong>User Guide</strong>
@@ -12649,8 +13722,10 @@
             <span>作者の活動・保管・評価・課金状況を一か所に集約します</span>
           </div>
           <div class="creator-tracking-toolbar-actions">
+            <button class="creator-tracking-new-button" title="Creator Trackingを新規作成" aria-label="Creator Trackingを新規作成" onclick={openCreatorTrackingNewDialog}><UserPlus size={18} /></button>
             <button class="creator-tracking-gallery-button" title="この作者をGalleryで表示" aria-label="この作者をGalleryで表示" disabled={!creatorTracking && !creatorTrackingSummary} onclick={navigateCreatorTrackingToGallery}><LayoutGrid size={18} /></button>
             <button class="creator-tracking-refresh-button" title="この作者の最新データを反映" aria-label="この作者の最新データを反映" disabled={!creatorTracking || creatorTrackingIsLoading || creatorTrackingIsSaving} onclick={refreshCreatorTracking}><RefreshCw size={18} /></button>
+            <button class="creator-tracking-delete-button" title="作者データを削除" aria-label="作者データを削除" disabled={(!creatorTracking && !creatorTrackingSummary) || creatorTrackingDeleteInProgress} onclick={requestCreatorTrackingDelete}><Trash2 size={18} /></button>
             <button class="sticky-note-launch-button" title="Creator Trackingに付箋を追加" onclick={createStickyNoteFromToolbar}><StickyNote size={18} /></button>
             <button class="view-bookmark-button" title="現在のCreator TrackingをBookmark" onclick={captureViewBookmarkFromToolbar}><Bookmark size={18} /></button>
           </div>
@@ -12694,6 +13769,7 @@
             </div>
           {/each}
           <button type="button" class="creator-tracking-tab-add" title="Creatorsから作者を追加" aria-label="Creatorsから作者を追加" onclick={openCreatorTrackingPicker}><Plus size={16} /></button>
+          <button type="button" class="creator-tracking-tab-add" title="Creator Trackingを新規作成" aria-label="Creator Trackingを新規作成" onclick={openCreatorTrackingNewDialog}><UserPlus size={16} /></button>
         </div>
       </nav>
     {/if}
@@ -13110,6 +14186,120 @@
               <div class="language-settings-note">
                 <Languages size={18} />
                 <p>言語を切り替えると、システムUIへすぐに反映されます。作品名・Creator・Title・Character・Tagなどの登録データは翻訳されません。</p>
+              </div>
+            </section>
+          </div>
+        {:else if settingsSection === 'calendar'}
+          <div class="calendar-settings-page">
+            <section class="settings-panel calendar-settings-card">
+              <header class="language-settings-heading">
+                <span class="language-settings-icon"><CalendarCheck size={20} /></span>
+                <div>
+                  <h2>Calendar</h2>
+                  <p>サブスク更新予定を表示するカレンダーの基本動作を設定します</p>
+                </div>
+              </header>
+
+              <label class="language-settings-field">
+                <span>週の開始曜日</span>
+                <select bind:value={calendarWeekStartDraft}>
+                  <option value={0}>日曜日</option>
+                  <option value={1}>月曜日</option>
+                  <option value={2}>火曜日</option>
+                  <option value={3}>水曜日</option>
+                  <option value={4}>木曜日</option>
+                  <option value={5}>金曜日</option>
+                  <option value={6}>土曜日</option>
+                </select>
+              </label>
+
+              <div class="calendar-settings-note">
+                <CalendarCheck size={18} />
+                <p>週の開始曜日はMonthビューと2 Weeksビューの両方に反映されます。</p>
+              </div>
+
+              <div class="settings-actions">
+                <button type="button" class="theme-save-button" onclick={saveCalendarSettings}>保存</button>
+              </div>
+            </section>
+
+            <section class="settings-panel calendar-settings-card google-calendar-settings-card">
+              <header class="google-calendar-settings-heading">
+                <span class="language-settings-icon"><CloudUpload size={20} /></span>
+                <div>
+                  <h2>Google Calendar同期</h2>
+                  <p>GalleryBrowserのサブスク更新予定をGoogle Calendarへ一方向で自動同期します</p>
+                </div>
+                <span class:connected={googleCalendarSyncFeatureEnabled && googleCalendarHasRefreshToken} class="google-calendar-connection-badge">
+                  {googleCalendarSyncFeatureEnabled ? (googleCalendarHasRefreshToken ? '連携済み' : '未連携') : '無効'}
+                </span>
+              </header>
+
+              <div class="google-calendar-feature-toggle-row">
+                <div>
+                  <strong>自動同期</strong>
+                  <span>起動後・Creator Trackingの保存後・15分ごとの確認時に差分を同期します</span>
+                </div>
+                <button
+                  type="button"
+                  class:active={googleCalendarAutoSyncEnabled}
+                  class="google-calendar-enable-toggle"
+                  aria-pressed={googleCalendarAutoSyncEnabled}
+                  disabled={googleCalendarBusy || !googleCalendarSyncFeatureEnabled}
+                  onclick={() => googleCalendarAutoSyncEnabled = !googleCalendarAutoSyncEnabled}>
+                  <span></span>{googleCalendarAutoSyncEnabled ? 'ON' : 'OFF'}
+                </button>
+              </div>
+
+              <div class="google-calendar-settings-grid">
+                <label>
+                  <span>OAuth Client ID</span>
+                  <input bind:value={googleCalendarClientId} placeholder="Google CloudのデスクトップアプリClient ID" disabled={googleCalendarBusy || !googleCalendarSyncFeatureEnabled} />
+                </label>
+                <label>
+                  <span>OAuth Client Secret</span>
+                  <input type="password" bind:value={googleCalendarClientSecretDraft} placeholder={googleCalendarHasClientSecret ? '登録済み（空欄なら維持）' : 'デスクトップアプリのClient Secret'} autocomplete="new-password" disabled={googleCalendarBusy || !googleCalendarSyncFeatureEnabled} />
+                </label>
+                <label>
+                  <span>同期先Calendar ID</span>
+                  <input bind:value={googleCalendarId} placeholder="primary またはCalendar ID" disabled={googleCalendarBusy || !googleCalendarSyncFeatureEnabled} />
+                </label>
+              </div>
+
+              {#if googleCalendarRedirectUri}
+                <div class="google-calendar-redirect-uri">
+                  <span>OAuth Redirect URI（デスクトップアプリ用）</span>
+                  <code>{googleCalendarRedirectUri}</code>
+                </div>
+              {/if}
+
+              <div class="google-calendar-settings-note">
+                {#if !googleCalendarSyncFeatureEnabled}
+                  <p><strong>このビルドではGoogle Calendar同期機能は無効です。</strong></p>
+                {/if}
+                <strong>Google Cloudでの準備</strong>
+                <ol>
+                  <li>Google Calendar APIを有効化します。</li>
+                  <li>OAuth同意画面を設定し、OAuthクライアントを「デスクトップアプリ」で作成します。</li>
+                  <li>Client IDとClient Secretを入力して保存後、OAuth連携を実行します。</li>
+                </ol>
+                <p>Google側の一般予定は取り込みません。GalleryBrowserの識別情報が付いたサブスク予定だけを更新・削除します。</p>
+              </div>
+
+              {#if googleCalendarLastSyncedAt || googleCalendarLastSyncError || googleCalendarStatus}
+                <div class:error={Boolean(googleCalendarLastSyncError)} class="google-calendar-sync-summary">
+                  {#if googleCalendarStatus}<strong>{googleCalendarStatus}</strong>{/if}
+                  {#if googleCalendarLastSyncedAt}<span>最終同期: {formatModifiedAt(googleCalendarLastSyncedAt)}</span>{/if}
+                  {#if googleCalendarLastSyncError}<span>直近のエラー: {googleCalendarLastSyncError}</span>{/if}
+                </div>
+              {/if}
+
+              <div class="google-calendar-actions">
+                <button type="button" class="primary-button" onclick={saveCalendarSettings} disabled={googleCalendarBusy || !googleCalendarSyncFeatureEnabled}>設定を保存</button>
+                <button type="button" class="primary-button" onclick={connectGoogleCalendar} disabled={googleCalendarBusy || !googleCalendarSyncFeatureEnabled || !googleCalendarClientId.trim()}>OAuth連携</button>
+                <button type="button" class="quiet-button" onclick={testGoogleCalendarConnection} disabled={googleCalendarBusy || !googleCalendarSyncFeatureEnabled || !googleCalendarHasRefreshToken}>接続確認</button>
+                <button type="button" class="primary-button" onclick={syncGoogleCalendar} disabled={googleCalendarBusy || !googleCalendarSyncFeatureEnabled || !googleCalendarHasRefreshToken}>今すぐ同期</button>
+                <button type="button" class="danger-button" onclick={disconnectGoogleCalendar} disabled={googleCalendarBusy || !googleCalendarSyncFeatureEnabled || !googleCalendarHasRefreshToken}>連携解除</button>
               </div>
             </section>
           </div>
@@ -13769,6 +14959,95 @@
                 </div>
               {/if}
               {#if pCloudStatus}<p class="pcloud-backup-status" aria-live="polite">{pCloudStatus}</p>{/if}
+            </section>
+
+            <section class="settings-panel database-schedule-panel">
+              <div class="database-schedule-heading">
+                <div>
+                  <h2>フォルダ走査のスケジュール</h2>
+                  <p>曜日・時刻・対象区分を指定して、アプリ起動中にSQLiteDBの更新を自動で開始します</p>
+                </div>
+                <button type="button" class="primary-button" onclick={addDatabaseScanSchedule} disabled={databaseScanScheduleSaving}>
+                  <Plus size={15} />
+                  行を追加
+                </button>
+              </div>
+
+              {#if databaseScanSchedules.length === 0}
+                <p class="database-schedule-empty">スケジュールは登録されていません。</p>
+              {:else}
+                <div class="database-schedule-list">
+                  {#each databaseScanSchedules as schedule (schedule.id)}
+                    <div class="database-schedule-row">
+                      <div class="database-schedule-field database-schedule-weekday-field">
+                        <span>曜日</span>
+                        <div class="database-schedule-weekdays">
+                          {#each databaseScheduleWeekdays as weekday}
+                            <button
+                              type="button"
+                              class:active={schedule.weekdays.includes(weekday.value)}
+                              aria-pressed={schedule.weekdays.includes(weekday.value)}
+                              onclick={() => toggleDatabaseScanScheduleWeekday(schedule.id, weekday.value)}
+                              disabled={databaseScanScheduleSaving}>
+                              {weekday.label}
+                            </button>
+                          {/each}
+                        </div>
+                      </div>
+
+                      <label class="database-schedule-field database-schedule-time-field">
+                        <span>時刻</span>
+                        <input
+                          type="time"
+                          value={schedule.time}
+                          onchange={(event) => updateDatabaseScanScheduleTime(schedule.id, event.currentTarget.value)}
+                          disabled={databaseScanScheduleSaving} />
+                      </label>
+
+                      <div class="database-schedule-field database-schedule-category-field">
+                        <span>対象区分（複数可）</span>
+                        <details class="database-schedule-category-picker">
+                          <summary>{databaseScanScheduleCategorySummary(schedule)}</summary>
+                          <div>
+                            {#each gallerySections as section}
+                              <label>
+                                <input
+                                  type="checkbox"
+                                  checked={schedule.categories.includes(section.id)}
+                                  onchange={() => toggleDatabaseScanScheduleCategory(schedule.id, section.id)}
+                                  disabled={databaseScanScheduleSaving} />
+                                <span data-i18n-skip>{section.label}</span>
+                              </label>
+                            {/each}
+                          </div>
+                        </details>
+                      </div>
+
+                      <div class="database-schedule-last-run">
+                        <span>最終開始</span>
+                        <strong>{schedule.lastStartedAt ? formatModifiedAt(schedule.lastStartedAt) : '未実行'}</strong>
+                      </div>
+
+                      <button
+                        type="button"
+                        class="icon-button database-schedule-delete"
+                        aria-label="スケジュールを削除"
+                        title="スケジュールを削除"
+                        onclick={() => removeDatabaseScanSchedule(schedule.id)}
+                        disabled={databaseScanScheduleSaving}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+
+              <div class="settings-actions">
+                <button type="button" onclick={saveDatabaseScanSchedules} disabled={databaseScanScheduleSaving}>
+                  {databaseScanScheduleSaving ? '保存中...' : '設定を保存'}
+                </button>
+              </div>
+              <p class="thumbnail-cache-note">予定時刻にアプリが起動していなかった場合は、次回起動後、その曜日のうちに未実行であれば開始します。手動更新や別のスケジュールと重なった場合は、実行中の走査が完了してから再判定します。</p>
             </section>
 
             <section class="settings-panel thumbnail-cache-maintenance-panel">
@@ -14828,6 +16107,66 @@
               </div>
             </section>
           {/each}
+        {/if}
+      </section>
+    {:else if activeView === 'calendar'}
+      <section class="calendar-content">
+        <header class="calendar-content-heading">
+          <div>
+            <span class="calendar-heading-icon"><CalendarCheck size={22} /></span>
+            <div>
+              <h1>Subscription Calendar</h1>
+              <p>有効なサブスクの更新予定をCreator Trackingから集約します</p>
+            </div>
+          </div>
+          <div class="calendar-controls">
+            <button type="button" onclick={() => shiftCalendarMonth(-1)}><ChevronLeft size={16} />前月</button>
+            <strong>{getCalendarMonthTitle()}</strong>
+            <button type="button" onclick={() => shiftCalendarMonth(1)}>翌月<ChevronRight size={16} /></button>
+            <button type="button" onclick={resetCalendarMonthToToday}>Today</button>
+            <div class="calendar-view-toggle" role="group" aria-label="Calendar view">
+              <button class:active={calendarViewMode === 'month'} onclick={() => (calendarViewMode = 'month')}>Month</button>
+              <button class:active={calendarViewMode === 'focus'} onclick={() => (calendarViewMode = 'focus')}>2 Weeks</button>
+            </div>
+          </div>
+        </header>
+
+        {#if calendarIsLoading}
+          <div class="calendar-status"><RefreshCw size={22} /> Calendarを読み込んでいます...</div>
+        {:else if calendarError}
+          <div class="calendar-status error"><span>{calendarError}</span><button onclick={loadCalendarSubscriptions}>再試行</button></div>
+        {:else}
+          <div class:focus={calendarViewMode === 'focus'} class="calendar-grid">
+            {#each getCalendarWeekdayLabels() as label}
+              <div class="calendar-weekday">{label}</div>
+            {/each}
+            {#each (calendarViewMode === 'month' ? getCalendarMonthCells() : getCalendarFocusCells()) as cell}
+              <article class:muted={!cell.inMonth && calendarViewMode === 'month'} class:today={cell.isToday} class="calendar-day-cell">
+                <div class="calendar-day-head">
+                  <span>{cell.day}</span>
+                  {#if cell.events.length > 0}<small>{cell.events.length}</small>{/if}
+                </div>
+                <div class="calendar-day-events">
+                  {#each cell.events as event (event.id)}
+                    <button
+                      class:ending={event.endingPlanned}
+                      class:reminder={event.reminder}
+                      class="calendar-event-pill"
+                      title={`${event.displayName} / ${event.platform}${event.plan ? ` / ${event.plan}` : ''}`}
+                      onclick={() => openCalendarEventCreator(event)}
+                    >
+                      <strong data-i18n-skip>{event.displayName}</strong>
+                      <span data-i18n-skip>{event.platform}{event.plan ? ` / ${event.plan}` : ''}</span>
+                      {#if formatCalendarEventAmount(event)}<small>{formatCalendarEventAmount(event)}</small>{/if}
+                    </button>
+                  {/each}
+                </div>
+              </article>
+            {/each}
+          </div>
+          {#if calendarEvents.length === 0}
+            <div class="calendar-empty"><CalendarCheck size={34} /><h2>更新予定はありません</h2><p>Creator Trackingで有効なサブスクの更新予定日を登録するとここに表示されます。</p></div>
+          {/if}
         {/if}
       </section>
     {:else if activeView === 'userMetrics'}
@@ -16811,7 +18150,11 @@
 
 {#if galleryTitleAssignment && activeView === 'library'}
   <div class="modal-backdrop gallery-title-assignment-backdrop" role="presentation">
-    <div class:panel-open={galleryTitleAssignment.assignedTitlesPanelOpen} class="gallery-title-assignment-shell">
+    <div
+      class:panel-open={galleryTitleAssignment.assignedTitlesPanelOpen}
+      class:character-panel-open={galleryTitleAssignment.characterPanelOpen}
+      class="gallery-title-assignment-shell"
+    >
       {#if galleryTitleAssignment.assignedTitlesPanelOpen}
         <aside class="gallery-title-assignment-current-panel" aria-label="作品に登録済みのTitle">
           <div>
@@ -16992,6 +18335,84 @@
         <button class="quiet-button gallery-title-assignment-cancel" disabled={galleryTitleAssignment.isSaving} onclick={closeGalleryTitleAssignment}>キャンセル</button>
       </div>
       </dialog>
+      {#if galleryTitleAssignment.characterPanelOpen}
+        <aside class="gallery-title-assignment-character-panel" aria-label="Titleに紐づくCharacter">
+          <div>
+            <h2>Character属性の登録</h2>
+            <p>選択したTitleに紐づくCharacterを同時に登録します</p>
+          </div>
+          <section class="gallery-title-assignment-section">
+            <h3>{galleryTitleAssignment.creators[0] || 'Creator未設定'} / {selectedGalleryTitleAssignmentTitleName || 'Title未選択'}に登録済みのCharacter</h3>
+            <label class="gallery-title-assignment-filter">
+              <Search size={16} />
+              <input
+                value={galleryTitleAssignment.characterCreatorQuery}
+                placeholder="Characterを絞り込む"
+                aria-label="CreatorとTitleに登録済みのCharacterを絞り込む"
+                disabled={galleryTitleAssignment.isCharacterLoading || galleryTitleAssignment.isSaving}
+                oninput={(event) => {
+                  if (galleryTitleAssignment) {
+                    galleryTitleAssignment = { ...galleryTitleAssignment, characterCreatorQuery: event.currentTarget.value };
+                  }
+                }}
+              />
+            </label>
+            <div class="gallery-title-assignment-list gallery-title-assignment-list-creator" aria-label="CreatorとTitleに登録済みのCharacter">
+              {#if galleryTitleAssignment.isCharacterLoading}
+                <span class="gallery-title-assignment-empty">読み込み中...</span>
+              {:else if visibleGalleryTitleAssignmentCreatorTitleCharacters.length === 0}
+                <span class="gallery-title-assignment-empty">該当するCharacterはありません</span>
+              {:else}
+                {#each visibleGalleryTitleAssignmentCreatorTitleCharacters as option (option.id)}
+                  <button
+                    class:selected={galleryTitleAssignment.selectedCharacterId === option.id}
+                    disabled={galleryTitleAssignment.isSaving}
+                    onclick={() => selectGalleryTitleAssignmentCharacter(option.id)}
+                  >
+                    <span>{option.character}</span>
+                    <small>{option.workCount} 件</small>
+                  </button>
+                {/each}
+              {/if}
+            </div>
+          </section>
+          <section class="gallery-title-assignment-section">
+            <h3>登録可能なCharacter</h3>
+            <label class="gallery-title-assignment-filter">
+              <Search size={16} />
+              <input
+                value={galleryTitleAssignment.characterQuery}
+                placeholder="Characterを絞り込む"
+                aria-label="登録可能なCharacterを絞り込む"
+                disabled={galleryTitleAssignment.isCharacterLoading || galleryTitleAssignment.isSaving}
+                oninput={(event) => {
+                  if (galleryTitleAssignment) {
+                    galleryTitleAssignment = { ...galleryTitleAssignment, characterQuery: event.currentTarget.value };
+                  }
+                }}
+              />
+            </label>
+            <div class="gallery-title-assignment-list gallery-title-assignment-list-available" aria-label="登録可能なCharacter">
+              {#if galleryTitleAssignment.isCharacterLoading}
+                <span class="gallery-title-assignment-empty">読み込み中...</span>
+              {:else if visibleGalleryTitleAssignmentAvailableCharacters.length === 0}
+                <span class="gallery-title-assignment-empty">該当するCharacterはありません</span>
+              {:else}
+                {#each visibleGalleryTitleAssignmentAvailableCharacters as option (option.id)}
+                  <button
+                    class:selected={galleryTitleAssignment.selectedCharacterId === option.id}
+                    disabled={galleryTitleAssignment.isSaving}
+                    onclick={() => selectGalleryTitleAssignmentCharacter(option.id)}
+                  >
+                    <span>{option.character}</span>
+                    <small>{option.title}</small>
+                  </button>
+                {/each}
+              {/if}
+            </div>
+          </section>
+        </aside>
+      {/if}
     </div>
   </div>
 {/if}
@@ -17419,6 +18840,10 @@
               <UserRound size={16} />
               <span>作者フォルダ化</span>
             </button>
+            <button role="menuitem" onclick={requestCreatorReassignment}>
+              <UsersRound size={16} />
+              <span>作者情報の付け替え</span>
+            </button>
           </div>
         {/if}
       </div>
@@ -17580,6 +19005,15 @@
       <X size={17} />
     {/if}
     <span>{explorerToastMessage}</span>
+    {#if explorerToastAction === 'cancelDatabaseScan'}
+      <button
+        type="button"
+        class="explorer-toast-action"
+        onclick={cancelSqliteDatabaseUpdate}
+        disabled={sqliteDatabaseCancelRequested}>
+        {sqliteDatabaseCancelRequested ? '中断中...' : '安全に中断'}
+      </button>
+    {/if}
   </div>
 {/if}
 
@@ -17591,6 +19025,104 @@
       <span>経過時間 {winRarProgressSeconds} 秒</span>
       <i aria-hidden="true"></i>
     </div>
+  </div>
+{/if}
+
+{#if creatorTrackingNewDialogOpen}
+  <div class="modal-backdrop" role="presentation">
+    <dialog
+      open
+      class="modal rename-modal creator-tracking-new-modal"
+      aria-labelledby="creator-tracking-new-title"
+      onkeydown={(event) => {
+        if (event.key === 'Escape') creatorTrackingNewDialogOpen = false;
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          createNewCreatorTracking();
+        }
+      }}
+    >
+      <div class="modal-heading">
+        <h2 id="creator-tracking-new-title">Creator Trackingを新規作成</h2>
+        <button title="閉じる" onclick={() => (creatorTrackingNewDialogOpen = false)}><X size={18} /></button>
+      </div>
+      <p>Galleryに作品がないCreatorも、起票して管理できます。</p>
+      <label class="rename-field rename-name-field">
+        <span>Creator名</span>
+        <input
+          class="modal-input"
+          bind:value={creatorTrackingNewCreator}
+          maxlength="160"
+          placeholder="例：creator_name"
+          aria-label="Creator名"
+          use:focusAtEnd
+        />
+      </label>
+      <label class="rename-field">
+        <span>区分</span>
+        <select class="modal-input" bind:value={creatorTrackingNewCategory} aria-label="区分">
+          {#each gallerySections as section}
+            <option value={section.id}>{section.label}</option>
+          {/each}
+        </select>
+      </label>
+      <p class="gid-assignment-note">作品数ゼロのテンプレートとして作成し、活動場所・ストレージ・課金情報を後から入力できます。</p>
+      <div class="modal-actions">
+        <button class="primary-button" disabled={!creatorTrackingNewCreator.trim()} onclick={createNewCreatorTracking}><UserPlus size={16} /> 作成</button>
+        <button class="quiet-button" onclick={() => (creatorTrackingNewDialogOpen = false)}>キャンセル</button>
+      </div>
+    </dialog>
+  </div>
+{/if}
+
+{#if creatorTrackingDeleteStep > 0 && creatorTrackingDeleteTarget}
+  <div class="modal-backdrop" role="presentation">
+    <dialog
+      open
+      class="modal rename-modal delete-modal creator-tracking-delete-modal"
+      aria-labelledby="creator-tracking-delete-title"
+      onkeydown={(event) => {
+        if (event.key === 'Escape' && !creatorTrackingDeleteInProgress) {
+          cancelCreatorTrackingDelete();
+        }
+      }}
+    >
+      <div class="modal-heading">
+        <h2 id="creator-tracking-delete-title">
+          {creatorTrackingDeleteStep === 1 ? '作者データを削除しますか？' : '最終確認：本当に削除しますか？'}
+        </h2>
+        <button title="閉じる" disabled={creatorTrackingDeleteInProgress} onclick={cancelCreatorTrackingDelete}><X size={18} /></button>
+      </div>
+      {#if creatorTrackingDeleteStep === 1}
+        <p>Creator「{creatorTrackingDeleteTarget.label}」のDB上の作者データを削除します。</p>
+        <div class="creator-tracking-delete-summary">
+          <span>削除対象</span>
+          <ul>
+            <li>Creator Trackingのデータ</li>
+            <li>Creatorが「{creatorTrackingDeleteTarget.creator}」になっている作品のDBデータ</li>
+            <li>関連するDBキャッシュとCreator Tracking付箋</li>
+          </ul>
+        </div>
+        <p class="gid-assignment-note">ファイルやフォルダ本体は削除・移動・リネームしません。</p>
+        <div class="modal-actions">
+          <button class="danger-button" onclick={advanceCreatorTrackingDeleteConfirmation}><TriangleAlert size={16} /> 次の確認へ</button>
+          <button class="quiet-button" onclick={cancelCreatorTrackingDelete}>キャンセル</button>
+        </div>
+      {:else}
+        <p>この操作はDBから作者情報と作品登録を削除します。ファイル本体は残りますが、DB上の関連付けは消えます。</p>
+        <div class="creator-tracking-delete-final-name">{creatorTrackingDeleteTarget.creator}</div>
+        <div class="modal-actions">
+          <button class="danger-button" disabled={creatorTrackingDeleteInProgress} onclick={executeCreatorTrackingDelete}>
+            {#if creatorTrackingDeleteInProgress}
+              削除中...
+            {:else}
+              <Trash2 size={16} /> 作者データを削除
+            {/if}
+          </button>
+          <button class="quiet-button" disabled={creatorTrackingDeleteInProgress} onclick={cancelCreatorTrackingDelete}>キャンセル</button>
+        </div>
+      {/if}
+    </dialog>
   </div>
 {/if}
 
@@ -17958,6 +19490,59 @@
       <div class="modal-actions">
         <button class="primary-button" disabled={creatorFolderConversionInProgress} onclick={confirmCreatorFolderConversion}>{creatorFolderConversionInProgress ? '処理中...' : '作者フォルダ化'}</button>
         <button class="quiet-button creator-folder-conversion-cancel-button" disabled={creatorFolderConversionInProgress} onclick={closeCreatorFolderConversionConfirmation}>キャンセル</button>
+      </div>
+    </dialog>
+  </div>
+{/if}
+
+{#if creatorReassignmentConfirmation}
+  <div class="modal-backdrop" role="presentation">
+    <dialog open class="modal rename-modal gid-assignment-modal" aria-labelledby="creator-reassignment-title" onkeydown={(event) => {
+      if (event.key === 'Escape' && !creatorReassignmentInProgress) {
+        event.preventDefault();
+        closeCreatorReassignmentConfirmation();
+      }
+      if (event.key === 'Enter' && !creatorReassignmentInProgress) {
+        event.preventDefault();
+        confirmCreatorReassignment();
+      }
+    }}>
+      <div class="modal-heading">
+        <h2 id="creator-reassignment-title">作者情報を付け替えますか？</h2>
+        <button title="閉じる" disabled={creatorReassignmentInProgress} onclick={closeCreatorReassignmentConfirmation}><X size={18} /></button>
+      </div>
+      <p>選択フォルダ配下のDB上のCreatorを、正しいCreator名へ付け替えます。ファイルやフォルダは移動しません。</p>
+      <label class="rename-field">
+        <span>現在のCreator</span>
+        <input class="modal-input" value={creatorReassignmentConfirmation.sourceCreator} readonly />
+      </label>
+      <label class="rename-field">
+        <span>正しいCreator</span>
+        <input
+          class="modal-input"
+          value={creatorReassignmentConfirmation.targetCreator}
+          placeholder="例：正しい作者名"
+          disabled={creatorReassignmentInProgress}
+          oninput={(event) => {
+            if (creatorReassignmentConfirmation) {
+              creatorReassignmentConfirmation = {
+                ...creatorReassignmentConfirmation,
+                targetCreator: event.currentTarget.value
+              };
+            }
+          }}
+        />
+      </label>
+      <ul>
+        {#each creatorReassignmentConfirmation.folderPaths.slice(0, 5) as folderPath}
+          <li title={folderPath}>{folderPath}</li>
+        {/each}
+        {#if creatorReassignmentConfirmation.folderPaths.length > 5}<li>ほか {creatorReassignmentConfirmation.folderPaths.length - 5} フォルダ</li>{/if}
+      </ul>
+      <p class="gid-assignment-note">対象は選択フォルダ配下に登録されている作品です。Creator Trackingは現在のCreator名のページがあり、正しいCreator名のページが未作成の場合だけキーを変更します。</p>
+      <div class="modal-actions">
+        <button class="primary-button" disabled={creatorReassignmentInProgress || !creatorReassignmentConfirmation.targetCreator.trim()} onclick={confirmCreatorReassignment}>{creatorReassignmentInProgress ? '処理中...' : '付け替え'}</button>
+        <button class="quiet-button creator-folder-conversion-cancel-button" disabled={creatorReassignmentInProgress} onclick={closeCreatorReassignmentConfirmation}>キャンセル</button>
       </div>
     </dialog>
   </div>

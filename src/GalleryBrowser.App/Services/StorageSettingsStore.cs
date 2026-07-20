@@ -10,6 +10,8 @@ internal sealed class StorageSettingsStore
 {
     private const int CurrentStorageSettingsVersion = 1;
     private const string PCloudCredentialTarget = "GalleryBrowser/pCloudOAuthAccessToken";
+    private const string GoogleCalendarClientSecretCredentialTarget = "GalleryBrowser/GoogleCalendarClientSecret";
+    private const string GoogleCalendarRefreshTokenCredentialTarget = "GalleryBrowser/GoogleCalendarRefreshToken";
     private const string DefaultPCloudApiHost = "eapi.pcloud.com";
     private const string DefaultPCloudTargetFolder = "";
     private const int DefaultPCloudCheckIntervalMinutes = 60;
@@ -49,6 +51,119 @@ internal sealed class StorageSettingsStore
         {
             var settings = ReadUnsafe() with { CacheDatabasePath = Path.GetFullPath(databasePath) };
             WriteUnsafe(settings);
+        }
+    }
+
+    public IReadOnlyList<DatabaseScanScheduleDto> GetDatabaseScanSchedules()
+    {
+        lock (_sync)
+        {
+            return NormalizeDatabaseScanSchedules(ReadUnsafe().DatabaseScanSchedules)
+                .Select(ToDatabaseScanScheduleDto)
+                .ToArray();
+        }
+    }
+
+    public void SaveDatabaseScanSchedules(IEnumerable<DatabaseScanScheduleDto> schedules)
+    {
+        lock (_sync)
+        {
+            var settings = ReadUnsafe();
+            var existingSchedules = NormalizeDatabaseScanSchedules(settings.DatabaseScanSchedules)
+                .GroupBy(schedule => schedule.Id, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+            var stored = NormalizeDatabaseScanSchedules(schedules.Select(schedule => new DatabaseScanScheduleStorage
+            {
+                Id = schedule.Id,
+                Weekdays = schedule.Weekdays,
+                Time = schedule.Time,
+                Categories = schedule.Categories,
+                LastStartedAt = existingSchedules.TryGetValue(schedule.Id, out var existing)
+                    ? existing.LastStartedAt
+                    : schedule.LastStartedAt
+            }).ToArray());
+            WriteUnsafe(settings with { DatabaseScanSchedules = stored });
+        }
+    }
+
+    public void MarkDatabaseScanScheduleStarted(string scheduleId, DateTimeOffset startedAt)
+    {
+        lock (_sync)
+        {
+            var settings = ReadUnsafe();
+            var schedules = NormalizeDatabaseScanSchedules(settings.DatabaseScanSchedules);
+            var changed = false;
+            for (var index = 0; index < schedules.Length; index++)
+            {
+                if (!string.Equals(schedules[index].Id, scheduleId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                schedules[index] = schedules[index] with { LastStartedAt = startedAt };
+                changed = true;
+                break;
+            }
+
+            if (changed)
+            {
+                WriteUnsafe(settings with { DatabaseScanSchedules = schedules });
+            }
+        }
+    }
+
+    public TimeSpan? GetRecentDatabaseScanAverageDuration(
+        IEnumerable<string> categories,
+        DateTimeOffset? now = null)
+    {
+        lock (_sync)
+        {
+            var current = now ?? DateTimeOffset.UtcNow;
+            var cutoff = current.ToUniversalTime().AddDays(-3);
+            var requestedCategories = NormalizeCategorySet(categories);
+            var recent = NormalizeDatabaseScanRunHistory(ReadUnsafe().DatabaseScanRunHistory)
+                .Where(run => run.CompletedAt.ToUniversalTime() >= cutoff)
+                .ToArray();
+            if (recent.Length == 0)
+            {
+                return null;
+            }
+
+            var matching = recent
+                .Where(run => NormalizeCategorySet(run.Categories)
+                    .SequenceEqual(requestedCategories, StringComparer.OrdinalIgnoreCase))
+                .ToArray();
+            var samples = matching.Length > 0 ? matching : recent;
+            return TimeSpan.FromSeconds(samples.Average(run => run.DurationSeconds));
+        }
+    }
+
+    public void RecordDatabaseScanDuration(
+        IEnumerable<string> categories,
+        DateTimeOffset completedAt,
+        TimeSpan duration)
+    {
+        if (duration <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        lock (_sync)
+        {
+            var settings = ReadUnsafe();
+            var cutoff = completedAt.ToUniversalTime().AddDays(-30);
+            var history = NormalizeDatabaseScanRunHistory(settings.DatabaseScanRunHistory)
+                .Where(run => run.CompletedAt.ToUniversalTime() >= cutoff)
+                .Append(new DatabaseScanRunHistoryStorage
+                {
+                    CompletedAt = completedAt,
+                    DurationSeconds = Math.Max(1, duration.TotalSeconds),
+                    Categories = NormalizeCategorySet(categories)
+                })
+                .OrderBy(run => run.CompletedAt)
+                .TakeLast(256)
+                .ToArray();
+            WriteUnsafe(settings with { DatabaseScanRunHistory = history });
         }
     }
 
@@ -199,6 +314,145 @@ internal sealed class StorageSettingsStore
         }
     }
 
+    public GoogleCalendarSyncSettingsDto GetGoogleCalendarSettings()
+    {
+        lock (_sync)
+        {
+            var settings = ReadUnsafe().GoogleCalendar ?? new GoogleCalendarStorageSettings();
+            return new GoogleCalendarSyncSettingsDto(
+                settings.AutoSyncEnabled,
+                settings.ClientId?.Trim() ?? string.Empty,
+                !string.IsNullOrWhiteSpace(WindowsCredentialStore.Read(GoogleCalendarClientSecretCredentialTarget)),
+                !string.IsNullOrWhiteSpace(WindowsCredentialStore.Read(GoogleCalendarRefreshTokenCredentialTarget)),
+                NormalizeGoogleCalendarId(settings.CalendarId),
+                GoogleCalendarSyncService.OAuthRedirectUri,
+                settings.LastSyncedAt,
+                settings.LastSyncError?.Trim() ?? string.Empty);
+        }
+    }
+
+    public void SaveGoogleCalendarConfiguration(
+        bool autoSyncEnabled,
+        string clientId,
+        string? clientSecret,
+        string calendarId)
+    {
+        lock (_sync)
+        {
+            var settings = ReadUnsafe();
+            var current = settings.GoogleCalendar ?? new GoogleCalendarStorageSettings();
+            var normalizedClientId = clientId.Trim();
+            var clientChanged = !string.Equals(current.ClientId?.Trim(), normalizedClientId, StringComparison.Ordinal);
+            if (clientChanged)
+            {
+                WindowsCredentialStore.Delete(GoogleCalendarRefreshTokenCredentialTarget);
+                if (string.IsNullOrWhiteSpace(clientSecret))
+                {
+                    WindowsCredentialStore.Delete(GoogleCalendarClientSecretCredentialTarget);
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(clientSecret))
+            {
+                WindowsCredentialStore.Write(GoogleCalendarClientSecretCredentialTarget, clientSecret.Trim());
+            }
+
+            WriteUnsafe(settings with
+            {
+                GoogleCalendar = current with
+                {
+                    AutoSyncEnabled = autoSyncEnabled,
+                    ClientId = normalizedClientId,
+                    CalendarId = NormalizeGoogleCalendarId(calendarId),
+                    LastSyncError = clientChanged ? string.Empty : current.LastSyncError
+                }
+            });
+        }
+    }
+
+    public string GetGoogleCalendarClientSecret()
+    {
+        lock (_sync)
+        {
+            return WindowsCredentialStore.Read(GoogleCalendarClientSecretCredentialTarget)?.Trim() ?? string.Empty;
+        }
+    }
+
+    public string GetGoogleCalendarRefreshToken()
+    {
+        lock (_sync)
+        {
+            var token = WindowsCredentialStore.Read(GoogleCalendarRefreshTokenCredentialTarget)?.Trim();
+            return string.IsNullOrWhiteSpace(token)
+                ? throw new InvalidOperationException("Google Calendarと連携されていません。先にOAuth連携を実行してください。")
+                : token;
+        }
+    }
+
+    public void SaveGoogleCalendarConnection(string refreshToken)
+    {
+        lock (_sync)
+        {
+            WindowsCredentialStore.Write(GoogleCalendarRefreshTokenCredentialTarget, refreshToken.Trim());
+            var settings = ReadUnsafe();
+            var current = settings.GoogleCalendar ?? new GoogleCalendarStorageSettings();
+            WriteUnsafe(settings with
+            {
+                GoogleCalendar = current with { LastSyncError = string.Empty }
+            });
+        }
+    }
+
+    public void SaveGoogleCalendarSyncResult(GoogleCalendarSyncResult result)
+    {
+        lock (_sync)
+        {
+            var settings = ReadUnsafe();
+            var current = settings.GoogleCalendar ?? new GoogleCalendarStorageSettings();
+            WriteUnsafe(settings with
+            {
+                GoogleCalendar = current with
+                {
+                    LastSyncedAt = result.SyncedAt,
+                    LastSyncError = string.Empty
+                }
+            });
+        }
+    }
+
+    public void SaveGoogleCalendarSyncError(string message)
+    {
+        lock (_sync)
+        {
+            var settings = ReadUnsafe();
+            var current = settings.GoogleCalendar ?? new GoogleCalendarStorageSettings();
+            WriteUnsafe(settings with
+            {
+                GoogleCalendar = current with { LastSyncError = message.Trim() }
+            });
+        }
+    }
+
+    public void DisconnectGoogleCalendar()
+    {
+        lock (_sync)
+        {
+            WindowsCredentialStore.Delete(GoogleCalendarRefreshTokenCredentialTarget);
+            var settings = ReadUnsafe();
+            var current = settings.GoogleCalendar ?? new GoogleCalendarStorageSettings();
+            WriteUnsafe(settings with
+            {
+                GoogleCalendar = current with
+                {
+                    AutoSyncEnabled = false,
+                    LastSyncError = string.Empty
+                }
+            });
+        }
+    }
+
+    private static string NormalizeGoogleCalendarId(string? calendarId) =>
+        string.IsNullOrWhiteSpace(calendarId) ? "primary" : calendarId.Trim();
+
     public static string NormalizeApiHost(string? apiHost)
     {
         var host = string.IsNullOrWhiteSpace(apiHost) ? DefaultPCloudApiHost : apiHost.Trim().ToLowerInvariant();
@@ -239,6 +493,85 @@ internal sealed class StorageSettingsStore
         }
         return normalized;
     }
+
+    private static DatabaseScanScheduleStorage[] NormalizeDatabaseScanSchedules(
+        IEnumerable<DatabaseScanScheduleStorage>? schedules)
+    {
+        var normalized = new List<DatabaseScanScheduleStorage>();
+        foreach (var schedule in schedules ?? [])
+        {
+            if (normalized.Count >= 64)
+            {
+                break;
+            }
+
+            var id = string.IsNullOrWhiteSpace(schedule.Id)
+                ? Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)
+                : schedule.Id.Trim();
+            var weekdays = (schedule.Weekdays ?? [])
+                .Where(day => day is >= 0 and <= 6)
+                .Distinct()
+                .Order()
+                .ToArray();
+            if (weekdays.Length == 0)
+            {
+                throw new ArgumentException("フォルダ走査スケジュールには曜日を1つ以上指定してください。");
+            }
+
+            if (!TimeOnly.TryParseExact(
+                    schedule.Time?.Trim(),
+                    "HH:mm",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out var parsedTime))
+            {
+                throw new ArgumentException("フォルダ走査スケジュールの時刻はHH:mm形式で指定してください。");
+            }
+
+            var categories = (schedule.Categories ?? [])
+                .Where(category => !string.IsNullOrWhiteSpace(category))
+                .Select(category => category.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (categories.Length == 0)
+            {
+                throw new ArgumentException("フォルダ走査スケジュールには対象区分を1つ以上指定してください。");
+            }
+
+            normalized.Add(schedule with
+            {
+                Id = id,
+                Weekdays = weekdays,
+                Time = parsedTime.ToString("HH:mm", CultureInfo.InvariantCulture),
+                Categories = categories
+            });
+        }
+        return normalized.ToArray();
+    }
+
+    private static DatabaseScanScheduleDto ToDatabaseScanScheduleDto(DatabaseScanScheduleStorage schedule) =>
+        new(schedule.Id, schedule.Weekdays, schedule.Time, schedule.Categories, schedule.LastStartedAt);
+
+    private static DatabaseScanRunHistoryStorage[] NormalizeDatabaseScanRunHistory(
+        IEnumerable<DatabaseScanRunHistoryStorage>? history) =>
+        (history ?? [])
+            .Where(run => run.CompletedAt != default &&
+                          run.DurationSeconds is > 0 and <= 604800)
+            .Select(run => run with
+            {
+                Categories = NormalizeCategorySet(run.Categories)
+            })
+            .OrderBy(run => run.CompletedAt)
+            .TakeLast(256)
+            .ToArray();
+
+    private static string[] NormalizeCategorySet(IEnumerable<string>? categories) =>
+        (categories ?? [])
+            .Where(category => !string.IsNullOrWhiteSpace(category))
+            .Select(category => category.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(category => category, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     private static bool HasPCloudConfiguration(PCloudStorageSettings? settings) =>
         settings is not null &&
@@ -285,6 +618,31 @@ internal sealed class StorageSettingsStore
         public int Version { get; init; } = CurrentStorageSettingsVersion;
         public string CacheDatabasePath { get; init; } = string.Empty;
         public PCloudStorageSettings? PCloud { get; init; }
+        public GoogleCalendarStorageSettings? GoogleCalendar { get; init; }
+        public DatabaseScanScheduleStorage[] DatabaseScanSchedules { get; init; } = [];
+        public DatabaseScanRunHistoryStorage[] DatabaseScanRunHistory { get; init; } = [];
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }
+    }
+
+    private sealed record DatabaseScanScheduleStorage
+    {
+        public string Id { get; init; } = string.Empty;
+        public int[] Weekdays { get; init; } = [];
+        public string Time { get; init; } = "03:00";
+        public string[] Categories { get; init; } = [];
+        public DateTimeOffset? LastStartedAt { get; init; }
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }
+    }
+
+    private sealed record DatabaseScanRunHistoryStorage
+    {
+        public DateTimeOffset CompletedAt { get; init; }
+        public double DurationSeconds { get; init; }
+        public string[] Categories { get; init; } = [];
 
         [JsonExtensionData]
         public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }
@@ -305,6 +663,18 @@ internal sealed class StorageSettingsStore
         public int BackupIntervalDays { get; init; } = DefaultPCloudBackupIntervalDays;
         public int MaximumSnapshots { get; init; } = DefaultPCloudMaximumSnapshots;
         public int IdleThresholdMinutes { get; init; } = DefaultPCloudIdleThresholdMinutes;
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }
+    }
+
+    private sealed record GoogleCalendarStorageSettings
+    {
+        public bool AutoSyncEnabled { get; init; }
+        public string ClientId { get; init; } = string.Empty;
+        public string CalendarId { get; init; } = "primary";
+        public DateTimeOffset? LastSyncedAt { get; init; }
+        public string LastSyncError { get; init; } = string.Empty;
 
         [JsonExtensionData]
         public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }

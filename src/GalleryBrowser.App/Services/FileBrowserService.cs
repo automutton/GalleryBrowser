@@ -231,8 +231,10 @@ public sealed class FileBrowserService
     public GidAssignmentResult AssignGids(
         IEnumerable<string> selectedFolderPaths,
         IEnumerable<string> extensions,
-        int digitCount)
+        int digitCount,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var normalizedExtensions = extensions
             .Where(extension => !string.IsNullOrWhiteSpace(extension))
             .Select(NormalizeGidExtension)
@@ -275,8 +277,10 @@ public sealed class FileBrowserService
         var allFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var folder in folders)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             foreach (var file in Directory.EnumerateFiles(folder, "*", enumerationOptions))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 allFiles.Add(file);
             }
         }
@@ -287,6 +291,7 @@ public sealed class FileBrowserService
         var skippedExistingCount = 0;
         foreach (var file in allFiles.OrderBy(path => path, StringComparer.CurrentCultureIgnoreCase))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var fileName = Path.GetFileName(file);
             var matches = GidTagRegex.Matches(fileName);
             foreach (Match match in matches)
@@ -360,6 +365,7 @@ public sealed class FileBrowserService
         var existingGidCount = 0;
         foreach (var source in targets)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 var fileName = Path.GetFileName(source);
