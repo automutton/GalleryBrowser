@@ -164,6 +164,19 @@ const exactTranslations: Record<string, Translation> = {
   '分以上操作していない場合に実行します。直近': ['minutes. Keep the latest', '分钟未操作时执行。保留最近', '分鐘未操作時執行。保留最近'],
   '件を保持します。': ['snapshots.', '个快照。', '個快照。'],
   'pCloud内の保存先を入力': ['Enter the destination folder in pCloud', '输入pCloud中的保存位置', '輸入pCloud中的儲存位置'],
+  '作品アーカイブのROOTフォルダ': ['Root folder for work archives', '作品归档的根文件夹', '作品封存的根資料夾'],
+  '例：ROOT': ['Example: ROOT', '示例：ROOT', '範例：ROOT'],
+  'pCloudにアーカイブする': ['Archive to pCloud', '归档到pCloud', '封存至pCloud'],
+  'pCloudへアーカイブする': ['Archive to pCloud', '归档到pCloud', '封存至pCloud'],
+  'ファイル本体を削除': ['Delete local file', '删除本地文件', '刪除本機檔案'],
+  'pCloudへアーカイブ': ['Archive to pCloud', '归档到pCloud', '封存至pCloud'],
+  'アーカイブ中...': ['Archiving...', '正在归档...', '正在封存...'],
+  'pCloudへアーカイブしています...': ['Archiving to pCloud...', '正在归档到pCloud...', '正在封存至pCloud...'],
+  'pCloudへアーカイブできませんでした。': ['Could not archive to pCloud.', '无法归档到pCloud。', '無法封存至pCloud。'],
+  'pCloudへアーカイブするファイルまたはフォルダを選択してください。': ['Select files or folders to archive to pCloud.', '请选择要归档到pCloud的文件或文件夹。', '請選擇要封存至pCloud的檔案或資料夾。'],
+  'アップロード完了とファイルサイズの一致を確認した後、ローカルのファイル本体を削除します。GID・属性・Tagなどの関連データは保持し、各種集計から除外します。': ['After the upload completes and the file size is verified, the local file is deleted. Related data such as the GID, attributes, and Tags is retained and excluded from summaries.', '上传完成并确认文件大小一致后，将删除本地文件。GID、属性、Tag等相关数据会保留，但不计入各类汇总。', '上傳完成並確認檔案大小一致後，將刪除本機檔案。GID、屬性、Tag等相關資料會保留，但不列入各項彙總。'],
+  'フォルダ階層を保ったままアップロードし、全ファイルのサイズ一致を確認した後、ローカルのファイルまたはフォルダ本体を削除します。': ['The folder hierarchy is preserved during upload. After every file size is verified, the local file or folder is deleted.', '上传时会保留文件夹层级。确认所有文件大小一致后，将删除本地文件或文件夹。', '上傳時會保留資料夾階層。確認所有檔案大小一致後，將刪除本機檔案或資料夾。'],
+  'Gallery用SQLiteDBに登録済みのGID・属性・Tagなどは保持し、各種集計から除外します。': ['GIDs, attributes, Tags, and other data registered in the Gallery SQLite database are retained and excluded from summaries.', 'Gallery SQLite数据库中已登记的GID、属性、Tag等数据会保留，但不计入各类汇总。', 'Gallery SQLite資料庫中已登錄的GID、屬性、Tag等資料會保留，但不列入各項彙總。'],
   '登録済み（空欄なら維持）': ['Registered (leave blank to keep)', '已注册（留空则保持）', '已登錄（留空則保留）'],
   'アクセストークンを貼り付け': ['Paste access token', '粘贴访问令牌', '貼上存取權杖'],
   'スナップショットを更新': ['Refresh snapshots', '刷新快照', '重新整理快照'],
@@ -373,8 +386,22 @@ const exactTranslations: Record<string, Translation> = {
 
   'WinRAR設定': ['WinRAR settings', 'WinRAR设置', 'WinRAR設定'],
   'FFmpeg設定': ['FFmpeg settings', 'FFmpeg设置', 'FFmpeg設定'],
+  'NConvert設定': ['NConvert settings', 'NConvert设置', 'NConvert設定'],
   'WinRARの実行ファイル': ['WinRAR executable', 'WinRAR可执行文件', 'WinRAR執行檔'],
   'FFmpegの実行ファイル': ['FFmpeg executable', 'FFmpeg可执行文件', 'FFmpeg執行檔'],
+  'NConvertの実行ファイル': ['NConvert executable', 'NConvert可执行文件', 'NConvert執行檔'],
+  'NConvert一時フォルダ': ['NConvert temporary folder', 'NConvert临时文件夹', 'NConvert暫存資料夾'],
+  'NConvert一時フォルダを選択': ['Select the NConvert temporary folder', '选择NConvert临时文件夹', '選擇NConvert暫存資料夾'],
+  'ExplorerからZIP内の対応画像を標準画質のJPG（JPEGli）へ変換するための専用設定です': ['Dedicated settings for converting supported images inside ZIP archives to standard-quality JPG (JPEGli) from Explorer.', '用于从Explorer将ZIP内支持的图像转换为标准画质JPG（JPEGli）的专用设置。', '用於從Explorer將ZIP內支援的圖片轉換為標準畫質JPG（JPEGli）的專用設定。'],
+  '空欄の場合は変換元ZIPと同じドライブ上に自動作成': ['If blank, create it automatically on the same drive as the source ZIP', '留空时在源ZIP所在驱动器上自动创建', '留空時在來源ZIP所在磁碟機上自動建立'],
+  '日本語・記号・絵文字を含まないASCIIパスを指定してください。処理単位の一時ファイルは完了後に削除されます。': ['Use an ASCII-only path without Japanese characters, symbols, or emoji. Per-operation temporary files are deleted after completion.', '请指定不含日文、符号或表情符号的纯ASCII路径。每次处理的临时文件会在完成后删除。', '請指定不含日文、符號或表情符號的純ASCII路徑。每次處理的暫存檔會在完成後刪除。'],
+  '変換プリセット': ['Conversion preset', '转换预设', '轉換預設'],
+  '元の日時・メタデータを維持し、XYB変換・ICC保持・ガンマ補正は行いません。': ['Preserves original timestamps and metadata; XYB conversion, ICC preservation, and gamma correction are disabled.', '保留原始时间戳和元数据；禁用XYB转换、ICC保留和伽马校正。', '保留原始時間戳與中繼資料；停用XYB轉換、ICC保留及伽瑪校正。'],
+  'nconvert.exe を利用できます。': ['nconvert.exe is available.', 'nconvert.exe可用。', 'nconvert.exe可用。'],
+  'nconvert.exe が未設定、または指定場所に見つかりません。': ['nconvert.exe is not configured or cannot be found at the specified path.', '未配置nconvert.exe，或在指定位置找不到该文件。', '尚未設定nconvert.exe，或在指定位置找不到該檔案。'],
+  '標準画質のJPGに変換': ['Convert to standard-quality JPG', '转换为标准画质JPG', '轉換為標準畫質JPG'],
+  'ZIP内の画像をJPGへ変換しますか？': ['Convert images in the ZIP to JPG?', '要将ZIP内图像转换为JPG吗？', '要將ZIP內圖片轉換為JPG嗎？'],
+  '変換を開始': ['Start conversion', '开始转换', '開始轉換'],
   '拡張子': ['Extensions', '扩展名', '副檔名'],
   '拡張子設定を保存': ['Save extension settings', '保存扩展名设置', '儲存副檔名設定'],
   '解凍・圧縮・WinRARで開く操作に使用する専用設定です': ['Dedicated settings for extraction, compression, and opening with WinRAR.', '用于解压、压缩和使用WinRAR打开的专用设置。', '用於解壓縮、壓縮及使用WinRAR開啟的專用設定。'],
@@ -1022,6 +1049,22 @@ const dynamicTranslations: Array<{
   {
     pattern: /^(\d[\d,]*)\s*件を削除しますか？$/,
     translate: (match, language) => language === 'en' ? `Delete ${match[1]} items?` : language === 'zh-CN' ? `要删除${match[1]}项吗？` : `要刪除${match[1]}項嗎？`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*件をpCloudへアーカイブしますか？$/,
+    translate: (match, language) => language === 'en' ? `Archive ${match[1]} items to pCloud?` : language === 'zh-CN' ? `要将${match[1]}项归档到pCloud吗？` : `要將${match[1]}項封存至pCloud嗎？`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*件をpCloudへアーカイブしました。$/,
+    translate: (match, language) => language === 'en' ? `Archived ${match[1]} items to pCloud.` : language === 'zh-CN' ? `已将${match[1]}项归档到pCloud。` : `已將${match[1]}項封存至pCloud。`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*件をpCloudへアーカイブしました（(\d[\d,]*)\s*ファイル）。$/,
+    translate: (match, language) => language === 'en' ? `Archived ${match[1]} items (${match[2]} files) to pCloud.` : language === 'zh-CN' ? `已将${match[1]}项（${match[2]}个文件）归档到pCloud。` : `已將${match[1]}項（${match[2]}個檔案）封存至pCloud。`
+  },
+  {
+    pattern: /^(\d[\d,]*)\s*件をpCloudへアーカイブしました。(\d[\d,]*)\s*件は処理できませんでした。$/,
+    translate: (match, language) => language === 'en' ? `Archived ${match[1]} items to pCloud. ${match[2]} items could not be processed.` : language === 'zh-CN' ? `已将${match[1]}项归档到pCloud。${match[2]}项无法处理。` : `已將${match[1]}項封存至pCloud。${match[2]}項無法處理。`
   },
   {
     pattern: /^(\d[\d,]*)\s*件に登録します$/,

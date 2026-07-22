@@ -8775,6 +8775,54 @@ nav .gallery-subnav button.gallery-section-active {
   color: #caff19;
 }
 
+.nconvert-preset-summary {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, currentColor 24%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+.nconvert-preset-summary strong,
+.nconvert-preset-summary p,
+.nconvert-preset-summary small {
+  display: block;
+}
+
+.nconvert-preset-summary p {
+  margin: 6px 0 3px;
+  color: inherit;
+}
+
+.nconvert-preset-summary small {
+  opacity: 0.72;
+}
+
+.archive-confirmation-list {
+  display: grid;
+  gap: 5px;
+  max-height: 140px;
+  margin: 10px 0;
+  overflow: auto;
+}
+
+.archive-confirmation-list code {
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, currentColor 24%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confirmation-note {
+  opacity: 0.72;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
 .thumbnail-cache-current-root-panel {
   display: grid;
   gap: 9px;

@@ -26,6 +26,10 @@ public partial class MainWindow : Window
     private sealed record GalleryThumbnailSource(string Id, string Path, string Category);
     private sealed record ExplorerDatabaseSyncResult(string Message, bool HasWarnings);
     private sealed record FileDeletionCleanupResult(int DeletedDatabaseRecords, int DeletedThumbnailEntries);
+    private sealed class CallbackProgress<T>(Action<T> callback) : IProgress<T>
+    {
+        public void Report(T value) => callback(value);
+    }
 
     private const string PreferredDropEffectFormat = "Preferred DropEffect";
     private const int DropEffectCopy = 1;
@@ -54,6 +58,7 @@ public partial class MainWindow : Window
     private readonly ThumbnailService _thumbnailService;
     private readonly WinRarService _winRarService;
     private readonly FfmpegService _ffmpegService;
+    private readonly NConvertZipService _nConvertZipService;
     private readonly StandardNameSearchService _standardNameSearchService;
     private readonly GalleryDatabaseUpdateService _galleryDatabaseUpdateService;
     private readonly SemaphoreSlim _galleryDatabaseUpdateGate = new(1, 1);
@@ -74,6 +79,8 @@ public partial class MainWindow : Window
     private bool _gidMigrationInProgress;
     private int _explorerDatabaseManagementInProgress;
     private int _rarToZipBatchInProgress;
+    private int _nConvertZipBatchInProgress;
+    private CancellationTokenSource? _nConvertZipCancellation;
     private CancellationTokenSource? _pCloudAutoBackupCancellation;
     private CancellationTokenSource? _databaseScanSchedulerCancellation;
     private CancellationTokenSource? _googleCalendarSyncCancellation;
@@ -93,6 +100,7 @@ public partial class MainWindow : Window
         _fileBrowser = new FileBrowserService(_database);
         _winRarService = new WinRarService();
         _ffmpegService = new FfmpegService();
+        _nConvertZipService = new NConvertZipService();
         _standardNameSearchService = new StandardNameSearchService();
         _thumbnailService = new ThumbnailService(_database, _ffmpegService);
         _galleryDatabaseUpdateService = new GalleryDatabaseUpdateService(_database, _fileBrowser);
@@ -908,9 +916,9 @@ public partial class MainWindow : Window
         {
             try
             {
-                var result = await Task.Run(() => _database.AssignGalleryWorkTag(
+                var result = await Task.Run(() => _database.AssignGalleryWorkTags(
                     ReadStringArray(root, "paths"),
-                    ReadRequiredLong(root, "tagId"),
+                    ReadLongArray(root, "tagIds"),
                     ReadLongArray(root, "removeTagIds")));
                 PostMessage(new
                 {
@@ -972,22 +980,17 @@ public partial class MainWindow : Window
             try
             {
                 var paths = ReadStringArray(root, "paths");
-                var characterId = root.TryGetProperty("characterId", out var characterElement) &&
-                                  characterElement.ValueKind != JsonValueKind.Null &&
-                                  characterElement.TryGetInt64(out var parsedCharacterId) &&
-                                  parsedCharacterId > 0
-                    ? parsedCharacterId
-                    : (long?)null;
+                var characterIds = ReadLongArray(root, "characterIds");
                 var result = await Task.Run(() => _database.AssignGalleryWorkTitle(
                     paths,
                     ReadRequiredLong(root, "titleId"),
                     ReadLongArray(root, "removeTitleIds")));
                 GalleryCharacterAssignmentResultDto? characterResult = null;
-                if (characterId is not null)
+                if (characterIds.Count > 0)
                 {
-                    characterResult = await Task.Run(() => _database.AssignGalleryWorkCharacter(
+                    characterResult = await Task.Run(() => _database.AssignGalleryWorkCharacters(
                         paths,
-                        characterId.Value,
+                        characterIds,
                         []));
                 }
                 PostMessage(new
@@ -1080,9 +1083,9 @@ public partial class MainWindow : Window
         {
             try
             {
-                var result = await Task.Run(() => _database.AssignGalleryWorkCharacter(
+                var result = await Task.Run(() => _database.AssignGalleryWorkCharacters(
                     ReadStringArray(root, "paths"),
-                    ReadRequiredLong(root, "characterId"),
+                    ReadLongArray(root, "characterIds"),
                     ReadLongArray(root, "removeCharacterIds")));
                 PostMessage(new
                 {
@@ -1365,15 +1368,19 @@ public partial class MainWindow : Window
             try
             {
                 var query = ReadRequiredString(root, "query");
+                var contextTitle = ReadOptionalString(root, "contextTitle");
+                var searchQuery = string.IsNullOrWhiteSpace(contextTitle)
+                    ? query
+                    : $"{contextTitle.Trim()} {query} キャラクター 標準名";
                 var settings = _database.GetSearchEngineSettings();
                 if (settings.Provider == "google")
                 {
-                    OpenStandardNameSearch(query);
+                    OpenStandardNameSearch(searchQuery);
                     PostMessage(new { type = "filters.editor.standardName.opened" });
                 }
                 else
                 {
-                    var results = await _standardNameSearchService.SearchAsync(settings, query);
+                    var results = await _standardNameSearchService.SearchAsync(settings, query, contextTitle);
                     PostMessage(new
                     {
                         type = "filters.editor.standardName.results",
@@ -1679,6 +1686,99 @@ public partial class MainWindow : Window
                 PostMessage(new { type = "gallery.works.delete.error", message = ex.Message });
             }
         }
+        else if (type == "gallery.works.pcloudArchive")
+        {
+            try
+            {
+                if (!root.TryGetProperty("works", out var worksProperty) || worksProperty.ValueKind != JsonValueKind.Array)
+                {
+                    throw new ArgumentException("pCloudへアーカイブする作品を指定してください。");
+                }
+
+                var requests = worksProperty.EnumerateArray()
+                    .Select(work => new
+                    {
+                        Path = ReadRequiredString(work, "path"),
+                        Category = ReadRequiredString(work, "category"),
+                        Creator = ReadOptionalString(work, "creator") ?? string.Empty
+                    })
+                    .DistinctBy(work => work.Path, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                if (requests.Length == 0)
+                {
+                    throw new ArgumentException("pCloudへアーカイブする作品を指定してください。");
+                }
+
+                var archived = new List<PCloudArchiveResult>();
+                var errors = new List<string>();
+                for (var index = 0; index < requests.Length; index++)
+                {
+                    var request = requests[index];
+                    PostMessage(new
+                    {
+                        type = "gallery.works.pcloudArchive.progress",
+                        current = index + 1,
+                        total = requests.Length,
+                        message = $"pCloudへアーカイブしています ({index + 1:N0}/{requests.Length:N0}): {Path.GetFileName(request.Path)}"
+                    });
+
+                    var markedArchived = false;
+                    PCloudArchiveResult? uploaded = null;
+                    try
+                    {
+                        uploaded = await _pCloudBackupService.ArchiveGalleryFileAsync(
+                            request.Path,
+                            _database.GetGallerySectionLabel(request.Category),
+                            request.Creator,
+                            CancellationToken.None);
+                        await Task.Run(() => _database.SetGalleryWorkArchived(request.Path, true, uploaded.RemotePath));
+                        markedArchived = true;
+                        await Task.Run(() => _fileBrowser.Delete([request.Path]));
+                        if (File.Exists(request.Path) || Directory.Exists(request.Path))
+                        {
+                            throw new IOException("pCloudへのアップロードは完了しましたが、ローカルファイルを削除できませんでした。");
+                        }
+                        archived.Add(uploaded);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (markedArchived)
+                        {
+                            try
+                            {
+                                await Task.Run(() => _database.SetGalleryWorkArchived(request.Path, false, uploaded?.RemotePath));
+                            }
+                            catch (Exception rollbackError)
+                            {
+                                errors.Add($"{request.Path}: {ex.Message} / DB状態の復元にも失敗しました: {rollbackError.Message}");
+                                continue;
+                            }
+                        }
+                        errors.Add($"{request.Path}: {ex.Message}");
+                    }
+                }
+
+                if (archived.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        "pCloudへアーカイブできませんでした。" + Environment.NewLine +
+                        string.Join(Environment.NewLine, errors.Take(10)));
+                }
+
+                PostMessage(new
+                {
+                    type = "gallery.works.pcloudArchive.result",
+                    archivedCount = archived.Count,
+                    failedCount = errors.Count,
+                    remotePaths = archived.Select(result => result.RemotePath).ToArray(),
+                    errors = errors.Take(10).ToArray()
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "gallery.works.pcloudArchive.error", message = ex.Message });
+            }
+        }
         else if (type == "gallery.work.rating.adjust")
         {
             var path = ReadRequiredString(root, "path");
@@ -1858,6 +1958,60 @@ public partial class MainWindow : Window
             if (dialog.ShowDialog(this) == true)
             {
                 PostMessage(new { type = "settings.ffmpeg.pickExecutable.result", path = dialog.FileName });
+            }
+        }
+        else if (type == "settings.nconvert.list")
+        {
+            PostNConvertSettings();
+        }
+        else if (type == "settings.nconvert.save")
+        {
+            var executablePath = ReadOptionalString(root, "executablePath") ?? string.Empty;
+            var temporaryDirectory = ReadOptionalString(root, "temporaryDirectory") ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(temporaryDirectory) && temporaryDirectory.Any(character => character > 0x7f))
+            {
+                PostMessage(new
+                {
+                    type = "settings.nconvert.error",
+                    message = "NConvert一時フォルダには日本語・記号・絵文字を含まないASCIIパスを指定してください。"
+                });
+                return;
+            }
+            try
+            {
+                _database.SaveNConvertSettings(executablePath, temporaryDirectory);
+                PostNConvertSettings();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                PostMessage(new { type = "settings.nconvert.error", message = ex.Message });
+            }
+        }
+        else if (type == "settings.nconvert.pickExecutable")
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = Localize("nconvert.exe を選択", "Select nconvert.exe", "选择nconvert.exe", "選擇nconvert.exe"),
+                Filter = ExecutableDialogFilter()
+            };
+            if (dialog.ShowDialog(this) == true)
+            {
+                PostMessage(new { type = "settings.nconvert.pickExecutable.result", path = dialog.FileName });
+            }
+        }
+        else if (type == "settings.nconvert.pickTemporaryDirectory")
+        {
+            var dialog = new Microsoft.Win32.OpenFolderDialog
+            {
+                Title = Localize(
+                    "NConvert一時フォルダを選択",
+                    "Select the NConvert temporary folder",
+                    "选择NConvert临时文件夹",
+                    "選擇NConvert暫存資料夾")
+            };
+            if (dialog.ShowDialog(this) == true)
+            {
+                PostMessage(new { type = "settings.nconvert.pickTemporaryDirectory.result", path = dialog.FolderName });
             }
         }
         else if (type == "settings.thumbnailCache.list")
@@ -3181,6 +3335,36 @@ public partial class MainWindow : Window
                 // processes the selected archives sequentially in the background.
                 _ = RunRarToZipBatchAsync(rarPaths, directory, pane);
             }
+            else if (type == "explorer.nconvert.convertZipImages")
+            {
+                var zipPaths = ReadStringArray(root, "paths")
+                    .Select(Path.GetFullPath)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                if (zipPaths.Length == 0)
+                {
+                    throw new InvalidOperationException("変換するZIPファイルを選択してください。");
+                }
+                if (zipPaths.Any(path => !string.Equals(Path.GetExtension(path), ".zip", StringComparison.OrdinalIgnoreCase)))
+                {
+                    throw new InvalidOperationException("ZIPファイルだけを変換できます。");
+                }
+                if (Interlocked.CompareExchange(ref _nConvertZipBatchInProgress, 1, 0) != 0)
+                {
+                    throw new InvalidOperationException("別のNConvert変換を実行中です。完了してから再試行してください。");
+                }
+
+                _nConvertZipCancellation?.Dispose();
+                _nConvertZipCancellation = new CancellationTokenSource();
+                var pane = ReadOptionalString(root, "pane");
+                var directory = ReadOptionalString(root, "directory")
+                    ?? Path.GetDirectoryName(zipPaths[0]);
+                _ = RunNConvertZipBatchAsync(
+                    zipPaths,
+                    directory,
+                    pane,
+                    _nConvertZipCancellation.Token);
+            }
             else if (type == "explorer.winrar.compressDelete")
             {
                 var folderPaths = ReadStringArray(root, "paths")
@@ -3391,6 +3575,112 @@ public partial class MainWindow : Window
                     throw;
                 }
             }
+            else if (type == "explorer.pcloudArchive")
+            {
+                var paths = NormalizePCloudArchiveTargets(ReadStringArray(root, "paths"));
+                var directory = ReadRequiredString(root, "directory");
+                var pane = ReadOptionalString(root, "pane");
+                if (paths.Length == 0)
+                {
+                    throw new InvalidOperationException("pCloudへアーカイブするファイルまたはフォルダを選択してください。");
+                }
+
+                var archived = new List<PCloudArchiveResult>();
+                var errors = new List<string>();
+                for (var index = 0; index < paths.Length; index++)
+                {
+                    var path = paths[index];
+                    var targetNumber = index + 1;
+                    var displayName = Path.GetFileName(path.TrimEnd(
+                        Path.DirectorySeparatorChar,
+                        Path.AltDirectorySeparatorChar));
+                    PostMessageOnDispatcher(new
+                    {
+                        type = "explorer.pcloudArchive.progress",
+                        current = targetNumber,
+                        total = paths.Length,
+                        message = $"pCloudへアーカイブしています ({targetNumber:N0}/{paths.Length:N0}): {displayName}"
+                    });
+
+                    IReadOnlyList<string> markedGids = [];
+                    PCloudArchiveResult? uploaded = null;
+                    try
+                    {
+                        var category = _database.FindGalleryCategoryForPath(path)
+                            ?? throw new InvalidOperationException(
+                                "Settings > Appearance > 区分別の設定の対象ディレクトリ配下ではないため、区分を確認できません。");
+                        var progress = new CallbackProgress<PCloudArchiveProgress>(archiveProgress =>
+                        {
+                            if (archiveProgress.TotalFiles <= 1)
+                            {
+                                return;
+                            }
+                            PostMessageOnDispatcher(new
+                            {
+                                type = "explorer.pcloudArchive.progress",
+                                current = targetNumber,
+                                total = paths.Length,
+                                completedFiles = archiveProgress.CompletedFiles,
+                                totalFiles = archiveProgress.TotalFiles,
+                                message =
+                                    $"pCloudへアーカイブしています ({targetNumber:N0}/{paths.Length:N0}) " +
+                                    $"ファイル {archiveProgress.CompletedFiles:N0}/{archiveProgress.TotalFiles:N0}: " +
+                                    Path.GetFileName(archiveProgress.CurrentPath)
+                            });
+                        });
+                        uploaded = await _pCloudBackupService.ArchiveExplorerPathAsync(
+                            path,
+                            _database.GetGallerySectionLabel(category),
+                            progress,
+                            CancellationToken.None);
+                        markedGids = await Task.Run(() => _database.SetGalleryWorksArchivedUnderPaths(
+                            [path],
+                            true,
+                            uploaded.RemotePath));
+                        await Task.Run(() => _fileBrowser.Delete([path]));
+                        if (File.Exists(path) || Directory.Exists(path))
+                        {
+                            throw new IOException(
+                                "pCloudへのアップロードは完了しましたが、ローカルのファイルまたはフォルダを削除できませんでした。");
+                        }
+                        archived.Add(uploaded);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (markedGids.Count > 0)
+                        {
+                            try
+                            {
+                                await Task.Run(() => _database.SetGalleryWorksArchivedByGids(
+                                    markedGids,
+                                    false,
+                                    uploaded?.RemotePath,
+                                    onlyWhenLocalSourceExists: true));
+                            }
+                            catch (Exception rollbackError)
+                            {
+                                errors.Add(
+                                    $"{path}: {ex.Message} / DB状態の復元にも失敗しました: {rollbackError.Message}");
+                                continue;
+                            }
+                        }
+                        errors.Add($"{path}: {ex.Message}");
+                    }
+                }
+
+                PostMessageOnDispatcher(new
+                {
+                    type = "explorer.pcloudArchive.result",
+                    archivedCount = archived.Count,
+                    failedCount = errors.Count,
+                    archivedFileCount = archived.Sum(result => result.FileCount),
+                    remotePaths = archived.Select(result => result.RemotePath).ToArray(),
+                    errors = errors.Take(10).ToArray(),
+                    directory,
+                    pane,
+                    hasWarnings = errors.Count > 0
+                });
+            }
         }
         catch (Exception ex)
         {
@@ -3452,6 +3742,38 @@ public partial class MainWindow : Window
         }
 
         return new FileDeletionCleanupResult(deletedDatabaseRecords, deletedThumbnailEntries);
+    }
+
+    private static string[] NormalizePCloudArchiveTargets(IReadOnlyList<string> paths)
+    {
+        var normalized = paths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(Path.GetFullPath)
+            .Where(path => File.Exists(path) || Directory.Exists(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(path => path.Length)
+            .ToArray();
+        var targets = new List<string>();
+        foreach (var path in normalized)
+        {
+            if (targets.Any(parent => IsFileSystemPathWithinRoot(path, parent)))
+            {
+                continue;
+            }
+            targets.Add(path);
+        }
+        return targets.ToArray();
+    }
+
+    private static bool IsFileSystemPathWithinRoot(string path, string root)
+    {
+        if (string.Equals(path, root, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        var normalizedRoot = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        return path.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase);
     }
 
     private void RemoveGalleryRatingBaselinesUnderPaths(IReadOnlyList<string> targetPaths)
@@ -3595,6 +3917,150 @@ public partial class MainWindow : Window
         finally
         {
             Interlocked.Exchange(ref _rarToZipBatchInProgress, 0);
+        }
+    }
+
+    private async Task RunNConvertZipBatchAsync(
+        IReadOnlyList<string> zipPaths,
+        string? requestedDirectory,
+        string? pane,
+        CancellationToken cancellationToken)
+    {
+        var converted = new List<NConvertZipResult>();
+        var skipped = new List<string>();
+        var errors = new List<string>();
+        var parentPaths = zipPaths
+            .Select(Path.GetDirectoryName)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        try
+        {
+            _nConvertZipService.Configure(_database.GetNConvertSettings());
+            for (var index = 0; index < zipPaths.Count; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var zipPath = zipPaths[index];
+                var itemPrefix = $"NConvert: ZIP内画像を変換中 ({index + 1}/{zipPaths.Count})";
+                try
+                {
+                    var progress = new CallbackProgress<NConvertZipProgress>(item =>
+                    {
+                        var detail = item.Total > 0
+                            ? $" ({item.Completed}/{item.Total})"
+                            : string.Empty;
+                        PostMessageOnDispatcher(new
+                        {
+                            type = "explorer.nconvert.progress",
+                            message = $"{itemPrefix}{detail}: {item.CurrentEntryName}"
+                        });
+                    });
+                    var result = await Task.Run(
+                        () => _nConvertZipService.ConvertAsync(
+                            zipPath,
+                            progress,
+                            cancellationToken),
+                        cancellationToken);
+                    if (result.ConvertedEntries == 0)
+                    {
+                        skipped.Add(zipPath);
+                    }
+                    else
+                    {
+                        converted.Add(result);
+                        EnsureThumbnailCacheConfiguration();
+                        _thumbnailService.InvalidateSourcesUnderPath(zipPath);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"{Path.GetFileName(zipPath)}: {ex.Message}");
+                }
+            }
+
+            var synchronization = new ExplorerDatabaseSyncResult(
+                "DB同期の対象はありませんでした。",
+                false);
+            if (converted.Count > 0 && parentPaths.Length > 0)
+            {
+                PostMessageOnDispatcher(new
+                {
+                    type = "explorer.nconvert.progress",
+                    message = "NConvert: 変換後のDB情報とサムネイルを同期しています。"
+                });
+                synchronization = await TrySynchronizeExplorerFoldersAsync(parentPaths, ["zip"]);
+            }
+
+            var convertedImages = converted.Sum(result => result.ConvertedEntries);
+            var message = converted.Count > 0
+                ? $"ZIP {converted.Count:N0}件の画像 {convertedImages:N0}枚を標準画質のJPG（JPEGli）へ変換しました。 {synchronization.Message}"
+                : errors.Count > 0
+                    ? $"ZIP {zipPaths.Count:N0}件を変換できませんでした。"
+                    : "変換対象のPNG/WebP/JPG/JPEG/JPE/JFIF/JXL/BMP/TIF/TIFF/HEIC/HEIF/AVIFは見つかりませんでした。";
+            if (skipped.Count > 0 && converted.Count > 0)
+            {
+                message += $" 対象画像のないZIP {skipped.Count:N0}件を変更せずスキップしました。";
+            }
+            if (errors.Count > 0)
+            {
+                message += Environment.NewLine + "変換できなかった項目:" + Environment.NewLine +
+                           string.Join(Environment.NewLine, errors.Take(10));
+            }
+
+            PostMessageOnDispatcher(new
+            {
+                type = "explorer.nconvert.convertZipImages.result",
+                message,
+                successCount = converted.Count,
+                skippedCount = skipped.Count,
+                failureCount = errors.Count,
+                hasWarnings = errors.Count > 0 || synchronization.HasWarnings,
+                directory = requestedDirectory,
+                pane,
+                focusPaths = converted.Select(result => result.ZipPath).ToArray()
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            PostMessageOnDispatcher(new
+            {
+                type = "explorer.nconvert.convertZipImages.result",
+                message = "NConvertによるZIP内画像の変換を中断しました。処理中だった元ZIPは変更していません。",
+                successCount = converted.Count,
+                skippedCount = skipped.Count,
+                failureCount = errors.Count,
+                hasWarnings = true,
+                directory = requestedDirectory,
+                pane,
+                focusPaths = converted.Select(result => result.ZipPath).ToArray()
+            });
+        }
+        catch (Exception ex)
+        {
+            PostMessageOnDispatcher(new
+            {
+                type = "explorer.nconvert.convertZipImages.result",
+                message = "NConvertによるZIP内画像の変換を完了できませんでした。" + Environment.NewLine + ex.Message,
+                successCount = converted.Count,
+                skippedCount = skipped.Count,
+                failureCount = Math.Max(1, zipPaths.Count - converted.Count - skipped.Count),
+                hasWarnings = true,
+                directory = requestedDirectory,
+                pane,
+                focusPaths = converted.Select(result => result.ZipPath).ToArray()
+            });
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _nConvertZipBatchInProgress, 0);
+            _nConvertZipCancellation?.Dispose();
+            _nConvertZipCancellation = null;
         }
     }
 
@@ -4027,6 +4493,7 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         _galleryDatabaseUpdateCancellation?.Cancel();
+        _nConvertZipCancellation?.Cancel();
         _databaseScanSchedulerCancellation?.Cancel();
         _pCloudAutoBackupCancellation?.Cancel();
         _googleCalendarSyncCancellation?.Cancel();
@@ -4225,6 +4692,18 @@ public partial class MainWindow : Window
             type = "settings.ffmpeg.result",
             settings,
             isAvailable = _ffmpegService.IsAvailable
+        });
+    }
+
+    private void PostNConvertSettings()
+    {
+        var settings = _database.GetNConvertSettings();
+        _nConvertZipService.Configure(settings);
+        PostMessage(new
+        {
+            type = "settings.nconvert.result",
+            settings,
+            isAvailable = !string.IsNullOrWhiteSpace(settings.ExecutablePath) && File.Exists(settings.ExecutablePath)
         });
     }
 
@@ -5121,6 +5600,7 @@ public partial class MainWindow : Window
         _pCloudBackupService.SaveSettings(
             ReadOptionalString(root, "apiHost") ?? "eapi.pcloud.com",
             ReadOptionalString(root, "targetFolder") ?? string.Empty,
+            ReadOptionalString(root, "archiveRootFolder") ?? string.Empty,
             ReadOptionalString(root, "clientId") ?? string.Empty,
             ReadOptionalString(root, "accessToken"),
             ReadRequiredBoolean(root, "autoBackupEnabled"),

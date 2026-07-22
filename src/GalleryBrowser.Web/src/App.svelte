@@ -76,7 +76,7 @@
   type ActiveView = 'library' | 'bookmarks' | 'creators' | 'creatorTracking' | 'explorer' | 'filters' | 'tags' | 'userMetrics' | 'board' | 'calendar' | 'settings' | 'userGuide';
   type BookmarkableView = 'library' | 'explorer' | 'creators' | 'creatorTracking';
   type StickyNoteView = BookmarkableView | 'userMetrics';
-  type SettingsSection = 'programs' | 'gestures' | 'keyboardShortcuts' | 'calendar' | 'gid' | 'theme' | 'language' | 'tabCandidates' | 'galleryTargets' | 'creatorTracking' | 'winrar' | 'ffmpeg' | 'thumbnailCache' | 'sqliteDatabase' | 'searchEngine';
+  type SettingsSection = 'programs' | 'gestures' | 'keyboardShortcuts' | 'calendar' | 'gid' | 'theme' | 'language' | 'tabCandidates' | 'galleryTargets' | 'creatorTracking' | 'winrar' | 'ffmpeg' | 'nconvert' | 'thumbnailCache' | 'sqliteDatabase' | 'searchEngine';
   type UserGuideSectionId = 'overview' | 'firstSteps' | 'gallery' | 'explorer' | 'organize' | 'creators' | 'bookmarks' | 'metrics' | 'settings' | 'data' | 'shortcuts' | 'troubleshooting' | 'acknowledgements';
   type ColorTheme = 'light' | 'dark';
   type ThemeSettings = {
@@ -581,7 +581,7 @@
     commonAssignedTags: GalleryTagAssignmentOption[];
     creatorQuery: string;
     query: string;
-    selectedTagId: number | null;
+    selectedTagIds: number[];
     selectedAssignedTagIds: number[];
     assignedTagsPanelOpen: boolean;
     isLoading: boolean;
@@ -613,7 +613,7 @@
     characterQuery: string;
     categoryFilter: string;
     selectedTitleId: number | null;
-    selectedCharacterId: number | null;
+    selectedCharacterIds: number[];
     selectedAssignedTitleIds: number[];
     assignedTitlesPanelOpen: boolean;
     characterPanelOpen: boolean;
@@ -642,7 +642,7 @@
     commonAssignedCharacters: GalleryCharacterAssignmentOption[];
     creatorQuery: string;
     query: string;
-    selectedCharacterId: number | null;
+    selectedCharacterIds: number[];
     selectedAssignedCharacterIds: number[];
     assignedCharactersPanelOpen: boolean;
     isLoading: boolean;
@@ -713,6 +713,11 @@
   type FfmpegSettings = {
     executablePath: string;
     supportedExtensions: string;
+  };
+
+  type NConvertSettings = {
+    executablePath: string;
+    temporaryDirectory: string;
   };
 
   type GidSettings = {
@@ -975,6 +980,7 @@
     calendar: { title: 'Calendar', description: 'サブスク更新予定の表示とGoogleカレンダー連携用の出力を設定します' },
     winrar: { title: 'WinRAR設定', description: 'WinRAR の実行ファイルと右クリックメニューで扱う書庫形式を設定します' },
     ffmpeg: { title: 'FFmpeg設定', description: '動画サムネイル生成に使用する FFmpeg の実行ファイルと対応形式を設定します' },
+    nconvert: { title: 'NConvert設定', description: 'ZIP内の対応画像を標準画質のJPG（JPEGli）へ変換する実行ファイルと一時フォルダを設定します' },
     thumbnailCache: { title: 'サムネイルキャッシュ', description: '対象ディレクトリ配下のフォルダと対応ファイルのサムネイルを保存します' },
     sqliteDatabase: { title: 'データベース', description: '本体DB、キャッシュDB、走査スケジュール、クラウドバックアップを管理します' },
     searchEngine: { title: '検索エンジン', description: 'フィルタエディタで標準名を調べる検索方法を設定します' }
@@ -1204,6 +1210,40 @@
     pane: 'left' | 'right';
     x: number;
     y: number;
+  };
+
+  type ExplorerGestureState = {
+    pane: 'left' | 'right';
+    pointerId: number;
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastY: number;
+    distance: number;
+    entryPath: string;
+    originRegion: string;
+    stayedInOriginRegion: boolean;
+  };
+
+  type PendingExplorerContextMenu =
+    | {
+        kind: 'entry';
+        entry: ExplorerEntry;
+        pane: 'left' | 'right';
+        x: number;
+        y: number;
+      }
+    | {
+        kind: 'blank';
+        pane: 'left' | 'right';
+        x: number;
+        y: number;
+      };
+
+  type ExplorerPCloudArchiveConfirmation = {
+    pane: 'left' | 'right';
+    paths: string[];
+    directory: string;
   };
 
   type GidAssignmentConfirmation = {
@@ -1559,9 +1599,11 @@
     result: GalleryCharacterAssignmentOption[];
   } | null = null;
   let galleryTitleAssignmentReturnPending = false;
+  let galleryTitleAssignmentReturnAttribute: 'title' | 'character' | null = null;
   let pendingGalleryTitleAssignmentCategory = '';
   let pendingGalleryTitleAssignmentSelectedTitleId: number | null = null;
   let pendingGalleryTitleAssignmentSelectedCharacterId: number | null = null;
+  let pendingGalleryTitleAssignmentCharacterParentTitleId: number | null = null;
   let galleryCharacterAssignmentReturnPending = false;
   let pendingGalleryCharacterAssignmentCategory = '';
   let pendingGalleryCharacterAssignmentSelectedId: number | null = null;
@@ -1570,6 +1612,8 @@
   let galleryReverseFilterRequest: GalleryReverseFilterRequest | null = null;
   let galleryDeleteConfirmation = false;
   let galleryDeleteInProgress = false;
+  let galleryPCloudArchiveConfirmation = false;
+  let galleryPCloudArchiveInProgress = false;
   let gallerySingleClickLaunches: Record<string, number> = {};
   let nextGalleryTagAssignmentRequestId = 1;
   let nextGalleryTitleAssignmentRequestId = 1;
@@ -1635,6 +1679,13 @@
     executablePath: '',
     supportedExtensions: 'mp4,mkv,avi,mov,wmv,webm,flv,m4v,mpeg,mpg,ts'
   };
+  let nConvertSettings: NConvertSettings = {
+    executablePath: '',
+    temporaryDirectory: ''
+  };
+  let nConvertAvailable = false;
+  let nConvertZipBatchInProgress = false;
+  let nConvertZipConfirmation: { pane: 'left' | 'right'; paths: string[]; directory: string } | null = null;
   let gidSettings: GidSettings = {
     targetExtensions: 'zip;rar;7z;cbz;cbr',
     digitCount: 6
@@ -1685,6 +1736,7 @@
   let sqliteMergeCanonical: 'current' | 'selected' = 'current';
   let pCloudApiHost = 'eapi.pcloud.com';
   let pCloudTargetFolder = '';
+  let pCloudArchiveRootFolder = '';
   let pCloudClientId = '';
   let pCloudAccessTokenDraft = '';
   let pCloudOAuthRedirectUri = '';
@@ -1751,6 +1803,8 @@
   let renameExtension = '';
   let renameTagBeforeExtension = false;
   let deleteConfirmation = false;
+  let explorerPCloudArchiveConfirmation: ExplorerPCloudArchiveConfirmation | null = null;
+  let explorerPCloudArchiveInProgress = false;
   let splitRenamingEntry: ExplorerEntry | null = null;
   let splitRenameValue = '';
   let splitRenameIdentifier = '';
@@ -1802,10 +1856,11 @@
   let explorerBookmarksExpanded = false;
   let draggedExplorerTab: ExplorerTab | null = null;
   let draggedExplorerBookmark: ExplorerBookmark | null = null;
-  let explorerGestureStart: { x: number; y: number } | null = null;
+  let explorerGestureStart: ExplorerGestureState | null = null;
   let suppressExplorerContextMenu = false;
-  let splitGestureStart: { x: number; y: number } | null = null;
+  let splitGestureStart: ExplorerGestureState | null = null;
   let suppressSplitContextMenu = false;
+  let pendingExplorerContextMenu: PendingExplorerContextMenu | null = null;
   let gestureTrail: Array<{ x: number; y: number }> = [];
   let explorerContextMenu: ExplorerContextMenu | null = null;
   let explorerBlankContextMenu: ExplorerBlankContextMenu | null = null;
@@ -1849,6 +1904,7 @@
   let explorerFolderCreateSubmenuOpen = false;
   let explorerDbManagementSubmenuOpen = false;
   let explorerGidSubmenuOpen = false;
+  let explorerDeleteSubmenuOpen = false;
   let gidAssignmentConfirmation: GidAssignmentConfirmation | null = null;
   let gidAssignmentInProgress = false;
   let creatorFolderConversionConfirmation: CreatorFolderConversionConfirmation | null = null;
@@ -2520,15 +2576,19 @@
       }
 
       if (event.data?.type === 'gallery.tagAssignment.options.result' && event.data.requestId === galleryTagAssignment?.requestId) {
+        const creatorTitleTags: GalleryTagAssignmentOption[] = event.data.creatorTitleTags ?? [];
+        const availableTags: GalleryTagAssignmentOption[] = event.data.availableTags ?? [];
         const commonAssignedTags: GalleryTagAssignmentOption[] = event.data.commonAssignedTags ?? [];
         const commonTagIds = new Set(commonAssignedTags.map((option) => option.id));
+        const selectableTagIds = new Set([...creatorTitleTags, ...availableTags].map((option) => option.id));
         galleryTagAssignment = {
           ...galleryTagAssignment,
           creator: String(event.data.creator ?? galleryTagAssignment.creator),
           title: String(event.data.title ?? galleryTagAssignment.title),
-          creatorTitleTags: event.data.creatorTitleTags ?? [],
-          availableTags: event.data.availableTags ?? [],
+          creatorTitleTags,
+          availableTags,
           commonAssignedTags,
+          selectedTagIds: galleryTagAssignment.selectedTagIds.filter((id) => selectableTagIds.has(id)),
           selectedAssignedTagIds: galleryTagAssignment.selectedAssignedTagIds.filter((id) => commonTagIds.has(id)),
           isLoading: false
         };
@@ -2541,15 +2601,18 @@
       }
 
       if (event.data?.type === 'gallery.tagAssignment.applied' && galleryTagAssignment) {
-        const selectedTag = [...galleryTagAssignment.creatorTitleTags, ...galleryTagAssignment.availableTags]
-          .find((option) => option.id === galleryTagAssignment?.selectedTagId);
+        const selectedTagIds = new Set(galleryTagAssignment.selectedTagIds);
+        const selectedTags = [...galleryTagAssignment.creatorTitleTags, ...galleryTagAssignment.availableTags]
+          .filter((option) => selectedTagIds.has(option.id));
+        const selectedTagNames = selectedTags.map((option) => `「${option.tag}」`).join('、');
+        const selectedWorkCount = galleryTagAssignment.works.length;
         const addedCount = Number(event.data.addedCount ?? 0);
         const skippedCount = Number(event.data.skippedCount ?? 0);
         const removedCount = Number(event.data.removedCount ?? 0);
         galleryTagAssignment = null;
         galleryTagAssignmentReturnPending = false;
         galleryContextMenu = null;
-        const resultParts = [`${addedCount} 件にTag「${selectedTag?.tag ?? ''}」を登録しました。`];
+        const resultParts = [`${selectedWorkCount} 件の作品にTag${selectedTagNames}を登録しました（追加 ${addedCount} 件）。`];
         if (removedCount > 0) resultParts.push(`${removedCount} 件のTagを解除しました。`);
         if (skippedCount > 0) resultParts.push(`${skippedCount} 件は既に登録済みのためスキップしました。`);
         showExplorerToast(resultParts.join(''), 'success');
@@ -2607,10 +2670,14 @@
       }
 
       if (event.data?.type === 'gallery.titleAssignment.characters.result' && event.data.requestId === galleryTitleAssignment?.characterRequestId) {
+        const creatorTitleCharacters: GalleryCharacterAssignmentOption[] = event.data.creatorTitleCharacters ?? [];
+        const availableCharacters: GalleryCharacterAssignmentOption[] = event.data.availableCharacters ?? [];
+        const selectableCharacterIds = new Set([...creatorTitleCharacters, ...availableCharacters].map((option) => option.id));
         galleryTitleAssignment = {
           ...galleryTitleAssignment,
-          creatorTitleCharacters: event.data.creatorTitleCharacters ?? [],
-          availableCharacters: event.data.availableCharacters ?? [],
+          creatorTitleCharacters,
+          availableCharacters,
+          selectedCharacterIds: galleryTitleAssignment.selectedCharacterIds.filter((id) => selectableCharacterIds.has(id)),
           isCharacterLoading: false
         };
         if (pendingGalleryTitleAssignmentSelectedCharacterId !== null) {
@@ -2619,7 +2686,12 @@
           const hasSelectedCharacter = [...galleryTitleAssignment.creatorTitleCharacters, ...galleryTitleAssignment.availableCharacters]
             .some((option) => option.id === selectedId);
           if (hasSelectedCharacter) {
-            galleryTitleAssignment = { ...galleryTitleAssignment, selectedCharacterId: selectedId };
+            galleryTitleAssignment = {
+              ...galleryTitleAssignment,
+              selectedCharacterIds: galleryTitleAssignment.selectedCharacterIds.includes(selectedId)
+                ? galleryTitleAssignment.selectedCharacterIds
+                : [...galleryTitleAssignment.selectedCharacterIds, selectedId]
+            };
           }
         }
       }
@@ -2629,7 +2701,7 @@
           ...galleryTitleAssignment,
           creatorTitleCharacters: [],
           availableCharacters: [],
-          selectedCharacterId: null,
+          selectedCharacterIds: [],
           isCharacterLoading: false
         };
         showExplorerToast(event.data.message ?? 'Character候補を取得できませんでした。', 'error');
@@ -2638,8 +2710,11 @@
       if (event.data?.type === 'gallery.titleAssignment.applied' && galleryTitleAssignment) {
         const selectedTitle = [...galleryTitleAssignment.creatorTitles, ...galleryTitleAssignment.availableTitles]
           .find((option) => option.id === galleryTitleAssignment?.selectedTitleId);
-        const selectedCharacter = [...galleryTitleAssignment.creatorTitleCharacters, ...galleryTitleAssignment.availableCharacters]
-          .find((option) => option.id === galleryTitleAssignment?.selectedCharacterId);
+        const selectedCharacterIds = new Set(galleryTitleAssignment.selectedCharacterIds);
+        const selectedCharacters = [...galleryTitleAssignment.creatorTitleCharacters, ...galleryTitleAssignment.availableCharacters]
+          .filter((option) => selectedCharacterIds.has(option.id));
+        const selectedCharacterNames = selectedCharacters.map((option) => `「${option.character}」`).join('、');
+        const selectedWorkCount = galleryTitleAssignment.works.length;
         const addedCount = Number(event.data.addedCount ?? 0);
         const skippedCount = Number(event.data.skippedCount ?? 0);
         const removedCount = Number(event.data.removedCount ?? 0);
@@ -2649,8 +2724,8 @@
         galleryContextMenu = null;
         const title = selectedTitle?.title ?? '';
         const resultParts = [`${addedCount} 件にTitle「${title}」を登録しました。`];
-        if (selectedCharacter) {
-          resultParts.push(`${characterAddedCount} 件にCharacter「${selectedCharacter.character}」を登録しました。`);
+        if (selectedCharacters.length > 0) {
+          resultParts.push(`${selectedWorkCount} 件の作品にCharacter${selectedCharacterNames}を登録しました（追加 ${characterAddedCount} 件）。`);
           if (characterSkippedCount > 0) resultParts.push(`${characterSkippedCount} 件のCharacterは既に登録済みのためスキップしました。`);
         }
         if (removedCount > 0) resultParts.push(`${removedCount} 件のTitle属性を解除しました。`);
@@ -2680,8 +2755,11 @@
       }
 
       if (event.data?.type === 'gallery.characterAssignment.options.result' && event.data.requestId === galleryCharacterAssignment?.requestId) {
+        const creatorTitleCharacters: GalleryCharacterAssignmentOption[] = event.data.creatorTitleCharacters ?? [];
+        const availableCharacters: GalleryCharacterAssignmentOption[] = event.data.availableCharacters ?? [];
         const commonAssignedCharacters: GalleryCharacterAssignmentOption[] = event.data.commonAssignedCharacters ?? [];
         const commonCharacterIds = new Set(commonAssignedCharacters.map((option) => option.id));
+        const selectableCharacterIds = new Set([...creatorTitleCharacters, ...availableCharacters].map((option) => option.id));
         const creators = (event.data.creators ?? [])
           .map((creator: unknown) => String(creator).trim())
           .filter(Boolean);
@@ -2692,9 +2770,10 @@
           ...galleryCharacterAssignment,
           creators: creators.length > 0 ? creators : galleryCharacterAssignment.creators,
           titles: titles.length > 0 ? titles : galleryCharacterAssignment.titles,
-          creatorTitleCharacters: event.data.creatorTitleCharacters ?? [],
-          availableCharacters: event.data.availableCharacters ?? [],
+          creatorTitleCharacters,
+          availableCharacters,
           commonAssignedCharacters,
+          selectedCharacterIds: galleryCharacterAssignment.selectedCharacterIds.filter((id) => selectableCharacterIds.has(id)),
           selectedAssignedCharacterIds: galleryCharacterAssignment.selectedAssignedCharacterIds.filter((id) => commonCharacterIds.has(id)),
           isLoading: false
         };
@@ -2704,7 +2783,12 @@
           const hasSelectedCharacter = [...galleryCharacterAssignment.creatorTitleCharacters, ...galleryCharacterAssignment.availableCharacters]
             .some((option) => option.id === selectedId);
           if (hasSelectedCharacter) {
-            galleryCharacterAssignment = { ...galleryCharacterAssignment, selectedCharacterId: selectedId };
+            galleryCharacterAssignment = {
+              ...galleryCharacterAssignment,
+              selectedCharacterIds: galleryCharacterAssignment.selectedCharacterIds.includes(selectedId)
+                ? galleryCharacterAssignment.selectedCharacterIds
+                : [...galleryCharacterAssignment.selectedCharacterIds, selectedId]
+            };
           }
         }
       }
@@ -2715,15 +2799,17 @@
       }
 
       if (event.data?.type === 'gallery.characterAssignment.applied' && galleryCharacterAssignment) {
-        const selectedCharacter = [...galleryCharacterAssignment.creatorTitleCharacters, ...galleryCharacterAssignment.availableCharacters]
-          .find((option) => option.id === galleryCharacterAssignment?.selectedCharacterId);
+        const selectedCharacterIds = new Set(galleryCharacterAssignment.selectedCharacterIds);
+        const selectedCharacters = [...galleryCharacterAssignment.creatorTitleCharacters, ...galleryCharacterAssignment.availableCharacters]
+          .filter((option) => selectedCharacterIds.has(option.id));
+        const selectedCharacterNames = selectedCharacters.map((option) => `「${option.character}」`).join('、');
+        const selectedWorkCount = galleryCharacterAssignment.works.length;
         const addedCount = Number(event.data.addedCount ?? 0);
         const skippedCount = Number(event.data.skippedCount ?? 0);
         const removedCount = Number(event.data.removedCount ?? 0);
         galleryCharacterAssignment = null;
         galleryContextMenu = null;
-        const character = selectedCharacter?.character ?? '';
-        const resultParts = [`${addedCount} 件にCharacter「${character}」を登録しました。`];
+        const resultParts = [`${selectedWorkCount} 件の作品にCharacter${selectedCharacterNames}を登録しました（追加 ${addedCount} 件）。`];
         if (removedCount > 0) resultParts.push(`${removedCount} 件のCharacter属性を解除しました。`);
         if (skippedCount > 0) resultParts.push(`${skippedCount} 件は既に登録済みのためスキップしました。`);
         showExplorerToast(resultParts.join(''), 'success');
@@ -2761,6 +2847,31 @@
       if (event.data?.type === 'gallery.works.delete.error') {
         galleryDeleteInProgress = false;
         showExplorerToast(event.data.message ?? 'ファイルを削除できませんでした。', 'error');
+      }
+
+      if (event.data?.type === 'gallery.works.pcloudArchive.progress') {
+        galleryPCloudArchiveInProgress = true;
+        showExplorerToast(event.data.message ?? 'pCloudへアーカイブしています...', 'progress', null);
+      }
+
+      if (event.data?.type === 'gallery.works.pcloudArchive.result') {
+        galleryPCloudArchiveInProgress = false;
+        galleryPCloudArchiveConfirmation = false;
+        galleryContextMenu = null;
+        clearGalleryWorkSelection();
+        const archivedCount = Number(event.data.archivedCount ?? 0);
+        const failedCount = Number(event.data.failedCount ?? 0);
+        const message = failedCount > 0
+          ? `${archivedCount} 件をpCloudへアーカイブしました。${failedCount} 件は処理できませんでした。`
+          : `${archivedCount} 件をpCloudへアーカイブしました。`;
+        showExplorerToast(message, failedCount > 0 ? 'error' : 'success', 7_000);
+        loadGalleryWorks(false, galleryRatingFilters, true);
+        if (activeView === 'creators') loadGalleryCreatorSummaries(true);
+      }
+
+      if (event.data?.type === 'gallery.works.pcloudArchive.error') {
+        galleryPCloudArchiveInProgress = false;
+        showExplorerToast(event.data.message ?? 'pCloudへアーカイブできませんでした。', 'error', 9_000);
       }
 
       if (event.data?.type === 'gallery.work.thumbnail.result') {
@@ -2822,6 +2933,21 @@
         filterEditorTitles = event.data.titles ?? [];
         filterEditorCharacters = event.data.characters ?? [];
         if (
+          galleryTitleAssignmentReturnPending &&
+          galleryTitleAssignmentReturnAttribute === 'character' &&
+          filterEditorAttribute === 'character' &&
+          filterEditorSelectedId === null &&
+          filterEditorParentTitleId === null)
+        {
+          const parent = filterEditorTitles.find((definition) =>
+            definition.id === pendingGalleryTitleAssignmentCharacterParentTitleId);
+          if (parent) {
+            filterEditorParentTitleId = parent.id;
+            filterEditorParentTitle = parent.canonicalName;
+            filterEditorCategoryName = parent.categoryName === '未分類' ? '' : parent.categoryName;
+          }
+        }
+        if (
           galleryCharacterAssignmentReturnPending &&
           galleryCharacterAssignment?.titles.length === 1 &&
           filterEditorAttribute === 'character' &&
@@ -2866,12 +2992,27 @@
         }
         if (galleryTitleAssignmentReturnPending && event.data.updated && galleryTitleAssignment) {
           const selectedId = Number(event.data.selectedId ?? 0);
-          pendingGalleryTitleAssignmentSelectedTitleId = Number.isFinite(selectedId) && selectedId > 0 ? selectedId : null;
+          const returnAttribute = galleryTitleAssignmentReturnAttribute;
+          if (returnAttribute === 'character') {
+            pendingGalleryTitleAssignmentSelectedCharacterId = Number.isFinite(selectedId) && selectedId > 0 ? selectedId : null;
+          }
+          else {
+            pendingGalleryTitleAssignmentSelectedTitleId = Number.isFinite(selectedId) && selectedId > 0 ? selectedId : null;
+          }
           galleryTitleAssignmentReturnPending = false;
+          galleryTitleAssignmentReturnAttribute = null;
           pendingGalleryTitleAssignmentCategory = '';
+          pendingGalleryTitleAssignmentCharacterParentTitleId = null;
           activeView = 'library';
           persistNavigationState();
-          requestGalleryTitleAssignmentOptions(galleryTitleAssignment);
+          if (returnAttribute === 'character' && galleryTitleAssignment.selectedTitleId !== null) {
+            const selectedTitleId = galleryTitleAssignment.selectedTitleId;
+            requestGalleryTitleAssignmentCharacters(galleryTitleAssignment, selectedTitleId);
+            scrollSelectedGalleryTitleAssignmentIntoView(selectedTitleId);
+          }
+          else {
+            requestGalleryTitleAssignmentOptions(galleryTitleAssignment);
+          }
         }
         if (galleryCharacterAssignmentReturnPending && event.data.updated && galleryCharacterAssignment) {
           const selectedId = Number(event.data.selectedId ?? 0);
@@ -3069,6 +3210,26 @@
         ffmpegSettings = { ...ffmpegSettings, executablePath: event.data.path };
       }
 
+      if (event.data?.type === 'settings.nconvert.result' && event.data.settings) {
+        nConvertSettings = {
+          executablePath: event.data.settings.executablePath ?? '',
+          temporaryDirectory: event.data.settings.temporaryDirectory ?? ''
+        };
+        nConvertAvailable = Boolean(event.data.isAvailable);
+      }
+
+      if (event.data?.type === 'settings.nconvert.pickExecutable.result' && typeof event.data.path === 'string') {
+        nConvertSettings = { ...nConvertSettings, executablePath: event.data.path };
+      }
+
+      if (event.data?.type === 'settings.nconvert.pickTemporaryDirectory.result' && typeof event.data.path === 'string') {
+        nConvertSettings = { ...nConvertSettings, temporaryDirectory: event.data.path };
+      }
+
+      if (event.data?.type === 'settings.nconvert.error') {
+        showExplorerToast(event.data.message ?? 'NConvert設定を保存できませんでした。', 'error');
+      }
+
       if (event.data?.type === 'settings.thumbnailCache.result') {
         thumbnailCacheTargets = event.data.targets ?? [];
         thumbnailCacheRoot = event.data.cacheRoot ?? '';
@@ -3147,6 +3308,7 @@
       if (event.data?.type === 'settings.pcloud.result') {
         pCloudApiHost = event.data.settings?.apiHost ?? 'eapi.pcloud.com';
         pCloudTargetFolder = event.data.settings?.targetFolder ?? '';
+        pCloudArchiveRootFolder = event.data.settings?.archiveRootFolder ?? '';
         pCloudClientId = event.data.settings?.clientId ?? '';
         pCloudOAuthRedirectUri = event.data.settings?.redirectUri ?? '';
         pCloudHasAccessToken = Boolean(event.data.settings?.hasAccessToken);
@@ -3648,6 +3810,40 @@
         showExplorerToast(event.data.message ?? '', 'success');
       }
 
+      if (event.data?.type === 'explorer.pcloudArchive.progress') {
+        explorerPCloudArchiveInProgress = true;
+        showExplorerToast(event.data.message ?? 'pCloudへアーカイブしています...', 'progress', null);
+      }
+
+      if (event.data?.type === 'explorer.pcloudArchive.result') {
+        explorerPCloudArchiveInProgress = false;
+        explorerPCloudArchiveConfirmation = null;
+        const directory = String(event.data.directory ?? '');
+        const pane = event.data.pane === 'split-right' ? 'right' : 'left';
+        if (pane === 'right' && explorerSplit &&
+            normalizeWindowsPath(explorerSplit.rightPath) === normalizeWindowsPath(directory)) {
+          loadSplitExplorer(directory);
+        }
+        else if (pane === 'left' &&
+                 normalizeWindowsPath(explorerPath) === normalizeWindowsPath(directory)) {
+          loadExplorer(directory);
+        }
+        const archivedCount = Number(event.data.archivedCount ?? 0);
+        const failedCount = Number(event.data.failedCount ?? 0);
+        const archivedFileCount = Number(event.data.archivedFileCount ?? 0);
+        const errors = Array.isArray(event.data.errors) ? event.data.errors.map(String) : [];
+        const summary = failedCount > 0
+          ? `${archivedCount} 件をpCloudへアーカイブしました。${failedCount} 件は処理できませんでした。`
+          : `${archivedCount} 件をpCloudへアーカイブしました（${archivedFileCount} ファイル）。`;
+        showExplorerToast(
+          errors.length > 0 ? `${summary}\n${errors.slice(0, 3).join('\n')}` : summary,
+          failedCount > 0 ? 'error' : 'success',
+          failedCount > 0 ? 12_000 : 7_000
+        );
+        loadGalleryWorks(false, galleryRatingFilters, true);
+        if (activeView === 'creators') loadGalleryCreatorSummaries(true);
+      }
+
       if (event.data?.type === 'explorer.paths.validate.result' &&
           event.data.requestId === pendingExplorerPathsOpen?.requestId) {
         const pending = pendingExplorerPathsOpen;
@@ -3708,6 +3904,33 @@
         );
       }
 
+      if (event.data?.type === 'explorer.nconvert.progress') {
+        nConvertZipBatchInProgress = true;
+        showExplorerToast(event.data.message ?? 'NConvert: ZIP内画像を変換しています。', 'progress', null);
+      }
+
+      if (event.data?.type === 'explorer.nconvert.convertZipImages.result') {
+        nConvertZipBatchInProgress = false;
+        nConvertZipConfirmation = null;
+        const directory = String(event.data.directory ?? '');
+        const pane = event.data.pane === 'split-right' ? 'right' : 'left';
+        if (directory) {
+          if (pane === 'right' && explorerSplit &&
+              normalizeWindowsPath(explorerSplit.rightPath) === normalizeWindowsPath(directory)) {
+            loadSplitExplorer(directory);
+          }
+          else if (pane === 'left' &&
+                   normalizeWindowsPath(explorerPath) === normalizeWindowsPath(directory)) {
+            loadExplorer(directory);
+          }
+        }
+        showExplorerToast(
+          event.data.message ?? 'NConvertによるZIP内画像の変換を完了しました。',
+          Number(event.data.failureCount ?? 0) > 0 || event.data.hasWarnings === true ? 'error' : 'success',
+          8_000
+        );
+      }
+
       if (event.data?.type === 'explorer.gid.assign.result') {
         gidAssignmentInProgress = false;
         gidAssignmentConfirmation = null;
@@ -3741,6 +3964,9 @@
       }
 
       if (event.data?.type === 'explorer.operation.error') {
+        if (event.data.operation === 'explorer.pcloudArchive') {
+          explorerPCloudArchiveInProgress = false;
+        }
         gidAssignmentInProgress = false;
         gidAssignmentConfirmation = null;
         creatorFolderConversionInProgress = false;
@@ -3750,6 +3976,10 @@
         if (event.data.operation === 'explorer.winrar.convertRarToZip') {
           rarToZipBatchInProgress = false;
           finishWinRarProgress();
+        }
+        else if (event.data.operation === 'explorer.nconvert.convertZipImages') {
+          nConvertZipBatchInProgress = false;
+          nConvertZipConfirmation = null;
         }
         else if (!rarToZipBatchInProgress) {
           finishWinRarProgress();
@@ -3774,6 +4004,7 @@
     postHostMessage({ type: 'tags.manager.list' });
     postHostMessage({ type: 'settings.winrar.list' });
     postHostMessage({ type: 'settings.ffmpeg.list' });
+    postHostMessage({ type: 'settings.nconvert.list' });
     postHostMessage({ type: 'settings.searchEngine.list' });
     postHostMessage({ type: 'settings.thumbnailCache.list' });
     postHostMessage({ type: 'settings.sqliteDatabase.list' });
@@ -3792,6 +4023,11 @@
     postHostMessage({ type: 'explorer.tabs.list' });
 
     const onKeydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && nConvertZipConfirmation && !nConvertZipBatchInProgress) {
+        event.preventDefault();
+        nConvertZipConfirmation = null;
+        return;
+      }
       if (event.key === 'Escape' && gidAssignmentConfirmation && !gidAssignmentInProgress) {
         event.preventDefault();
         gidAssignmentConfirmation = null;
@@ -3802,9 +4038,19 @@
         creatorFolderConversionConfirmation = null;
         return;
       }
+      if (event.key === 'Escape' && explorerPCloudArchiveConfirmation && !explorerPCloudArchiveInProgress) {
+        event.preventDefault();
+        explorerPCloudArchiveConfirmation = null;
+        return;
+      }
       if (event.key === 'Escape' && galleryDeleteConfirmation) {
         event.preventDefault();
         closeGalleryDeleteConfirmation();
+        return;
+      }
+      if (event.key === 'Escape' && galleryPCloudArchiveConfirmation) {
+        event.preventDefault();
+        closeGalleryPCloudArchiveConfirmation();
         return;
       }
 
@@ -3875,6 +4121,7 @@
         explorerThumbnailSubmenuOpen = false;
         explorerDbManagementSubmenuOpen = false;
         explorerGidSubmenuOpen = false;
+        explorerDeleteSubmenuOpen = false;
       }
       if (!target?.closest('.explorer-tab-add-menu')) {
         explorerNewTabMenuOpen = false;
@@ -6329,7 +6576,7 @@
         commonAssignedTags: [],
         creatorQuery: '',
         query: '',
-        selectedTagId: null,
+        selectedTagIds: [],
         selectedAssignedTagIds: [],
         assignedTagsPanelOpen: false,
         isLoading: true,
@@ -6405,7 +6652,10 @@
     if (!galleryTagAssignment || galleryTagAssignment.isSaving) {
       return;
     }
-    galleryTagAssignment = { ...galleryTagAssignment, selectedTagId: tagId };
+    const selectedTagIds = galleryTagAssignment.selectedTagIds.includes(tagId)
+      ? galleryTagAssignment.selectedTagIds.filter((id) => id !== tagId)
+      : [...galleryTagAssignment.selectedTagIds, tagId];
+    galleryTagAssignment = { ...galleryTagAssignment, selectedTagIds };
   }
 
   function toggleGalleryAssignedTagSelection(tagId: number) {
@@ -6454,7 +6704,7 @@
   }
 
   function applyGalleryTagAssignment() {
-    if (!galleryTagAssignment || galleryTagAssignment.selectedTagId === null || galleryTagAssignment.isSaving) {
+    if (!galleryTagAssignment || galleryTagAssignment.selectedTagIds.length === 0 || galleryTagAssignment.isSaving) {
       return;
     }
 
@@ -6462,7 +6712,7 @@
     postHostMessage({
       type: 'gallery.tagAssignment.apply',
       paths: galleryTagAssignment.works.map((work) => work.path),
-      tagId: galleryTagAssignment.selectedTagId,
+      tagIds: galleryTagAssignment.selectedTagIds,
       removeTagIds: galleryTagAssignment.selectedAssignedTagIds
     });
   }
@@ -6513,7 +6763,7 @@
         characterQuery: '',
         categoryFilter: '',
         selectedTitleId: null,
-        selectedCharacterId: null,
+        selectedCharacterIds: [],
         selectedAssignedTitleIds: [],
         assignedTitlesPanelOpen: false,
         characterPanelOpen: false,
@@ -6612,7 +6862,7 @@
     galleryTitleAssignment = {
       ...galleryTitleAssignment,
       selectedTitleId: titleId,
-      selectedCharacterId: null,
+      selectedCharacterIds: [],
       creatorTitleCharacters: [],
       availableCharacters: [],
       characterPanelOpen: true,
@@ -6674,7 +6924,10 @@
     if (!galleryTitleAssignment || galleryTitleAssignment.isSaving) {
       return;
     }
-    galleryTitleAssignment = { ...galleryTitleAssignment, selectedCharacterId: characterId };
+    const selectedCharacterIds = galleryTitleAssignment.selectedCharacterIds.includes(characterId)
+      ? galleryTitleAssignment.selectedCharacterIds.filter((id) => id !== characterId)
+      : [...galleryTitleAssignment.selectedCharacterIds, characterId];
+    galleryTitleAssignment = { ...galleryTitleAssignment, selectedCharacterIds };
   }
 
   function toggleGalleryAssignedTitleSelection(titleId: number) {
@@ -6707,9 +6960,40 @@
     }
 
     galleryTitleAssignmentReturnPending = true;
+    galleryTitleAssignmentReturnAttribute = 'title';
     pendingGalleryTitleAssignmentCategory = galleryTitleAssignment.category;
+    pendingGalleryTitleAssignmentCharacterParentTitleId = null;
     createFilterEditorDefinition('title');
     activateView('filters');
+  }
+
+  function openGalleryTitleAssignmentNewCharacter() {
+    if (!galleryTitleAssignment || galleryTitleAssignment.selectedTitleId === null) {
+      return;
+    }
+
+    galleryTitleAssignmentReturnPending = true;
+    galleryTitleAssignmentReturnAttribute = 'character';
+    pendingGalleryTitleAssignmentCategory = galleryTitleAssignment.category;
+    pendingGalleryTitleAssignmentCharacterParentTitleId = galleryTitleAssignment.selectedTitleId;
+    createFilterEditorDefinition('character');
+    const parent = filterEditorTitles.find((definition) =>
+      definition.id === pendingGalleryTitleAssignmentCharacterParentTitleId);
+    if (parent) {
+      filterEditorParentTitleId = parent.id;
+      filterEditorParentTitle = parent.canonicalName;
+      filterEditorCategoryName = parent.categoryName === '未分類' ? '' : parent.categoryName;
+    }
+    activateView('filters');
+  }
+
+  function scrollSelectedGalleryTitleAssignmentIntoView(titleId: number) {
+    void tick().then(() => {
+      const candidates = Array.from(document.querySelectorAll<HTMLButtonElement>(
+        `[data-gallery-title-assignment-id="${titleId}"]`));
+      const selectedTitle = candidates.find((candidate) => candidate.offsetParent !== null);
+      selectedTitle?.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'nearest' });
+    });
   }
 
   function returnToGalleryTitleAssignment() {
@@ -6717,11 +7001,21 @@
       return;
     }
 
+    const returnAttribute = galleryTitleAssignmentReturnAttribute;
     galleryTitleAssignmentReturnPending = false;
+    galleryTitleAssignmentReturnAttribute = null;
     pendingGalleryTitleAssignmentCategory = '';
+    pendingGalleryTitleAssignmentCharacterParentTitleId = null;
     activeView = 'library';
     persistNavigationState();
-    requestGalleryTitleAssignmentOptions(galleryTitleAssignment);
+    if (returnAttribute === 'character' && galleryTitleAssignment.selectedTitleId !== null) {
+      const selectedTitleId = galleryTitleAssignment.selectedTitleId;
+      requestGalleryTitleAssignmentCharacters(galleryTitleAssignment, selectedTitleId);
+      scrollSelectedGalleryTitleAssignmentIntoView(selectedTitleId);
+    }
+    else {
+      requestGalleryTitleAssignmentOptions(galleryTitleAssignment);
+    }
   }
 
   function applyGalleryTitleAssignment() {
@@ -6734,7 +7028,7 @@
       type: 'gallery.titleAssignment.apply',
       paths: galleryTitleAssignment.works.map((work) => work.path),
       titleId: galleryTitleAssignment.selectedTitleId,
-      characterId: galleryTitleAssignment.selectedCharacterId,
+      characterIds: galleryTitleAssignment.selectedCharacterIds,
       removeTitleIds: galleryTitleAssignment.selectedAssignedTitleIds
     });
   }
@@ -6746,9 +7040,11 @@
 
     galleryTitleAssignment = null;
     galleryTitleAssignmentReturnPending = false;
+    galleryTitleAssignmentReturnAttribute = null;
     pendingGalleryTitleAssignmentCategory = '';
     pendingGalleryTitleAssignmentSelectedTitleId = null;
     pendingGalleryTitleAssignmentSelectedCharacterId = null;
+    pendingGalleryTitleAssignmentCharacterParentTitleId = null;
   }
 
   function openGalleryCharacterAssignment(sourceWork: GalleryWork | null = galleryContextTargetWork ?? galleryContextMenu?.work ?? null) {
@@ -6784,7 +7080,7 @@
         commonAssignedCharacters: [],
         creatorQuery: '',
         query: '',
-        selectedCharacterId: null,
+        selectedCharacterIds: [],
         selectedAssignedCharacterIds: [],
         assignedCharactersPanelOpen: false,
         isLoading: true,
@@ -6864,7 +7160,10 @@
     if (!galleryCharacterAssignment || galleryCharacterAssignment.isSaving) {
       return;
     }
-    galleryCharacterAssignment = { ...galleryCharacterAssignment, selectedCharacterId: characterId };
+    const selectedCharacterIds = galleryCharacterAssignment.selectedCharacterIds.includes(characterId)
+      ? galleryCharacterAssignment.selectedCharacterIds.filter((id) => id !== characterId)
+      : [...galleryCharacterAssignment.selectedCharacterIds, characterId];
+    galleryCharacterAssignment = { ...galleryCharacterAssignment, selectedCharacterIds };
   }
 
   function toggleGalleryAssignedCharacterSelection(characterId: number) {
@@ -6892,7 +7191,7 @@
   }
 
   function applyGalleryCharacterAssignment() {
-    if (!galleryCharacterAssignment || galleryCharacterAssignment.selectedCharacterId === null || galleryCharacterAssignment.isSaving) {
+    if (!galleryCharacterAssignment || galleryCharacterAssignment.selectedCharacterIds.length === 0 || galleryCharacterAssignment.isSaving) {
       return;
     }
 
@@ -6900,7 +7199,7 @@
     postHostMessage({
       type: 'gallery.characterAssignment.apply',
       paths: galleryCharacterAssignment.works.map((work) => work.path),
-      characterId: galleryCharacterAssignment.selectedCharacterId,
+      characterIds: galleryCharacterAssignment.selectedCharacterIds,
       removeCharacterIds: galleryCharacterAssignment.selectedAssignedCharacterIds
     });
   }
@@ -7645,6 +7944,37 @@
 
     galleryDeleteInProgress = true;
     postHostMessage({ type: 'gallery.works.delete', paths });
+  }
+
+  function requestGalleryPCloudArchive() {
+    if (selectedGalleryWorkIds.size === 0) {
+      return;
+    }
+    closeGalleryContextMenu();
+    galleryPCloudArchiveInProgress = false;
+    galleryPCloudArchiveConfirmation = true;
+  }
+
+  function closeGalleryPCloudArchiveConfirmation() {
+    if (galleryPCloudArchiveInProgress) {
+      return;
+    }
+    galleryPCloudArchiveConfirmation = false;
+  }
+
+  function archiveGallerySelectionToPCloud() {
+    if (galleryPCloudArchiveInProgress) {
+      return;
+    }
+    const works = galleryWorks
+      .filter((work) => selectedGalleryWorkIds.has(work.id))
+      .map((work) => ({ path: work.path, category: work.category, creator: work.creator }));
+    if (works.length === 0) {
+      galleryPCloudArchiveConfirmation = false;
+      return;
+    }
+    galleryPCloudArchiveInProgress = true;
+    postHostMessage({ type: 'gallery.works.pcloudArchive', works });
   }
 
   function clearGallerySelectionOnClick(node: HTMLElement) {
@@ -9044,7 +9374,9 @@
     }
     if (view !== 'filters' && galleryTitleAssignmentReturnPending) {
       galleryTitleAssignmentReturnPending = false;
+      galleryTitleAssignmentReturnAttribute = null;
       pendingGalleryTitleAssignmentCategory = '';
+      pendingGalleryTitleAssignmentCharacterParentTitleId = null;
       galleryTitleAssignment = null;
     }
     if (view !== 'filters' && galleryCharacterAssignmentReturnPending) {
@@ -9463,7 +9795,9 @@
     filterEditorParentTitle = '';
     const pendingAssignmentCategory = attribute === 'title'
       ? pendingGalleryTitleAssignmentCategory
-      : pendingGalleryCharacterAssignmentCategory;
+      : galleryTitleAssignmentReturnPending && galleryTitleAssignmentReturnAttribute === 'character'
+        ? pendingGalleryTitleAssignmentCategory
+        : pendingGalleryCharacterAssignmentCategory;
     filterEditorVisibleCategoriesDraft = pendingAssignmentCategory ? [pendingAssignmentCategory] : [];
     filterEditorAliases = '';
     filterEditorMergeCandidates = new Set();
@@ -9606,7 +9940,10 @@
       showExplorerToast('検索する名称を入力してください。', 'error');
       return;
     }
-    postHostMessage({ type: 'filters.editor.standardName.search', query });
+    const contextTitle = filterEditorAttribute === 'character'
+      ? filterEditorParentTitleOptions.find((title) => title.id === filterEditorParentTitleId)?.canonicalName ?? ''
+      : '';
+    postHostMessage({ type: 'filters.editor.standardName.search', query, contextTitle });
   }
 
   function transferFilterEditorStandardName() {
@@ -10543,37 +10880,194 @@
     launchExplorerEntry(entry, activation);
   }
 
+  function getExplorerGestureRegion(x: number, y: number, pane: 'left' | 'right') {
+    const element = document.elementFromPoint(x, y);
+    const entryPath = element
+      ?.closest<HTMLElement>('[data-explorer-path]')
+      ?.dataset.explorerPath ?? '';
+    if (entryPath) {
+      return `entry:${entryPath}`;
+    }
+    if (element?.closest('.explorer-grid-pane, .split-grid-pane')) {
+      return `blank:${pane}`;
+    }
+    return 'outside';
+  }
+
+  function createExplorerGestureState(event: PointerEvent, pane: 'left' | 'right') {
+    if (pane === 'left') {
+      suppressExplorerContextMenu = false;
+    }
+    else {
+      suppressSplitContextMenu = false;
+    }
+    if (pendingExplorerContextMenu?.pane === pane) {
+      pendingExplorerContextMenu = null;
+    }
+
+    const owner = event.currentTarget as HTMLElement;
+    try {
+      owner.setPointerCapture(event.pointerId);
+    }
+    catch {
+      // Pointer capture is a safeguard for leaving the card/pane while gesturing.
+      // The normal bubbling path still works when the host cannot capture it.
+    }
+
+    const entryPath = (event.target as Element | null)
+      ?.closest<HTMLElement>('[data-explorer-path]')
+      ?.dataset.explorerPath ?? '';
+    const originRegion = getExplorerGestureRegion(event.clientX, event.clientY, pane);
+    return {
+      pane,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      distance: 0,
+      entryPath,
+      originRegion,
+      stayedInOriginRegion: originRegion !== 'outside'
+    } satisfies ExplorerGestureState;
+  }
+
+  function updateExplorerGestureState(state: ExplorerGestureState, event: PointerEvent) {
+    if (state.pointerId !== event.pointerId) {
+      return;
+    }
+
+    state.distance += Math.max(
+      Math.abs(event.clientX - state.lastX),
+      Math.abs(event.clientY - state.lastY));
+    state.lastX = event.clientX;
+    state.lastY = event.clientY;
+    if (state.stayedInOriginRegion &&
+        getExplorerGestureRegion(event.clientX, event.clientY, state.pane) !== state.originRegion) {
+      state.stayedInOriginRegion = false;
+    }
+  }
+
+  function releaseExplorerGesturePointer(event: PointerEvent, state: ExplorerGestureState) {
+    const owner = event.currentTarget as HTMLElement;
+    try {
+      if (owner.hasPointerCapture(state.pointerId)) {
+        owner.releasePointerCapture(state.pointerId);
+      }
+    }
+    catch {
+      // Pointer capture may already have been released by WebView2.
+    }
+  }
+
+  function showPendingExplorerContextMenu(request: PendingExplorerContextMenu) {
+    if (request.kind === 'entry') {
+      showExplorerContextMenu(request.entry, request.pane, request.x, request.y);
+    }
+    else {
+      showExplorerBlankContextMenu(request.pane, request.x, request.y);
+    }
+  }
+
+  function findExplorerEntryForPane(path: string, pane: 'left' | 'right') {
+    const entries = pane === 'right'
+      ? explorerSplit?.rightEntries ?? []
+      : explorerEntries;
+    return entries.find((entry) => entry.path === path) ?? null;
+  }
+
+  function completeExplorerGesture(
+    state: ExplorerGestureState,
+    event: PointerEvent,
+    pane: 'left' | 'right') {
+    updateExplorerGestureState(state, event);
+    releaseExplorerGesturePointer(event, state);
+
+    const gestureAttempted = state.distance >= mouseGestureSettings.threshold;
+    if (gestureAttempted) {
+      executeMouseGesture(
+        event.clientX - state.startX,
+        event.clientY - state.startY,
+        pane);
+    }
+
+    const pending = pendingExplorerContextMenu?.pane === pane
+      ? pendingExplorerContextMenu
+      : null;
+    if (pending) {
+      pendingExplorerContextMenu = null;
+    }
+
+    if (gestureAttempted) {
+      // If WebView2 sent contextmenu before pointerup, it has already been
+      // consumed as `pending`. Otherwise suppress the contextmenu event that
+      // follows pointerup. An unassigned gesture still wins over right-click.
+      if (!pending) {
+        if (pane === 'left') {
+          suppressExplorerContextMenu = true;
+        }
+        else {
+          suppressSplitContextMenu = true;
+        }
+      }
+    }
+    else if (pending && state.stayedInOriginRegion) {
+      // ZipPla defers selection and context-menu display until it knows that
+      // the right-button operation was not a gesture.
+      showPendingExplorerContextMenu(pending);
+    }
+    else if (!pending && !state.stayedInOriginRegion) {
+      // The contextmenu event may arrive after pointerup. Suppress it when the
+      // pointer left the card/blank region where the right-click began.
+      if (pane === 'left') {
+        suppressExplorerContextMenu = true;
+      }
+      else {
+        suppressSplitContextMenu = true;
+      }
+    }
+
+    clearGestureTrail();
+  }
+
+  function cancelExplorerGesture(pane: 'left' | 'right') {
+    if (pane === 'left') {
+      explorerGestureStart = null;
+      suppressExplorerContextMenu = false;
+    }
+    else {
+      splitGestureStart = null;
+      suppressSplitContextMenu = false;
+    }
+    if (pendingExplorerContextMenu?.pane === pane) {
+      pendingExplorerContextMenu = null;
+    }
+    clearGestureTrail();
+  }
+
   function beginSplitGesture(event: PointerEvent) {
     focusSplitPane('right');
     if (mouseGestureSettings.enabled && event.button === 2) {
-      splitGestureStart = { x: event.clientX, y: event.clientY };
+      splitGestureStart = createExplorerGestureState(event, 'right');
       gestureTrail = [{ x: event.clientX, y: event.clientY }];
     }
   }
 
   function updateSplitGesture(event: PointerEvent) {
-    if (splitGestureStart && (event.buttons & 2) === 2) {
+    if (splitGestureStart && splitGestureStart.pointerId === event.pointerId && (event.buttons & 2) === 2) {
+      updateExplorerGestureState(splitGestureStart, event);
       appendGesturePoint(event);
     }
   }
 
   function finishSplitGesture(event: PointerEvent) {
-    if (!splitGestureStart || event.button !== 2) {
+    const state = splitGestureStart;
+    if (!state || state.pointerId !== event.pointerId || event.button !== 2) {
       return;
     }
 
-    const deltaX = event.clientX - splitGestureStart.x;
-    const deltaY = event.clientY - splitGestureStart.y;
     splitGestureStart = null;
-    if (executeMouseGesture(deltaX, deltaY, 'right')) {
-      suppressSplitContextMenu = true;
-    }
-    clearGestureTrail();
-  }
-
-  function suppressSplitBlankContextMenu(event: MouseEvent) {
-    event.preventDefault();
-    suppressSplitContextMenu = false;
+    completeExplorerGesture(state, event, 'right');
   }
 
   function toggleExplorerSort(sort: string) {
@@ -10586,19 +11080,7 @@
     }
   }
 
-  function openExplorerContextMenu(event: MouseEvent, entry: ExplorerEntry, pane: 'left' | 'right') {
-    event.preventDefault();
-    event.stopPropagation();
-    if (pane === 'left' && suppressExplorerContextMenu) {
-      suppressExplorerContextMenu = false;
-      return;
-    }
-
-    if (pane === 'right' && suppressSplitContextMenu) {
-      suppressSplitContextMenu = false;
-      return;
-    }
-
+  function showExplorerContextMenu(entry: ExplorerEntry, pane: 'left' | 'right', x: number, y: number) {
     if (pane === 'right' && explorerSplit) {
       focusSplitPane('right');
       if (!explorerSplit.rightSelectedPaths.includes(entry.path)) {
@@ -10615,24 +11097,44 @@
     explorerContextMenu = {
       entry,
       pane,
-      x: Math.max(8, Math.min(event.clientX, window.innerWidth - (entry.isDirectory ? 740 : isWinRarArchive(entry) ? 550 : 276))),
-      y: Math.min(event.clientY, window.innerHeight - (entry.isDirectory ? 196 : 156))
+      x: Math.max(8, Math.min(x, window.innerWidth - (entry.isDirectory ? 740 : isWinRarArchive(entry) ? 550 : 276))),
+      y: Math.min(y, window.innerHeight - (entry.isDirectory ? 236 : 242))
     };
     explorerThumbnailSubmenuOpen = false;
     explorerCompressionSubmenuOpen = false;
     explorerFolderCreateSubmenuOpen = false;
     explorerDbManagementSubmenuOpen = false;
     explorerGidSubmenuOpen = false;
+    explorerDeleteSubmenuOpen = false;
     explorerColumnMenu = null;
     explorerBlankContextMenu = null;
   }
 
-  function prioritizeExplorerContextMenu(event: PointerEvent, entry: ExplorerEntry, pane: 'left' | 'right') {
-    if (event.button !== 2) {
+  function openExplorerContextMenu(event: MouseEvent, entry: ExplorerEntry, pane: 'left' | 'right') {
+    event.preventDefault();
+    event.stopPropagation();
+    if (pane === 'left' && suppressExplorerContextMenu) {
+      suppressExplorerContextMenu = false;
+      return;
+    }
+    if (pane === 'right' && suppressSplitContextMenu) {
+      suppressSplitContextMenu = false;
       return;
     }
 
-    openExplorerContextMenu(event, entry, pane);
+    const activeGesture = pane === 'left' ? explorerGestureStart : splitGestureStart;
+    if (mouseGestureSettings.enabled && activeGesture) {
+      pendingExplorerContextMenu = {
+        kind: 'entry',
+        entry,
+        pane,
+        x: event.clientX,
+        y: event.clientY
+      };
+      return;
+    }
+
+    showExplorerContextMenu(entry, pane, event.clientX, event.clientY);
   }
 
   function startExplorerEntryDrag(event: DragEvent, entry: ExplorerEntry, pane: 'left' | 'right') {
@@ -10708,8 +11210,20 @@
     });
   }
 
+  function showExplorerBlankContextMenu(pane: 'left' | 'right', x: number, y: number) {
+    explorerContextMenu = null;
+    explorerColumnMenu = null;
+    explorerFolderCreateSubmenuOpen = false;
+    explorerBlankContextMenu = {
+      pane,
+      x: Math.max(8, Math.min(x, window.innerWidth - 220)),
+      y: Math.max(8, Math.min(y, window.innerHeight - 60))
+    };
+  }
+
   function openExplorerBlankContextMenu(event: MouseEvent, pane: 'left' | 'right') {
-    if (!(event.target as Element).closest('.explorer-grid-pane, .split-grid-pane')) {
+    const activeGesture = pane === 'left' ? explorerGestureStart : splitGestureStart;
+    if (!(event.target as Element).closest('.explorer-grid-pane, .split-grid-pane') && !activeGesture) {
       return;
     }
 
@@ -10723,14 +11237,28 @@
       return;
     }
 
-    explorerContextMenu = null;
-    explorerColumnMenu = null;
-    explorerFolderCreateSubmenuOpen = false;
-    explorerBlankContextMenu = {
-      pane,
-      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 220)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 60))
-    };
+    if (mouseGestureSettings.enabled && activeGesture) {
+      const entry = activeGesture.entryPath
+        ? findExplorerEntryForPane(activeGesture.entryPath, pane)
+        : null;
+      pendingExplorerContextMenu = entry
+        ? {
+            kind: 'entry',
+            entry,
+            pane,
+            x: event.clientX,
+            y: event.clientY
+          }
+        : {
+            kind: 'blank',
+            pane,
+            x: event.clientX,
+            y: event.clientY
+          };
+      return;
+    }
+
+    showExplorerBlankContextMenu(pane, event.clientX, event.clientY);
   }
 
   function createNewExplorerFolder(pane: 'left' | 'right') {
@@ -10773,6 +11301,7 @@
     explorerThumbnailSubmenuOpen = false;
     explorerDbManagementSubmenuOpen = false;
     explorerGidSubmenuOpen = false;
+    explorerDeleteSubmenuOpen = false;
   }
 
   function inferCreatorNameFromFolderPath(path: string) {
@@ -11285,6 +11814,10 @@
     return !entry.isDirectory && entry.extension.toLowerCase() === '.rar';
   }
 
+  function isZipArchive(entry: ExplorerEntry) {
+    return !entry.isDirectory && entry.extension.toLowerCase() === '.zip';
+  }
+
   function getContextRarConversionTargets() {
     const context = explorerContextMenu;
     if (!context || !isRarArchive(context.entry)) {
@@ -11301,6 +11834,24 @@
       ? new Set(selected)
       : new Set([context.entry.path]);
     return entries.filter((entry) => targetPaths.has(entry.path) && isRarArchive(entry));
+  }
+
+  function getContextZipNConvertTargets() {
+    const context = explorerContextMenu;
+    if (!context || !isZipArchive(context.entry)) {
+      return [] as ExplorerEntry[];
+    }
+
+    const entries = context.pane === 'right'
+      ? explorerSplit?.rightEntries ?? []
+      : explorerEntries;
+    const selected = context.pane === 'right'
+      ? explorerSplit?.rightSelectedPaths ?? []
+      : selectedPaths;
+    const targetPaths = selected.includes(context.entry.path)
+      ? new Set(selected)
+      : new Set([context.entry.path]);
+    return entries.filter((entry) => targetPaths.has(entry.path) && isZipArchive(entry));
   }
 
   function openContextEntryWithWinRar() {
@@ -11348,6 +11899,46 @@
       paths: targets.map((entry) => entry.path),
       directory: context.pane === 'right' ? explorerSplit?.rightPath : explorerPath,
       pane: context.pane === 'right' ? 'split-right' : undefined
+    });
+  }
+
+  function requestContextZipNConvert() {
+    const context = explorerContextMenu;
+    const targets = getContextZipNConvertTargets();
+    closeExplorerContextMenus();
+    if (!context || targets.length === 0) {
+      return;
+    }
+    if (!nConvertAvailable) {
+      showExplorerToast('Settings > Advanced > NConvert設定でnconvert.exeを指定してください。', 'error');
+      return;
+    }
+    if (nConvertZipBatchInProgress) {
+      showExplorerToast('別のNConvert変換を実行中です。', 'error');
+      return;
+    }
+
+    nConvertZipConfirmation = {
+      pane: context.pane,
+      paths: targets.map((entry) => entry.path),
+      directory: context.pane === 'right' ? explorerSplit?.rightPath ?? '' : explorerPath
+    };
+  }
+
+  function executeContextZipNConvert() {
+    const confirmation = nConvertZipConfirmation;
+    if (!confirmation || nConvertZipBatchInProgress) {
+      return;
+    }
+
+    nConvertZipConfirmation = null;
+    nConvertZipBatchInProgress = true;
+    showExplorerToast('NConvert: ZIP内画像の変換を準備しています。', 'progress', null);
+    postHostMessage({
+      type: 'explorer.nconvert.convertZipImages',
+      paths: confirmation.paths,
+      directory: confirmation.directory,
+      pane: confirmation.pane === 'right' ? 'split-right' : undefined
     });
   }
 
@@ -11463,35 +12054,26 @@
 
   function beginExplorerGesture(event: PointerEvent) {
     if (mouseGestureSettings.enabled && event.button === 2) {
-      explorerGestureStart = { x: event.clientX, y: event.clientY };
+      explorerGestureStart = createExplorerGestureState(event, 'left');
       gestureTrail = [{ x: event.clientX, y: event.clientY }];
     }
   }
 
   function updateExplorerGesture(event: PointerEvent) {
-    if (explorerGestureStart && (event.buttons & 2) === 2) {
+    if (explorerGestureStart && explorerGestureStart.pointerId === event.pointerId && (event.buttons & 2) === 2) {
+      updateExplorerGestureState(explorerGestureStart, event);
       appendGesturePoint(event);
     }
   }
 
   function finishExplorerGesture(event: PointerEvent) {
-    if (!explorerGestureStart || event.button !== 2) {
+    const state = explorerGestureStart;
+    if (!state || state.pointerId !== event.pointerId || event.button !== 2) {
       return;
     }
 
-    const deltaX = event.clientX - explorerGestureStart.x;
-    const deltaY = event.clientY - explorerGestureStart.y;
     explorerGestureStart = null;
-
-    if (executeMouseGesture(deltaX, deltaY, 'left')) {
-      suppressExplorerContextMenu = true;
-    }
-    clearGestureTrail();
-  }
-
-  function suppressExplorerBlankContextMenu(event: MouseEvent) {
-    event.preventDefault();
-    suppressExplorerContextMenu = false;
+    completeExplorerGesture(state, event, 'left');
   }
 
   function appendGesturePoint(event: PointerEvent) {
@@ -12112,6 +12694,63 @@
     deleteConfirmation = true;
   }
 
+  function getExplorerContextSelectedPaths(context: ExplorerContextMenu) {
+    const selected = context.pane === 'right'
+      ? explorerSplit?.rightSelectedPaths ?? []
+      : selectedPaths;
+    return selected.includes(context.entry.path) ? [...selected] : [context.entry.path];
+  }
+
+  function requestExplorerContextDelete() {
+    const context = explorerContextMenu;
+    if (!context) {
+      return;
+    }
+    const pane = context.pane;
+    closeExplorerContextMenus();
+    if (pane === 'right') {
+      requestSplitDelete();
+    }
+    else {
+      requestDelete();
+    }
+  }
+
+  function requestExplorerPCloudArchive() {
+    const context = explorerContextMenu;
+    if (!context || explorerPCloudArchiveInProgress || isExplorerFolderUpdateLocked()) {
+      return;
+    }
+    const paths = getExplorerContextSelectedPaths(context);
+    const directory = context.pane === 'right' ? explorerSplit?.rightPath ?? '' : explorerPath;
+    closeExplorerContextMenus();
+    if (paths.length === 0 || !directory) {
+      showExplorerToast('pCloudへアーカイブするファイルまたはフォルダを選択してください。', 'error');
+      return;
+    }
+    explorerPCloudArchiveConfirmation = { pane: context.pane, paths, directory };
+  }
+
+  function closeExplorerPCloudArchiveConfirmation() {
+    if (!explorerPCloudArchiveInProgress) {
+      explorerPCloudArchiveConfirmation = null;
+    }
+  }
+
+  function archiveExplorerSelectionToPCloud() {
+    const confirmation = explorerPCloudArchiveConfirmation;
+    if (!confirmation || explorerPCloudArchiveInProgress) {
+      return;
+    }
+    explorerPCloudArchiveInProgress = true;
+    postHostMessage({
+      type: 'explorer.pcloudArchive',
+      paths: confirmation.paths,
+      directory: confirmation.directory,
+      pane: confirmation.pane === 'right' ? 'split-right' : undefined
+    });
+  }
+
   function deleteExplorerSelection() {
     if (!explorerPath || isExplorerFolderUpdateLocked()) {
       return;
@@ -12321,7 +12960,11 @@
   }
 
   function isExplorerFolderUpdateLocked() {
-    return explorerPasteInProgress !== null || gidAssignmentInProgress || creatorFolderConversionInProgress || creatorReassignmentInProgress;
+    return explorerPasteInProgress !== null
+      || gidAssignmentInProgress
+      || creatorFolderConversionInProgress
+      || creatorReassignmentInProgress
+      || explorerPCloudArchiveInProgress;
   }
 
   function beginExplorerPaste(pane: 'left' | 'right', path: string) {
@@ -12473,6 +13116,14 @@
       type: 'settings.ffmpeg.save',
       executablePath: ffmpegSettings.executablePath,
       supportedExtensions: ffmpegSettings.supportedExtensions
+    });
+  }
+
+  function saveNConvertSettings() {
+    postHostMessage({
+      type: 'settings.nconvert.save',
+      executablePath: nConvertSettings.executablePath,
+      temporaryDirectory: nConvertSettings.temporaryDirectory
     });
   }
 
@@ -12851,6 +13502,7 @@
       type,
       apiHost: pCloudApiHost,
       targetFolder: pCloudTargetFolder.trim(),
+      archiveRootFolder: pCloudArchiveRootFolder.trim(),
       clientId: pCloudClientId.trim(),
       accessToken: pCloudAccessTokenDraft.trim(),
       autoBackupEnabled: pCloudAutoBackupEnabled,
@@ -13563,6 +14215,9 @@
           </button>
           <button class:settings-active={settingsSection === 'ffmpeg'} onclick={() => (settingsSection = 'ffmpeg')}>
             FFmpeg設定
+          </button>
+          <button class:settings-active={settingsSection === 'nconvert'} onclick={() => (settingsSection = 'nconvert')}>
+            NConvert設定
           </button>
           <button class:settings-active={settingsSection === 'searchEngine'} onclick={() => (settingsSection = 'searchEngine')}>
             検索エンジン
@@ -14554,6 +15209,50 @@
               <button onclick={saveFfmpegSettings}>保存</button>
             </div>
           </section>
+        {:else if settingsSection === 'nconvert'}
+          <div class="section-title">
+            <div>
+              <h1>NConvert設定</h1>
+              <p>ExplorerからZIP内の対応画像を標準画質のJPG（JPEGli）へ変換するための専用設定です</p>
+            </div>
+          </div>
+
+          <section class="settings-panel winrar-settings-panel">
+            <div class="field-grid">
+              <label class="wide">
+                <span>NConvertの実行ファイル</span>
+                <span class="program-executable-input">
+                  <input bind:value={nConvertSettings.executablePath} placeholder="nconvert.exe のフルパス" />
+                  <button type="button" title="nconvert.exe を選択" onclick={() => postHostMessage({ type: 'settings.nconvert.pickExecutable' })}>
+                    <FolderOpen size={17} />
+                  </button>
+                </span>
+              </label>
+              <label class="wide">
+                <span>NConvert一時フォルダ</span>
+                <span class="program-executable-input">
+                  <input bind:value={nConvertSettings.temporaryDirectory} placeholder="空欄の場合は変換元ZIPと同じドライブ上に自動作成" />
+                  <button type="button" title="NConvert一時フォルダを選択" onclick={() => postHostMessage({ type: 'settings.nconvert.pickTemporaryDirectory' })}>
+                    <FolderOpen size={17} />
+                  </button>
+                </span>
+                <small>日本語・記号・絵文字を含まないASCIIパスを指定してください。処理単位の一時ファイルは完了後に削除されます。</small>
+              </label>
+            </div>
+            <div class="nconvert-preset-summary">
+              <strong>変換プリセット</strong>
+              <p>JPEGli / 高さ1600px（縮小のみ）/ Mitchell / 品質95 / プログレッシブ / Huffman最適化 / Float DCT / 4:4:4</p>
+              <small>元の日時・メタデータを維持し、XYB変換・ICC保持・ガンマ補正は行いません。</small>
+            </div>
+            <p class:ffmpeg-status-ready={nConvertAvailable} class="ffmpeg-status">
+              {nConvertAvailable
+                ? 'nconvert.exe を利用できます。'
+                : 'nconvert.exe が未設定、または指定場所に見つかりません。'}
+            </p>
+            <div class="settings-actions">
+              <button onclick={saveNConvertSettings}>保存</button>
+            </div>
+          </section>
         {:else if settingsSection === 'searchEngine'}
           <section class="settings-panel search-engine-settings-panel">
             <div class="field-grid">
@@ -14849,6 +15548,10 @@
                 <label>
                   <span>pCloud内の保存先</span>
                   <input bind:value={pCloudTargetFolder} placeholder="pCloud内の保存先を入力" disabled={pCloudBusy} />
+                </label>
+                <label>
+                  <span>作品アーカイブのROOTフォルダ</span>
+                  <input bind:value={pCloudArchiveRootFolder} placeholder="例：ROOT" disabled={pCloudBusy} />
                 </label>
                 <label>
                   <span>OAuth Client ID</span>
@@ -15626,7 +16329,7 @@
                     <span>{filterEditorSelectedValue || '新しいフィルタ'}</span>
                   </div>
                   <div class="filter-editor-definition-actions">
-                    {#if filterEditorAttribute === 'title' && galleryTitleAssignmentReturnPending && galleryTitleAssignment}
+                    {#if galleryTitleAssignmentReturnPending && galleryTitleAssignment}
                       <button class="quiet-button filter-editor-return-to-title-assignment" onclick={returnToGalleryTitleAssignment}>Title登録に戻る</button>
                     {:else if filterEditorAttribute === 'character' && galleryCharacterAssignmentReturnPending && galleryCharacterAssignment}
                       <button class="quiet-button filter-editor-return-to-title-assignment" onclick={returnToGalleryCharacterAssignment}>Character登録に戻る</button>
@@ -17240,6 +17943,7 @@
               }}
               onpointermove={updateExplorerGesture}
               onpointerup={finishExplorerGesture}
+              onpointercancel={() => cancelExplorerGesture('left')}
               oncontextmenu={(event) => openExplorerBlankContextMenu(event, 'left')}
             >
               <header class="split-pane-heading">
@@ -17262,7 +17966,6 @@
                         class:selected={selectedPaths.includes(entry.path)}
                         class:drop-target={explorerDropTargetPath === entry.path}
                         draggable="true"
-                        onpointerdown={(event) => prioritizeExplorerContextMenu(event, entry, 'left')}
                         ondragstart={(event) => startExplorerEntryDrag(event, entry, 'left')}
                         ondragend={() => { draggedExplorerEntries = null; clearExplorerDropTarget(); }}
                         ondragover={(event) => updateExplorerDropTarget(event, entry)}
@@ -17272,6 +17975,7 @@
                         ondblclick={(event) => openExplorerEntry(entry, event.ctrlKey || event.metaKey)}
                         oncontextmenu={(event) => openExplorerContextMenu(event, entry, 'left')}
                         onkeydown={(event) => onExplorerKeydown(event, entry)}
+                        data-explorer-path={entry.path}
                       >
                         <span class="explorer-preview" use:observeExplorerThumbnail={{ entry, pane: 'left' }}>
                           {#if explorerThumbnails[entry.path]}
@@ -17300,6 +18004,7 @@
               onpointerdown={beginSplitGesture}
               onpointermove={updateSplitGesture}
               onpointerup={finishSplitGesture}
+              onpointercancel={() => cancelExplorerGesture('right')}
               oncontextmenu={(event) => openExplorerBlankContextMenu(event, 'right')}
             >
               <header class="split-pane-heading">
@@ -17325,7 +18030,6 @@
                         class:selected={explorerSplit.rightSelectedPaths.includes(entry.path)}
                         class:drop-target={explorerDropTargetPath === entry.path}
                         draggable="true"
-                        onpointerdown={(event) => prioritizeExplorerContextMenu(event, entry, 'right')}
                         ondragstart={(event) => startExplorerEntryDrag(event, entry, 'right')}
                         ondragend={() => { draggedExplorerEntries = null; clearExplorerDropTarget(); }}
                         ondragover={(event) => updateExplorerDropTarget(event, entry)}
@@ -17334,6 +18038,7 @@
                         onclick={(event) => selectSplitEntry(event, entry)}
                         ondblclick={() => openSplitEntry(entry)}
                         oncontextmenu={(event) => openExplorerContextMenu(event, entry, 'right')}
+                        data-explorer-path={entry.path}
                       >
                         <span class="explorer-preview" use:observeExplorerThumbnail={{ entry, pane: 'right' }}>
                           {#if explorerThumbnails[entry.path]}
@@ -17369,6 +18074,7 @@
             onpointerdown={beginExplorerGesture}
             onpointermove={updateExplorerGesture}
             onpointerup={finishExplorerGesture}
+            onpointercancel={() => cancelExplorerGesture('left')}
             oncontextmenu={(event) => openExplorerBlankContextMenu(event, 'left')}
           >
             <div class="empty">このフォルダには表示する項目がありません。</div>
@@ -17381,6 +18087,7 @@
               onpointerdown={beginExplorerGesture}
               onpointermove={updateExplorerGesture}
               onpointerup={finishExplorerGesture}
+              onpointercancel={() => cancelExplorerGesture('left')}
               oncontextmenu={(event) => openExplorerBlankContextMenu(event, 'left')}
             >
               <div class="explorer-grid-pane" bind:this={explorerGridPaneElement} onscroll={saveExplorerTabScroll}>
@@ -17392,7 +18099,6 @@
                       class:selected={selectedPaths.includes(entry.path)}
                       class:drop-target={explorerDropTargetPath === entry.path}
                       draggable="true"
-                      onpointerdown={(event) => prioritizeExplorerContextMenu(event, entry, 'left')}
                       ondragstart={(event) => startExplorerEntryDrag(event, entry, 'left')}
                       ondragend={() => { draggedExplorerEntries = null; clearExplorerDropTarget(); }}
                       ondragover={(event) => updateExplorerDropTarget(event, entry)}
@@ -17464,7 +18170,6 @@
                   role="option"
                   aria-selected={selectedPaths.includes(entry.path)}
                   draggable="true"
-                  onpointerdown={(event) => prioritizeExplorerContextMenu(event, entry, 'left')}
                   ondragstart={(event) => startExplorerEntryDrag(event, entry, 'left')}
                   ondragend={() => { draggedExplorerEntries = null; clearExplorerDropTarget(); }}
                   ondragover={(event) => updateExplorerDropTarget(event, entry)}
@@ -18082,7 +18787,7 @@
             {:else}
               {#each visibleGalleryTagAssignmentCreatorTitleTags as option (option.id)}
                 <button
-                  class:selected={galleryTagAssignment.selectedTagId === option.id}
+                  class:selected={galleryTagAssignment.selectedTagIds.includes(option.id)}
                   disabled={galleryTagAssignment.isSaving}
                   onclick={() => selectGalleryTagAssignment(option.id)}
                 >
@@ -18118,7 +18823,7 @@
             {:else}
               {#each visibleGalleryTagAssignmentAvailableTags as option (option.id)}
                 <button
-                  class:selected={galleryTagAssignment.selectedTagId === option.id}
+                  class:selected={galleryTagAssignment.selectedTagIds.includes(option.id)}
                   disabled={galleryTagAssignment.isSaving}
                   onclick={() => selectGalleryTagAssignment(option.id)}
                 >
@@ -18136,7 +18841,7 @@
         <div class="modal-actions gallery-title-assignment-actions">
           <button
             class="primary-button"
-            disabled={galleryTagAssignment.isLoading || galleryTagAssignment.isSaving || galleryTagAssignment.selectedTagId === null}
+            disabled={galleryTagAssignment.isLoading || galleryTagAssignment.isSaving || galleryTagAssignment.selectedTagIds.length === 0}
             onclick={applyGalleryTagAssignment}
           >
             {galleryTagAssignment.isSaving ? '登録中...' : '登録'}
@@ -18253,6 +18958,7 @@
           {:else}
             {#each visibleGalleryTitleAssignmentCreatorTitles as option (option.id)}
               <button
+                data-gallery-title-assignment-id={option.id}
                 class:selected={galleryTitleAssignment.selectedTitleId === option.id}
                 disabled={galleryTitleAssignment.isSaving}
                 onclick={() => selectGalleryTitleAssignment(option.id)}
@@ -18308,6 +19014,7 @@
           {:else}
             {#each visibleGalleryTitleAssignmentAvailableTitles as option (option.id)}
               <button
+                data-gallery-title-assignment-id={option.id}
                 class:selected={galleryTitleAssignment.selectedTitleId === option.id}
                 disabled={galleryTitleAssignment.isSaving}
                 onclick={() => selectGalleryTitleAssignment(option.id)}
@@ -18365,7 +19072,7 @@
               {:else}
                 {#each visibleGalleryTitleAssignmentCreatorTitleCharacters as option (option.id)}
                   <button
-                    class:selected={galleryTitleAssignment.selectedCharacterId === option.id}
+                    class:selected={galleryTitleAssignment.selectedCharacterIds.includes(option.id)}
                     disabled={galleryTitleAssignment.isSaving}
                     onclick={() => selectGalleryTitleAssignmentCharacter(option.id)}
                   >
@@ -18400,7 +19107,7 @@
               {:else}
                 {#each visibleGalleryTitleAssignmentAvailableCharacters as option (option.id)}
                   <button
-                    class:selected={galleryTitleAssignment.selectedCharacterId === option.id}
+                    class:selected={galleryTitleAssignment.selectedCharacterIds.includes(option.id)}
                     disabled={galleryTitleAssignment.isSaving}
                     onclick={() => selectGalleryTitleAssignmentCharacter(option.id)}
                   >
@@ -18410,6 +19117,14 @@
                 {/each}
               {/if}
             </div>
+            <button
+              class="primary-button gallery-title-assignment-new"
+              disabled={galleryTitleAssignment.isSaving || galleryTitleAssignment.isCharacterLoading || galleryTitleAssignment.selectedTitleId === null}
+              onclick={openGalleryTitleAssignmentNewCharacter}
+            >
+              <Plus size={16} />
+              <span>新規Characterの追加</span>
+            </button>
           </section>
         </aside>
       {/if}
@@ -18516,7 +19231,7 @@
             {:else}
               {#each visibleGalleryCharacterAssignmentCreatorTitleCharacters as option (option.id)}
                 <button
-                  class:selected={galleryCharacterAssignment.selectedCharacterId === option.id}
+                  class:selected={galleryCharacterAssignment.selectedCharacterIds.includes(option.id)}
                   disabled={galleryCharacterAssignment.isSaving}
                   onclick={() => selectGalleryCharacterAssignment(option.id)}
                 >
@@ -18552,7 +19267,7 @@
             {:else}
               {#each visibleGalleryCharacterAssignmentAvailableCharacters as option (option.id)}
                 <button
-                  class:selected={galleryCharacterAssignment.selectedCharacterId === option.id}
+                  class:selected={galleryCharacterAssignment.selectedCharacterIds.includes(option.id)}
                   disabled={galleryCharacterAssignment.isSaving}
                   onclick={() => selectGalleryCharacterAssignment(option.id)}
                 >
@@ -18571,7 +19286,7 @@
         <div class="modal-actions gallery-title-assignment-actions">
           <button
             class="primary-button"
-            disabled={galleryCharacterAssignment.isLoading || galleryCharacterAssignment.isSaving || galleryCharacterAssignment.selectedCharacterId === null}
+            disabled={galleryCharacterAssignment.isLoading || galleryCharacterAssignment.isSaving || galleryCharacterAssignment.selectedCharacterIds.length === 0}
             onclick={applyGalleryCharacterAssignment}
           >
             {galleryCharacterAssignment.isSaving ? '登録中...' : '登録'}
@@ -18709,16 +19424,33 @@
       <Tags size={16} />
       <span>タグの登録と解除</span>
     </button>
-    <button class="context-danger" role="menuitem" onpointerdown={(event) => {
-      if (event.button === 0) {
-        event.preventDefault();
-        event.stopPropagation();
-        requestGalleryDelete();
-      }
-    }}>
-      <Trash2 size={16} />
-      <span>ファイルを削除</span>
-    </button>
+    <div class="gallery-context-submenu-root">
+      <button class="context-danger" role="menuitem" aria-haspopup="menu">
+        <Trash2 size={16} />
+        <span>ファイルを削除</span>
+        <ChevronRight class="context-submenu-arrow" size={15} />
+      </button>
+      <div class="gallery-context-submenu" role="menu" aria-label="ファイルを削除">
+        <button role="menuitem" onpointerdown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          requestGalleryPCloudArchive();
+        }}>
+          <CloudUpload size={16} />
+          <span>pCloudにアーカイブする</span>
+        </button>
+        <button class="context-danger" role="menuitem" onpointerdown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          requestGalleryDelete();
+        }}>
+          <Trash2 size={16} />
+          <span>ファイル本体を削除</span>
+        </button>
+      </div>
+    </div>
   </div>
 {/if}
 
@@ -18921,6 +19653,12 @@
         <span>{getContextRarConversionTargets().length > 1 ? `${getContextRarConversionTargets().length}件をzipに変換` : 'zipに変換'}</span>
       </button>
     {/if}
+    {#if isZipArchive(explorerContextMenu.entry)}
+      <button role="menuitem" onclick={requestContextZipNConvert}>
+        <RefreshCw size={16} />
+        <span>{getContextZipNConvertTargets().length > 1 ? `${getContextZipNConvertTargets().length}件を標準画質のJPGに変換` : '標準画質のJPGに変換'}</span>
+      </button>
+    {/if}
     {#if isWinRarArchive(explorerContextMenu.entry)}
       <button role="menuitem" onclick={extractContextArchiveWithWinRar}>
         <Archive size={16} />
@@ -18939,6 +19677,36 @@
         <span>{rule.name}</span>
       </button>
     {/each}
+    <div
+      class="explorer-context-submenu-root"
+      role="presentation"
+      onpointerenter={() => (explorerDeleteSubmenuOpen = true)}
+      onpointerleave={() => (explorerDeleteSubmenuOpen = false)}
+    >
+      <button
+        class="context-danger"
+        role="menuitem"
+        aria-haspopup="menu"
+        aria-expanded={explorerDeleteSubmenuOpen}
+        onclick={() => (explorerDeleteSubmenuOpen = !explorerDeleteSubmenuOpen)}
+      >
+        <Trash2 size={16} />
+        <span>ファイルを削除</span>
+        <ArrowRight class="context-submenu-arrow" size={15} />
+      </button>
+      {#if explorerDeleteSubmenuOpen}
+        <div class="explorer-context-submenu" role="menu" aria-label="ファイルを削除">
+          <button role="menuitem" onclick={requestExplorerPCloudArchive}>
+            <CloudUpload size={16} />
+            <span>pCloudへアーカイブする</span>
+          </button>
+          <button class="context-danger" role="menuitem" onclick={requestExplorerContextDelete}>
+            <Trash2 size={16} />
+            <span>ファイル本体を削除</span>
+          </button>
+        </div>
+      {/if}
+    </div>
   </div>
 {/if}
 
@@ -19247,6 +20015,44 @@
   </div>
 {/if}
 
+{#if nConvertZipConfirmation}
+  <div class="modal-backdrop" role="presentation">
+    <dialog
+      open
+      class="modal rename-modal"
+      aria-labelledby="nconvert-zip-confirmation-title"
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          nConvertZipConfirmation = null;
+        }
+      }}
+    >
+      <div class="modal-heading">
+        <div>
+          <h2 id="nconvert-zip-confirmation-title">ZIP内の画像をJPGへ変換しますか？</h2>
+          <p>{nConvertZipConfirmation.paths.length}件のZIPをNConvertで処理します</p>
+        </div>
+        <button title="閉じる" onclick={() => (nConvertZipConfirmation = null)}><X size={18} /></button>
+      </div>
+      <p>ZIP内のPNG/WebP/JPG/JPEG/JPE/JFIF/JXL/BMP/TIF/TIFF/HEIC/HEIF/AVIFを標準画質のJPG（JPEGli）へ差し替えます。フォルダ構造とファイル名は維持され、拡張子は.jpgになります。</p>
+      <div class="archive-confirmation-list">
+        {#each nConvertZipConfirmation.paths.slice(0, 5) as path}
+          <code>{path.replace(/^.*[\\/]/, '')}</code>
+        {/each}
+        {#if nConvertZipConfirmation.paths.length > 5}
+          <small>ほか {nConvertZipConfirmation.paths.length - 5}件</small>
+        {/if}
+      </div>
+      <p class="confirmation-note">変換後ZIPの検証が成功した場合だけ元ZIPを置換します。失敗したZIPは変更しません。同名JPGが既にある場合は変換結果で置き換えます。</p>
+      <div class="modal-actions">
+        <button class="primary-button" onclick={executeContextZipNConvert}>変換を開始</button>
+        <button class="quiet-button" onclick={() => (nConvertZipConfirmation = null)}>キャンセル</button>
+      </div>
+    </dialog>
+  </div>
+{/if}
+
 {#if pendingWinRarIndividualCompression}
   <div class="modal-backdrop" role="presentation">
     <dialog
@@ -19367,6 +20173,27 @@
       <div class="modal-actions">
         <button type="button" class="danger-button" disabled={galleryDeleteInProgress} onclick={deleteGallerySelection}>{galleryDeleteInProgress ? '削除中...' : '削除'}</button>
         <button type="button" class="quiet-button gallery-delete-cancel" disabled={galleryDeleteInProgress} onclick={closeGalleryDeleteConfirmation}>キャンセル</button>
+      </div>
+    </dialog>
+  </div>
+{/if}
+
+{#if galleryPCloudArchiveConfirmation}
+  <div class="modal-backdrop" role="presentation">
+    <dialog open class="modal rename-modal delete-modal" aria-labelledby="gallery-pcloud-archive-title" onkeydown={(event) => {
+      if (event.key === 'Escape' && !galleryPCloudArchiveInProgress) {
+        event.preventDefault();
+        closeGalleryPCloudArchiveConfirmation();
+      }
+    }}>
+      <div class="modal-heading">
+        <h2 id="gallery-pcloud-archive-title">{selectedGalleryWorkIds.size} 件をpCloudへアーカイブしますか？</h2>
+        <button type="button" class="gallery-delete-close" title="閉じる" disabled={galleryPCloudArchiveInProgress} onclick={closeGalleryPCloudArchiveConfirmation}><X size={18} /></button>
+      </div>
+      <p>アップロード完了とファイルサイズの一致を確認した後、ローカルのファイル本体を削除します。GID・属性・Tagなどの関連データは保持し、各種集計から除外します。</p>
+      <div class="modal-actions">
+        <button type="button" class="primary-button" disabled={galleryPCloudArchiveInProgress} onclick={archiveGallerySelectionToPCloud}>{galleryPCloudArchiveInProgress ? 'アーカイブ中...' : 'pCloudへアーカイブ'}</button>
+        <button type="button" class="quiet-button gallery-delete-cancel" disabled={galleryPCloudArchiveInProgress} onclick={closeGalleryPCloudArchiveConfirmation}>キャンセル</button>
       </div>
     </dialog>
   </div>
@@ -19543,6 +20370,34 @@
       <div class="modal-actions">
         <button class="primary-button" disabled={creatorReassignmentInProgress || !creatorReassignmentConfirmation.targetCreator.trim()} onclick={confirmCreatorReassignment}>{creatorReassignmentInProgress ? '処理中...' : '付け替え'}</button>
         <button class="quiet-button creator-folder-conversion-cancel-button" disabled={creatorReassignmentInProgress} onclick={closeCreatorReassignmentConfirmation}>キャンセル</button>
+      </div>
+    </dialog>
+  </div>
+{/if}
+
+{#if explorerPCloudArchiveConfirmation}
+  <div class="modal-backdrop" role="presentation">
+    <dialog open class="modal rename-modal delete-modal" aria-labelledby="explorer-pcloud-archive-title" onkeydown={(event) => {
+      if (event.key === 'Escape' && !explorerPCloudArchiveInProgress) {
+        event.preventDefault();
+        closeExplorerPCloudArchiveConfirmation();
+      }
+    }}>
+      <div class="modal-heading">
+        <h2 id="explorer-pcloud-archive-title">{explorerPCloudArchiveConfirmation.paths.length} 件をpCloudへアーカイブしますか？</h2>
+        <button title="閉じる" disabled={explorerPCloudArchiveInProgress} onclick={closeExplorerPCloudArchiveConfirmation}><X size={18} /></button>
+      </div>
+      <p>フォルダ階層を保ったままアップロードし、全ファイルのサイズ一致を確認した後、ローカルのファイルまたはフォルダ本体を削除します。</p>
+      <p>Gallery用SQLiteDBに登録済みのGID・属性・Tagなどは保持し、各種集計から除外します。</p>
+      <ul>
+        {#each explorerPCloudArchiveConfirmation.paths.slice(0, 5) as path}
+          <li title={path}>{path.replace(/^.*[\\/]/, '')}</li>
+        {/each}
+        {#if explorerPCloudArchiveConfirmation.paths.length > 5}<li>ほか {explorerPCloudArchiveConfirmation.paths.length - 5} 件</li>{/if}
+      </ul>
+      <div class="modal-actions">
+        <button class="primary-button" disabled={explorerPCloudArchiveInProgress} onclick={archiveExplorerSelectionToPCloud}>{explorerPCloudArchiveInProgress ? 'アーカイブ中...' : 'pCloudへアーカイブ'}</button>
+        <button class="quiet-button gallery-delete-cancel" disabled={explorerPCloudArchiveInProgress} onclick={closeExplorerPCloudArchiveConfirmation}>キャンセル</button>
       </div>
     </dialog>
   </div>

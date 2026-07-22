@@ -14,6 +14,7 @@ internal sealed class StorageSettingsStore
     private const string GoogleCalendarRefreshTokenCredentialTarget = "GalleryBrowser/GoogleCalendarRefreshToken";
     private const string DefaultPCloudApiHost = "eapi.pcloud.com";
     private const string DefaultPCloudTargetFolder = "";
+    private const string DefaultPCloudArchiveRootFolder = "";
     private const int DefaultPCloudCheckIntervalMinutes = 60;
     private const int DefaultPCloudBackupIntervalDays = 1;
     private const int DefaultPCloudMaximumSnapshots = 7;
@@ -177,6 +178,7 @@ internal sealed class StorageSettingsStore
             return new PCloudBackupSettingsDto(
                 NormalizeApiHost(settings.ApiHost),
                 NormalizeTargetFolder(settings.TargetFolder),
+                NormalizeTargetFolder(settings.ArchiveRootFolder),
                 settings.ClientId?.Trim() ?? string.Empty,
                 PCloudBackupService.OAuthRedirectUri,
                 hasConfiguration && !string.IsNullOrWhiteSpace(WindowsCredentialStore.Read(PCloudCredentialTarget)),
@@ -212,6 +214,7 @@ internal sealed class StorageSettingsStore
     public void SavePCloudConfiguration(
         string apiHost,
         string targetFolder,
+        string archiveRootFolder,
         string clientId,
         string? accessToken = null,
         bool? autoBackupEnabled = null,
@@ -228,6 +231,7 @@ internal sealed class StorageSettingsStore
             {
                 ApiHost = NormalizeApiHost(apiHost),
                 TargetFolder = NormalizeTargetFolder(targetFolder),
+                ArchiveRootFolder = NormalizeTargetFolder(archiveRootFolder),
                 ClientId = clientId.Trim(),
                 AutoBackupEnabled = autoBackupEnabled ?? current.AutoBackupEnabled,
                 CheckIntervalMinutes = checkIntervalMinutes is null
@@ -652,6 +656,7 @@ internal sealed class StorageSettingsStore
     {
         public string ApiHost { get; init; } = DefaultPCloudApiHost;
         public string TargetFolder { get; init; } = DefaultPCloudTargetFolder;
+        public string ArchiveRootFolder { get; init; } = DefaultPCloudArchiveRootFolder;
         public string ClientId { get; init; } = string.Empty;
         public string AccountEmail { get; init; } = string.Empty;
         public long? UsedQuotaBytes { get; init; }

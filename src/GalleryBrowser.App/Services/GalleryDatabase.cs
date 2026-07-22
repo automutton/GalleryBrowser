@@ -374,6 +374,13 @@ public sealed class GalleryDatabase
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS nconvert_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                executable_path TEXT NOT NULL DEFAULT '',
+                temporary_directory TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS thumbnail_cache_targets (
                 path TEXT PRIMARY KEY,
                 position INTEGER NOT NULL DEFAULT 0
@@ -748,6 +755,7 @@ public sealed class GalleryDatabase
                 total_uncompressed_size INTEGER,
                 last_access_time TEXT,
                 last_write_time TEXT,
+                archived_flg INTEGER NOT NULL DEFAULT 0 CHECK (archived_flg IN (0, 1)),
                 metadata_dirty INTEGER NOT NULL DEFAULT 0,
                 metadata_synced_at TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -780,6 +788,7 @@ public sealed class GalleryDatabase
             CREATE INDEX IF NOT EXISTS idx_items_creator ON items(creator);
             CREATE INDEX IF NOT EXISTS idx_items_title ON items(title);
             CREATE INDEX IF NOT EXISTS idx_items_character ON items(character);
+            CREATE INDEX IF NOT EXISTS idx_items_archived_category ON items(archived_flg, category);
             CREATE INDEX IF NOT EXISTS idx_item_tags_tag_id ON item_tags(tag_id);
 
             CREATE VIEW IF NOT EXISTS v_items AS
@@ -807,6 +816,7 @@ public sealed class GalleryDatabase
                 i.total_uncompressed_size,
                 i.last_access_time,
                 i.last_write_time,
+                i.archived_flg,
                 i.metadata_dirty,
                 i.metadata_synced_at,
                 i.created_at,
@@ -899,9 +909,25 @@ public sealed class GalleryDatabase
         SqliteConnection connection,
         SqliteTransaction? transaction = null)
     {
+        var hasArchivedFlag = false;
+        using (var schema = connection.CreateCommand())
+        {
+            schema.Transaction = transaction;
+            schema.CommandText = "PRAGMA table_info(items);";
+            using var reader = schema.ExecuteReader();
+            while (reader.Read())
+            {
+                if (string.Equals(reader.GetString(1), "archived_flg", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasArchivedFlag = true;
+                    break;
+                }
+            }
+        }
+        var archivedSelect = hasArchivedFlag ? "i.archived_flg" : "0 AS archived_flg";
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = """
+        command.CommandText = $"""
             CREATE VIEW IF NOT EXISTS v_items AS
             SELECT
                 i.gid,
@@ -927,6 +953,7 @@ public sealed class GalleryDatabase
                 i.total_uncompressed_size,
                 i.last_access_time,
                 i.last_write_time,
+                {archivedSelect},
                 i.metadata_dirty,
                 i.metadata_synced_at,
                 i.created_at,
@@ -1872,6 +1899,39 @@ public sealed class GalleryDatabase
             """;
         command.Parameters.AddWithValue("$executablePath", executablePath.Trim());
         command.Parameters.AddWithValue("$supportedExtensions", NormalizeExtensionList(supportedExtensions));
+        command.ExecuteNonQuery();
+        PersistApplicationSettings();
+    }
+
+    public NConvertSettingsDto GetNConvertSettings()
+    {
+        EnsureCreated();
+
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT executable_path, temporary_directory FROM nconvert_settings WHERE id = 1;";
+        using var reader = command.ExecuteReader();
+        return reader.Read()
+            ? new NConvertSettingsDto(reader.GetString(0), reader.GetString(1))
+            : new NConvertSettingsDto(string.Empty, string.Empty);
+    }
+
+    public void SaveNConvertSettings(string executablePath, string temporaryDirectory)
+    {
+        EnsureCreated();
+
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO nconvert_settings (id, executable_path, temporary_directory)
+            VALUES (1, $executablePath, $temporaryDirectory)
+            ON CONFLICT(id) DO UPDATE SET
+                executable_path = excluded.executable_path,
+                temporary_directory = excluded.temporary_directory,
+                updated_at = CURRENT_TIMESTAMP;
+            """;
+        command.Parameters.AddWithValue("$executablePath", executablePath.Trim());
+        command.Parameters.AddWithValue("$temporaryDirectory", temporaryDirectory.Trim());
         command.ExecuteNonQuery();
         PersistApplicationSettings();
     }
@@ -3271,14 +3331,14 @@ public sealed class GalleryDatabase
         }.ConnectionString);
         connection.Open();
 
-        var rows = new List<(string Gid, string Path, string SourceZipName)>();
+        var rows = new List<(string Gid, string Path, string SourceZipName, bool Archived)>();
         using (var command = connection.CreateCommand())
         {
-            command.CommandText = "SELECT gid, current_path, source_zip_name FROM items ORDER BY current_path COLLATE NOCASE, gid;";
+            command.CommandText = "SELECT gid, current_path, source_zip_name, COALESCE(archived_flg, 0) FROM items ORDER BY current_path COLLATE NOCASE, gid;";
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
-                rows.Add((reader.GetString(0).Trim(), reader.GetString(1), reader.GetString(2)));
+                rows.Add((reader.GetString(0).Trim(), reader.GetString(1), reader.GetString(2), reader.GetInt32(3) != 0));
             }
         }
 
@@ -3296,6 +3356,14 @@ public sealed class GalleryDatabase
         if (mixedTargetLengthCount > 0)
         {
             AddGidMigrationIssue(issues, $"{targetDigitCount}桁とそれ以外のGIDが混在しています ({mixedTargetLengthCount:N0}件)。");
+        }
+
+        var archivedItemCount = rows.Count(row => row.Archived);
+        if (!alreadyMigrated && archivedItemCount > 0)
+        {
+            AddGidMigrationIssue(
+                issues,
+                $"pCloudへアーカイブ済みの作品が{archivedItemCount:N0}件あります。リモート上のファイル名を安全に変更できないため、GID一括移行は実行できません。");
         }
 
         var capacity = BigInteger.Pow(36, targetDigitCount) - BigInteger.Pow(36, targetDigitCount - 1);
@@ -3392,6 +3460,7 @@ public sealed class GalleryDatabase
                          !alreadyMigrated &&
                          invalidGids == 0 &&
                          mixedTargetLengthCount == 0 &&
+                         archivedItemCount == 0 &&
                          conflictingFileCount == 0 &&
                          mismatchedGidCount == 0 &&
                          new BigInteger(rows.Count) <= capacity;
@@ -9753,6 +9822,7 @@ public sealed class GalleryDatabase
                  AND title_filter.filter_type = 'title'
                 LEFT JOIN filter_categories AS filter_category ON filter_category.category_id = title_filter.filter_category_id
                 WHERE item.category = $galleryCategory
+                  AND COALESCE(item.archived_flg, 0) = 0
                   AND COALESCE(item.creator, '') IN ({creatorPlaceholders})
                 GROUP BY title_filter.filter_id
                 ORDER BY COUNT(DISTINCT item.gid) DESC, title_filter.canonical_name COLLATE NOCASE;
@@ -9845,6 +9915,7 @@ public sealed class GalleryDatabase
                  AND title_filter.filter_type = 'title'
                 LEFT JOIN filter_categories AS filter_category ON filter_category.category_id = title_filter.filter_category_id
                 WHERE item.current_path IN ({pathPlaceholders})
+                  AND COALESCE(item.archived_flg, 0) = 0
                 GROUP BY title_filter.filter_id
                 HAVING COUNT(DISTINCT item.gid) = $targetCount
                 ORDER BY title_filter.canonical_name COLLATE NOCASE;
@@ -9978,6 +10049,7 @@ public sealed class GalleryDatabase
                  AND title_filter.filter_type = 'title'
                  AND character_filter.parent_filter_id = title_filter.filter_id
                 WHERE item.category = $galleryCategory
+                  AND COALESCE(item.archived_flg, 0) = 0
                   AND COALESCE(item.creator, '') IN ({creatorPlaceholders})
                   AND title_filter.filter_id IN ({titlePlaceholders})
                 GROUP BY character_filter.filter_id, title_filter.filter_id
@@ -10086,6 +10158,7 @@ public sealed class GalleryDatabase
                   ON title_filter.filter_id = combination.title_filter_id
                  AND title_filter.filter_type = 'title'
                 WHERE item.current_path IN ({pathPlaceholders})
+                  AND COALESCE(item.archived_flg, 0) = 0
                 GROUP BY character_filter.filter_id, title_filter.filter_id
                 HAVING COUNT(DISTINCT item.gid) = $targetCount
                 ORDER BY character_filter.canonical_name COLLATE NOCASE,
@@ -10242,6 +10315,7 @@ public sealed class GalleryDatabase
                  AND title_filter.filter_type = 'title'
                  AND character_filter.parent_filter_id = title_filter.filter_id
                 WHERE item.category = $galleryCategory
+                  AND COALESCE(item.archived_flg, 0) = 0
                   AND COALESCE(item.creator, '') IN ({creatorPlaceholders})
                   AND title_filter.filter_id IN ({titlePlaceholders})
                 GROUP BY character_filter.filter_id, title_filter.filter_id
@@ -10389,6 +10463,7 @@ public sealed class GalleryDatabase
                 JOIN item_tags AS tag_map ON tag_map.gid = item.gid
                 JOIN tags AS tag ON tag.tag_id = tag_map.tag_id
                 WHERE item.category = $category
+                  AND COALESCE(item.archived_flg, 0) = 0
                   AND COALESCE(TRIM(item.creator), '') = $creator
                   AND COALESCE(TRIM(item.title), '') = $title
                   AND tag.use_flg <> 0
@@ -10460,6 +10535,7 @@ public sealed class GalleryDatabase
                 JOIN item_tags AS tag_map ON tag_map.gid = item.gid
                 JOIN tags AS tag ON tag.tag_id = tag_map.tag_id
                 WHERE item.current_path IN ({pathPlaceholders})
+                  AND COALESCE(item.archived_flg, 0) = 0
                   AND tag.use_flg <> 0
                 GROUP BY tag.tag_id, tag.tag, tag.position
                 HAVING COUNT(DISTINCT item.gid) = $targetCount
@@ -10491,12 +10567,18 @@ public sealed class GalleryDatabase
             title);
     }
 
-    public GalleryTagAssignmentResultDto AssignGalleryWorkTag(
+    public GalleryTagAssignmentResultDto AssignGalleryWorkTags(
         IReadOnlyList<string> paths,
-        long tagId,
+        IReadOnlyList<long> tagIds,
         IReadOnlyList<long>? removeTagIds = null)
     {
-        return UpdateGalleryWorkTagAssignments(paths, tagId, removeTagIds ?? []);
+        var normalizedTagIds = tagIds.Where(id => id > 0).Distinct().ToArray();
+        if (normalizedTagIds.Length == 0)
+        {
+            throw new ArgumentException("登録するTagを選択してください。", nameof(tagIds));
+        }
+
+        return UpdateGalleryWorkTagAssignments(paths, normalizedTagIds, removeTagIds ?? []);
     }
 
     public GalleryTagAssignmentResultDto RemoveGalleryWorkTags(
@@ -10508,12 +10590,12 @@ public sealed class GalleryDatabase
             throw new ArgumentException("解除するTagを選択してください。", nameof(tagIds));
         }
 
-        return UpdateGalleryWorkTagAssignments(paths, null, tagIds);
+        return UpdateGalleryWorkTagAssignments(paths, [], tagIds);
     }
 
     private GalleryTagAssignmentResultDto UpdateGalleryWorkTagAssignments(
         IReadOnlyList<string> paths,
-        long? tagId,
+        IReadOnlyList<long> tagIds,
         IReadOnlyList<long> removeTagIds)
     {
         var targetPaths = paths
@@ -10545,7 +10627,8 @@ public sealed class GalleryDatabase
             items.Add((reader.GetString(0), reader.GetString(1)));
         }
 
-        if (tagId is { } addTagId)
+        var addTagIds = tagIds.Where(id => id > 0).Distinct().ToArray();
+        foreach (var addTagId in addTagIds)
         {
             using var definition = connection.CreateCommand();
             definition.Transaction = transaction;
@@ -10587,9 +10670,9 @@ public sealed class GalleryDatabase
 
         var addedCount = 0;
         var skippedCount = 0;
-        if (tagId is { } selectedTagId)
+        foreach (var item in items)
         {
-            foreach (var item in items)
+            foreach (var selectedTagId in addTagIds)
             {
                 using var add = connection.CreateCommand();
                 add.Transaction = transaction;
@@ -10787,12 +10870,18 @@ public sealed class GalleryDatabase
         return new GalleryTitleAssignmentResultDto(addedCount, skippedCount, removedCount);
     }
 
-    public GalleryCharacterAssignmentResultDto AssignGalleryWorkCharacter(
+    public GalleryCharacterAssignmentResultDto AssignGalleryWorkCharacters(
         IReadOnlyList<string> paths,
-        long characterFilterId,
+        IReadOnlyList<long> characterFilterIds,
         IReadOnlyList<long>? removeCharacterFilterIds = null)
     {
-        return UpdateGalleryWorkCharacters(paths, characterFilterId, removeCharacterFilterIds ?? []);
+        var normalizedCharacterFilterIds = characterFilterIds.Where(id => id > 0).Distinct().ToArray();
+        if (normalizedCharacterFilterIds.Length == 0)
+        {
+            throw new ArgumentException("登録するCharacter属性を選択してください。", nameof(characterFilterIds));
+        }
+
+        return UpdateGalleryWorkCharacters(paths, normalizedCharacterFilterIds, removeCharacterFilterIds ?? []);
     }
 
     public GalleryCharacterAssignmentResultDto RemoveGalleryWorkCharacters(
@@ -10804,12 +10893,12 @@ public sealed class GalleryDatabase
             throw new ArgumentException("解除するCharacter属性を選択してください。", nameof(characterFilterIds));
         }
 
-        return UpdateGalleryWorkCharacters(paths, null, characterFilterIds);
+        return UpdateGalleryWorkCharacters(paths, [], characterFilterIds);
     }
 
     private GalleryCharacterAssignmentResultDto UpdateGalleryWorkCharacters(
         IReadOnlyList<string> paths,
-        long? characterFilterId,
+        IReadOnlyList<long> characterFilterIds,
         IReadOnlyList<long> removeCharacterFilterIds)
     {
         var targetPaths = paths
@@ -10829,7 +10918,7 @@ public sealed class GalleryDatabase
         var characterDefinitions = new Dictionary<long, (long TitleId, long? CategoryId)>();
         var requestedCharacterIds = removeCharacterFilterIds
             .Where(id => id > 0)
-            .Append(characterFilterId ?? 0)
+            .Concat(characterFilterIds)
             .Where(id => id > 0)
             .Distinct()
             .ToArray();
@@ -10856,7 +10945,7 @@ public sealed class GalleryDatabase
             }
         }
 
-        if (characterFilterId is not null && !characterDefinitions.ContainsKey(characterFilterId.Value))
+        if (characterFilterIds.Any(id => !characterDefinitions.ContainsKey(id)))
         {
             throw new InvalidOperationException("登録するCharacterが見つかりません。");
         }
@@ -10947,9 +11036,9 @@ public sealed class GalleryDatabase
 
         var addedCount = 0;
         var skippedCount = 0;
-        if (characterFilterId is not null)
+        foreach (var characterFilterId in characterFilterIds)
         {
-            var characterDefinition = characterDefinitions[characterFilterId.Value];
+            var characterDefinition = characterDefinitions[characterFilterId];
             var baseCombinationId = GetOrCreateGalleryFilterCombinationId(
                 connection,
                 transaction,
@@ -10962,7 +11051,7 @@ public sealed class GalleryDatabase
                 transaction,
                 characterDefinition.CategoryId,
                 characterDefinition.TitleId,
-                characterFilterId.Value,
+                characterFilterId,
                 1);
 
             foreach (var gid in gids)
@@ -10977,14 +11066,14 @@ public sealed class GalleryDatabase
                       AND combination.character_filter_id = $characterId;
                     """;
                 alreadyAssigned.Parameters.AddWithValue("$gid", gid);
-                alreadyAssigned.Parameters.AddWithValue("$characterId", characterFilterId.Value);
+                alreadyAssigned.Parameters.AddWithValue("$characterId", characterFilterId);
                 if (Convert.ToInt64(alreadyAssigned.ExecuteScalar()) > 0)
                 {
                     skippedCount++;
                     continue;
                 }
 
-                foreach (var filterId in new[] { characterDefinition.TitleId, characterFilterId.Value })
+                foreach (var filterId in new[] { characterDefinition.TitleId, characterFilterId })
                 {
                     using var addLegacy = connection.CreateCommand();
                     addLegacy.Transaction = transaction;
@@ -11255,7 +11344,11 @@ public sealed class GalleryDatabase
         IReadOnlyList<string> supportedExtensions,
         string? excludedFilter = null)
     {
-        var clauses = new List<string> { "i.category = $category" };
+        var clauses = new List<string>
+        {
+            "i.category = $category",
+            "COALESCE(i.archived_flg, 0) = 0"
+        };
         if (targetPaths.Count > 0)
         {
             clauses.Add("(" + string.Join(" OR ", targetPaths.Select((_, index) =>
@@ -11956,6 +12049,7 @@ public sealed class GalleryDatabase
             SELECT DISTINCT current_path
             FROM items
             WHERE category = $category
+              AND COALESCE(archived_flg, 0) = 0
               AND ({string.Join(" OR ", normalizedFolders.Select((_, index) =>
                   $"current_path = $folder{index} COLLATE NOCASE OR instr(lower(current_path), lower($child{index})) = 1"))})
             ORDER BY current_path COLLATE NOCASE;
@@ -13339,6 +13433,7 @@ public sealed class GalleryDatabase
                     total_uncompressed_size = $totalSize,
                     last_access_time = $lastAccess,
                     last_write_time = $lastWrite,
+                    archived_flg = 0,
                     metadata_dirty = 0,
                     metadata_synced_at = $metadataSyncedAt,
                     updated_at = $now
@@ -13711,6 +13806,7 @@ public sealed class GalleryDatabase
 
             if (columns.Contains("gid"))
             {
+                EnsureExternalGalleryArchivedFlag(connection, columns);
                 EnsureExternalGalleryTagCategories(connection);
                 EnsureExternalGalleryFilterSchema(connection);
                 return;
@@ -13759,6 +13855,7 @@ public sealed class GalleryDatabase
                     total_uncompressed_size INTEGER,
                     last_access_time TEXT,
                     last_write_time TEXT,
+                    archived_flg INTEGER NOT NULL DEFAULT 0 CHECK (archived_flg IN (0, 1)),
                     metadata_dirty INTEGER NOT NULL DEFAULT 0,
                     metadata_synced_at TEXT,
                     created_at TEXT NOT NULL,
@@ -13768,13 +13865,13 @@ public sealed class GalleryDatabase
                     gid, current_path, source_zip_name, media_type, category, top_folder,
                     creator, title, character, rating, image_count, duration_seconds,
                     zip_entry_count, total_uncompressed_size, last_access_time, last_write_time,
-                    metadata_dirty, metadata_synced_at, created_at, updated_at
+                    archived_flg, metadata_dirty, metadata_synced_at, created_at, updated_at
                 )
                 SELECT
                     archive_id, current_path, source_zip_name, media_type, category, top_folder,
                     creator, title, character, rating, image_count, duration_seconds,
                     zip_entry_count, total_uncompressed_size, last_access_time, last_write_time,
-                    metadata_dirty, metadata_synced_at, created_at, updated_at
+                    0, metadata_dirty, metadata_synced_at, created_at, updated_at
                 FROM items;
 
                 CREATE TABLE item_tags_gid (
@@ -13824,6 +13921,265 @@ public sealed class GalleryDatabase
             using var foreignKeys = connection.CreateCommand();
             foreignKeys.CommandText = "PRAGMA foreign_keys = ON;";
             foreignKeys.ExecuteNonQuery();
+        }
+    }
+
+    public void SetGalleryWorkArchived(string path, bool archived, string? remotePath = null)
+    {
+        var normalizedPath = NormalizeGalleryTargetPath(path);
+        EnsureExternalGalleryGidSchema();
+        EnsureExternalApplicationDataSchema();
+        using var connection = OpenExternalReadWriteConnection(ExternalGalleryDatabasePath);
+        using var transaction = connection.BeginTransaction();
+        string gid;
+        using (var find = connection.CreateCommand())
+        {
+            find.Transaction = transaction;
+            find.CommandText = "SELECT gid FROM items WHERE current_path = $path COLLATE NOCASE;";
+            find.Parameters.AddWithValue("$path", normalizedPath);
+            gid = find.ExecuteScalar() as string
+                ?? throw new InvalidOperationException("アーカイブ対象の作品がGallery用SQLiteDBに見つかりません。");
+        }
+
+        using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE items SET archived_flg = $archived, updated_at = CURRENT_TIMESTAMP WHERE gid = $gid;";
+            update.Parameters.AddWithValue("$archived", archived ? 1 : 0);
+            update.Parameters.AddWithValue("$gid", gid);
+            update.ExecuteNonQuery();
+        }
+
+        using (var addEvent = connection.CreateCommand())
+        {
+            addEvent.Transaction = transaction;
+            addEvent.CommandText = "INSERT INTO item_events (gid, event_type, detail_json, created_at) VALUES ($gid, $eventType, $detail, $createdAt);";
+            addEvent.Parameters.AddWithValue("$gid", gid);
+            addEvent.Parameters.AddWithValue("$eventType", archived ? "pcloud_archive" : "pcloud_archive_rollback");
+            addEvent.Parameters.AddWithValue("$detail", JsonSerializer.Serialize(new
+            {
+                localPath = normalizedPath,
+                remotePath = remotePath ?? string.Empty,
+                archivedAt = DateTimeOffset.UtcNow
+            }, JsonOptions));
+            addEvent.Parameters.AddWithValue(
+                "$createdAt",
+                DateTimeOffset.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture));
+            addEvent.ExecuteNonQuery();
+        }
+        transaction.Commit();
+        ClearGalleryDerivedCaches();
+    }
+
+    public IReadOnlyList<string> SetGalleryWorksArchivedUnderPaths(
+        IReadOnlyList<string> paths,
+        bool archived,
+        string? remotePath = null)
+    {
+        var normalizedPaths = paths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(NormalizeGalleryTargetPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalizedPaths.Length == 0)
+        {
+            return [];
+        }
+
+        EnsureExternalGalleryGidSchema();
+        EnsureExternalApplicationDataSchema();
+        using var connection = OpenExternalReadWriteConnection(ExternalGalleryDatabasePath);
+        using var transaction = connection.BeginTransaction();
+        var rows = new List<(string Gid, string Path)>();
+        using (var find = connection.CreateCommand())
+        {
+            find.Transaction = transaction;
+            find.CommandText = $"""
+                SELECT gid, current_path
+                FROM items
+                WHERE ({BuildPathDeletionPredicate("current_path", normalizedPaths.Length)})
+                  AND COALESCE(archived_flg, 0) <> $archived;
+                """;
+            AddPathDeletionParameters(find, normalizedPaths);
+            find.Parameters.AddWithValue("$archived", archived ? 1 : 0);
+            using var reader = find.ExecuteReader();
+            while (reader.Read())
+            {
+                var itemPath = reader.GetString(1);
+                if (!archived || File.Exists(itemPath) || Directory.Exists(itemPath))
+                {
+                    rows.Add((reader.GetString(0), itemPath));
+                }
+            }
+        }
+
+        var gids = rows
+            .Select(row => row.Gid)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        ApplyGalleryArchiveState(
+            connection,
+            transaction,
+            gids,
+            archived,
+            new
+            {
+                localPaths = normalizedPaths,
+                remotePath = remotePath ?? string.Empty,
+                archivedAt = DateTimeOffset.UtcNow
+            });
+        transaction.Commit();
+        if (gids.Length > 0)
+        {
+            ClearGalleryDerivedCaches();
+        }
+        return gids;
+    }
+
+    public void SetGalleryWorksArchivedByGids(
+        IReadOnlyList<string> gids,
+        bool archived,
+        string? remotePath = null,
+        bool onlyWhenLocalSourceExists = false)
+    {
+        var normalizedGids = gids
+            .Where(gid => !string.IsNullOrWhiteSpace(gid))
+            .Select(gid => gid.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalizedGids.Length == 0)
+        {
+            return;
+        }
+
+        EnsureExternalGalleryGidSchema();
+        EnsureExternalApplicationDataSchema();
+        using var connection = OpenExternalReadWriteConnection(ExternalGalleryDatabasePath);
+        using var transaction = connection.BeginTransaction();
+        if (onlyWhenLocalSourceExists)
+        {
+            var requestedGids = normalizedGids.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var existingGids = new List<string>();
+            using var findExisting = connection.CreateCommand();
+            findExisting.Transaction = transaction;
+            findExisting.CommandText = "SELECT gid, current_path FROM items WHERE COALESCE(archived_flg, 0) = 1;";
+            using var reader = findExisting.ExecuteReader();
+            while (reader.Read())
+            {
+                var gid = reader.GetString(0);
+                var itemPath = reader.GetString(1);
+                if (requestedGids.Contains(gid) && (File.Exists(itemPath) || Directory.Exists(itemPath)))
+                {
+                    existingGids.Add(gid);
+                }
+            }
+            normalizedGids = existingGids.ToArray();
+            if (normalizedGids.Length == 0)
+            {
+                transaction.Commit();
+                return;
+            }
+        }
+        ApplyGalleryArchiveState(
+            connection,
+            transaction,
+            normalizedGids,
+            archived,
+            new
+            {
+                gids = normalizedGids,
+                remotePath = remotePath ?? string.Empty,
+                archivedAt = DateTimeOffset.UtcNow
+            });
+        transaction.Commit();
+        ClearGalleryDerivedCaches();
+    }
+
+    private static void ApplyGalleryArchiveState(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IReadOnlyList<string> gids,
+        bool archived,
+        object eventDetail)
+    {
+        if (gids.Count == 0)
+        {
+            return;
+        }
+
+        using (var create = connection.CreateCommand())
+        {
+            create.Transaction = transaction;
+            create.CommandText = """
+                CREATE TEMP TABLE IF NOT EXISTS pcloud_archive_gids (
+                    gid TEXT PRIMARY KEY
+                ) WITHOUT ROWID;
+                DELETE FROM pcloud_archive_gids;
+                """;
+            create.ExecuteNonQuery();
+        }
+        foreach (var gid in gids)
+        {
+            using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = "INSERT OR IGNORE INTO pcloud_archive_gids (gid) VALUES ($gid);";
+            insert.Parameters.AddWithValue("$gid", gid);
+            insert.ExecuteNonQuery();
+        }
+
+        using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText = """
+                UPDATE items
+                SET archived_flg = $archived,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE gid IN (SELECT gid FROM pcloud_archive_gids);
+                """;
+            update.Parameters.AddWithValue("$archived", archived ? 1 : 0);
+            update.ExecuteNonQuery();
+        }
+
+        using var addEvents = connection.CreateCommand();
+        addEvents.Transaction = transaction;
+        addEvents.CommandText = """
+            INSERT INTO item_events (gid, event_type, detail_json, created_at)
+            SELECT gid, $eventType, $detail, $createdAt
+            FROM pcloud_archive_gids;
+            """;
+        addEvents.Parameters.AddWithValue("$eventType", archived ? "pcloud_archive" : "pcloud_archive_rollback");
+        addEvents.Parameters.AddWithValue("$detail", JsonSerializer.Serialize(eventDetail, JsonOptions));
+        addEvents.Parameters.AddWithValue(
+            "$createdAt",
+            DateTimeOffset.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture));
+        addEvents.ExecuteNonQuery();
+    }
+
+    private static void EnsureExternalGalleryArchivedFlag(
+        SqliteConnection connection,
+        IReadOnlySet<string>? knownColumns = null)
+    {
+        var columns = knownColumns ?? ReadDatabaseColumns(connection, "main", "items")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!columns.Contains("archived_flg"))
+        {
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "ALTER TABLE items ADD COLUMN archived_flg INTEGER NOT NULL DEFAULT 0 CHECK (archived_flg IN (0, 1));";
+                command.ExecuteNonQuery();
+            }
+            using (var dropView = connection.CreateCommand())
+            {
+                dropView.CommandText = "DROP VIEW IF EXISTS v_items;";
+                dropView.ExecuteNonQuery();
+            }
+            CreateExternalItemsView(connection);
+        }
+
+        using (var index = connection.CreateCommand())
+        {
+            index.CommandText = "CREATE INDEX IF NOT EXISTS idx_items_archived_category ON items(archived_flg, category);";
+            index.ExecuteNonQuery();
         }
     }
 

@@ -8,7 +8,7 @@ namespace GalleryBrowser.Services;
 
 public sealed class StandardNameSearchService
 {
-    private const string GeminiModel = "gemini-2.5-flash";
+    private const string GeminiModel = "gemini-3.5-flash";
     private static readonly HttpClient HttpClient = new()
     {
         Timeout = TimeSpan.FromSeconds(25)
@@ -17,6 +17,7 @@ public sealed class StandardNameSearchService
     public async Task<IReadOnlyList<StandardNameSearchResultDto>> SearchAsync(
         SearchEngineSettingsDto settings,
         string query,
+        string? contextTitle = null,
         CancellationToken cancellationToken = default)
     {
         query = query.Trim();
@@ -27,8 +28,8 @@ public sealed class StandardNameSearchService
 
         return settings.Provider switch
         {
-            "brave" => await SearchBraveAsync(settings.BraveApiKey, query, cancellationToken),
-            "gemini" => await SearchGeminiAsync(settings.GeminiApiKey, query, cancellationToken),
+            "brave" => await SearchBraveAsync(settings.BraveApiKey, BuildSearchQuery(query, contextTitle), cancellationToken),
+            "gemini" => await SearchGeminiAsync(settings.GeminiApiKey, query, contextTitle, cancellationToken),
             _ => []
         };
     }
@@ -78,6 +79,7 @@ public sealed class StandardNameSearchService
     private static async Task<IReadOnlyList<StandardNameSearchResultDto>> SearchGeminiAsync(
         string apiKey,
         string query,
+        string? contextTitle,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
@@ -85,10 +87,16 @@ public sealed class StandardNameSearchService
             throw new InvalidOperationException("Gemini APIキーを Settings > 検索エンジン に設定してください。");
         }
 
+        var titleContext = string.IsNullOrWhiteSpace(contextTitle)
+            ? string.Empty
+            : $"この名称は作品・シリーズ「{contextTitle.Trim()}」に属するCharacterです。Titleを識別条件として優先し、同名の別作品のCharacterを除外してください。\n";
         var prompt =
             "あなたは日本語のメディアライブラリ用メタデータを正規化するアシスタントです。\n" +
             "次の名称について、表記ゆれを除いた標準的な日本語名称候補を最大8件提案してください。\n" +
-            "作品名・シリーズ名・人物名・キャラクター名のどれかは断定せず、候補名だけを返してください。\n" +
+            titleContext +
+            (string.IsNullOrWhiteSpace(contextTitle)
+                ? "作品名・シリーズ名・人物名・キャラクター名のどれかは断定せず、候補名だけを返してください。\n"
+                : "Characterの標準名候補だけを返してください。\n") +
             "回答は必ず JSON オブジェクト {\"candidates\":[\"候補1\",\"候補2\"]} のみとし、説明文やMarkdownは付けないでください。\n" +
             "入力: " + query;
         var payload = JsonSerializer.Serialize(new
@@ -102,9 +110,30 @@ public sealed class StandardNameSearchService
             },
             generationConfig = new
             {
-                responseMimeType = "application/json",
-                temperature = 0.2,
-                maxOutputTokens = 512
+                responseFormat = new
+                {
+                    text = new
+                    {
+                        mimeType = "APPLICATION_JSON",
+                        schema = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                candidates = new
+                                {
+                                    type = "array",
+                                    description = "標準的な日本語名称の候補。最大8件。",
+                                    items = new { type = "string" }
+                                }
+                            },
+                            required = new[] { "candidates" },
+                            additionalProperties = false
+                        }
+                    }
+                },
+                thinkingConfig = new { thinkingLevel = "low" },
+                maxOutputTokens = 4096
             }
         });
         using var request = new HttpRequestMessage(
@@ -121,17 +150,40 @@ public sealed class StandardNameSearchService
         }
 
         using var document = JsonDocument.Parse(body);
-        var text = document.RootElement
-            .GetProperty("candidates")[0]
-            .GetProperty("content")
-            .GetProperty("parts")[0]
-            .GetProperty("text")
-            .GetString() ?? string.Empty;
+        if (!document.RootElement.TryGetProperty("candidates", out var responseCandidates) ||
+            responseCandidates.ValueKind != JsonValueKind.Array ||
+            responseCandidates.GetArrayLength() == 0)
+        {
+            throw new InvalidOperationException("Gemini API から候補データが返されませんでした。");
+        }
+
+        var responseCandidate = responseCandidates[0];
+        if (responseCandidate.TryGetProperty("finishReason", out var finishReason) &&
+            string.Equals(finishReason.GetString(), "MAX_TOKENS", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Gemini API の応答が出力上限で中断されました。もう一度検索してください。");
+        }
+
+        if (!responseCandidate.TryGetProperty("content", out var content) ||
+            !content.TryGetProperty("parts", out var parts) ||
+            parts.ValueKind != JsonValueKind.Array ||
+            parts.GetArrayLength() == 0 ||
+            !parts[0].TryGetProperty("text", out var responseText))
+        {
+            throw new InvalidOperationException("Gemini API の応答形式を読み取れませんでした。");
+        }
+
+        var text = responseText.GetString() ?? string.Empty;
         var candidates = ParseGeminiCandidates(text);
         return candidates
             .Select(candidate => new StandardNameSearchResultDto(candidate, "Gemini", null, "AI候補"))
             .ToArray();
     }
+
+    private static string BuildSearchQuery(string query, string? contextTitle) =>
+        string.IsNullOrWhiteSpace(contextTitle)
+            ? query
+            : $"{contextTitle.Trim()} {query} キャラクター 標準名";
 
     private static IReadOnlyList<string> ParseGeminiCandidates(string text)
     {
@@ -159,7 +211,12 @@ public sealed class StandardNameSearchService
         }
         catch (JsonException)
         {
-            // Return a useful fallback when a model ignores the JSON-only instruction.
+            if (text.StartsWith('{') || text.StartsWith('['))
+            {
+                throw new InvalidOperationException("Gemini API のJSON応答が途中で切れているため、候補を読み取れませんでした。もう一度検索してください。");
+            }
+
+            // Return a useful fallback only for a complete plain-text response.
         }
 
         return text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)

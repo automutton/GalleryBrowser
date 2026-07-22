@@ -19,6 +19,7 @@ internal sealed class JsonSettingsStore
         "new_tab_candidates",
         "winrar_settings",
         "ffmpeg_settings",
+        "nconvert_settings",
         "thumbnail_cache_targets",
         "thumbnail_cache_settings",
         "gallery_sections",

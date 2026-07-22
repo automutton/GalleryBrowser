@@ -40,6 +40,7 @@ internal sealed class PCloudBackupService
     public void SaveSettings(
         string apiHost,
         string targetFolder,
+        string archiveRootFolder,
         string clientId,
         string? accessToken,
         bool autoBackupEnabled,
@@ -50,6 +51,7 @@ internal sealed class PCloudBackupService
         _settingsStore.SavePCloudConfiguration(
             apiHost,
             targetFolder,
+            archiveRootFolder,
             clientId,
             accessToken,
             autoBackupEnabled,
@@ -79,7 +81,11 @@ internal sealed class PCloudBackupService
         string clientId,
         CancellationToken cancellationToken)
     {
-        _settingsStore.SavePCloudConfiguration(apiHost, targetFolder, clientId);
+        _settingsStore.SavePCloudConfiguration(
+            apiHost,
+            targetFolder,
+            _settingsStore.GetPCloudSettings().ArchiveRootFolder,
+            clientId);
         if (string.IsNullOrWhiteSpace(clientId))
         {
             throw new ArgumentException("pCloud Developersで作成したアプリのClient IDを入力してください。", nameof(clientId));
@@ -170,6 +176,175 @@ internal sealed class PCloudBackupService
         }
     }
 
+    public async Task<PCloudArchiveResult> ArchiveGalleryFileAsync(
+        string localPath,
+        string categoryName,
+        string creator,
+        CancellationToken cancellationToken)
+    {
+        if (Directory.Exists(localPath))
+        {
+            throw new InvalidOperationException("Galleryのフォルダ作品は現在のpCloudアーカイブ対象外です。");
+        }
+        return await ArchivePathAsync(
+            localPath,
+            categoryName,
+            creator,
+            progress: null,
+            cancellationToken);
+    }
+
+    public async Task<PCloudArchiveResult> ArchiveExplorerPathAsync(
+        string localPath,
+        string categoryName,
+        IProgress<PCloudArchiveProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        return await ArchivePathAsync(
+            localPath,
+            categoryName,
+            creator: string.Empty,
+            progress,
+            cancellationToken);
+    }
+
+    private async Task<PCloudArchiveResult> ArchivePathAsync(
+        string localPath,
+        string categoryName,
+        string creator,
+        IProgress<PCloudArchiveProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var sourcePath = Path.GetFullPath(localPath);
+        var isFile = File.Exists(sourcePath);
+        var isDirectory = Directory.Exists(sourcePath);
+        if (!isFile && !isDirectory)
+        {
+            throw new FileNotFoundException("アーカイブするファイルまたはフォルダが見つかりません。", sourcePath);
+        }
+        if (string.IsNullOrWhiteSpace(categoryName))
+        {
+            throw new ArgumentException("アーカイブ先の区分名を確認できません。", nameof(categoryName));
+        }
+
+        var relativeSegments = GetCreatorRelativePathSegments(sourcePath, creator);
+        var settings = _settingsStore.GetPCloudSettings();
+        if (string.IsNullOrWhiteSpace(settings.ArchiveRootFolder))
+        {
+            throw new InvalidOperationException("Settings > Files > データベースで作品アーカイブのROOTフォルダを設定してください。");
+        }
+
+        await _operationLock.WaitAsync(cancellationToken);
+        try
+        {
+            var token = _settingsStore.GetPCloudAccessToken();
+            if (isFile)
+            {
+                var remoteDirectory = StorageSettingsStore.NormalizeTargetFolder(string.Join('/',
+                    new[] { settings.ArchiveRootFolder, categoryName.Trim() }
+                        .Concat(relativeSegments.Take(relativeSegments.Count - 1))));
+                var fileName = relativeSegments[^1];
+                var folderId = await EnsureTargetFolderAsync(
+                    settings.ApiHost,
+                    token,
+                    remoteDirectory,
+                    cancellationToken);
+                var uploaded = await UploadArchiveFileAsync(
+                    settings.ApiHost,
+                    token,
+                    folderId,
+                    sourcePath,
+                    remoteDirectory,
+                    existingFiles: null,
+                    cancellationToken);
+                progress?.Report(new PCloudArchiveProgress(1, 1, sourcePath));
+                return new PCloudArchiveResult(
+                    sourcePath,
+                    $"{remoteDirectory.TrimEnd('/')}/{fileName}",
+                    uploaded.SizeBytes,
+                    DateTimeOffset.Now);
+            }
+
+            var archiveTree = EnumerateArchiveTree(sourcePath);
+            var remoteRoot = StorageSettingsStore.NormalizeTargetFolder(string.Join('/',
+                new[] { settings.ArchiveRootFolder, categoryName.Trim() }
+                    .Concat(relativeSegments)));
+            var remoteFolderIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+            {
+                [sourcePath] = await EnsureTargetFolderAsync(
+                    settings.ApiHost,
+                    token,
+                    remoteRoot,
+                    cancellationToken)
+            };
+
+            foreach (var directory in archiveTree.Directories)
+            {
+                var parent = Directory.GetParent(directory)?.FullName
+                    ?? throw new InvalidOperationException($"アーカイブ対象フォルダの親を確認できません: {directory}");
+                if (!remoteFolderIds.TryGetValue(parent, out var parentFolderId))
+                {
+                    throw new InvalidOperationException($"pCloud上の親フォルダを準備できませんでした: {parent}");
+                }
+                remoteFolderIds[directory] = await EnsureChildFolderAsync(
+                    settings.ApiHost,
+                    token,
+                    parentFolderId,
+                    Path.GetFileName(directory),
+                    cancellationToken);
+            }
+
+            long uploadedBytes = 0;
+            var completedFiles = 0;
+            foreach (var group in archiveTree.Files.GroupBy(
+                         file => Path.GetDirectoryName(file) ?? sourcePath,
+                         StringComparer.OrdinalIgnoreCase))
+            {
+                if (!remoteFolderIds.TryGetValue(group.Key, out var folderId))
+                {
+                    throw new InvalidOperationException($"pCloud上のアップロード先を準備できませんでした: {group.Key}");
+                }
+                var relativeDirectory = Path.GetRelativePath(sourcePath, group.Key);
+                var remoteDirectory = relativeDirectory == "."
+                    ? remoteRoot
+                    : StorageSettingsStore.NormalizeTargetFolder($"{remoteRoot}/{relativeDirectory.Replace('\\', '/')}");
+                var existingFiles = await ListFolderFilesAsync(
+                    settings.ApiHost,
+                    token,
+                    folderId,
+                    cancellationToken);
+                foreach (var file in group.Order(StringComparer.OrdinalIgnoreCase))
+                {
+                    var uploaded = await UploadArchiveFileAsync(
+                        settings.ApiHost,
+                        token,
+                        folderId,
+                        file,
+                        remoteDirectory,
+                        existingFiles,
+                        cancellationToken);
+                    uploadedBytes += uploaded.SizeBytes;
+                    completedFiles++;
+                    progress?.Report(new PCloudArchiveProgress(
+                        completedFiles,
+                        archiveTree.Files.Count,
+                        file));
+                }
+            }
+
+            return new PCloudArchiveResult(
+                sourcePath,
+                remoteRoot,
+                uploadedBytes,
+                DateTimeOffset.Now,
+                archiveTree.Files.Count);
+        }
+        finally
+        {
+            _operationLock.Release();
+        }
+    }
+
     private async Task<PCloudBackupResult> BackupCoreAsync(CancellationToken cancellationToken)
     {
         var settings = _settingsStore.GetPCloudSettings();
@@ -200,6 +375,7 @@ internal sealed class PCloudBackupService
                 folderId,
                 snapshotPath,
                 fileName,
+                "application/vnd.sqlite3",
                 cancellationToken);
             if (uploaded.SizeBytes != localSize)
             {
@@ -464,6 +640,31 @@ internal sealed class PCloudBackupService
         return folderId;
     }
 
+    private static async Task<long> EnsureChildFolderAsync(
+        string apiHost,
+        string accessToken,
+        long parentFolderId,
+        string folderName,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(folderName))
+        {
+            throw new ArgumentException("pCloudへ作成するフォルダ名を確認できません。", nameof(folderName));
+        }
+        using var request = CreateAuthorizedRequest(HttpMethod.Post, apiHost, "createfolderifnotexists", accessToken);
+        request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["folderid"] = parentFolderId.ToString(CultureInfo.InvariantCulture),
+            ["name"] = folderName
+        });
+        using var document = await SendApiRequestAsync(request, cancellationToken);
+        if (!document.RootElement.TryGetProperty("metadata", out var metadata))
+        {
+            throw new InvalidDataException("pCloudから作成先フォルダの情報が返されませんでした。");
+        }
+        return ReadInt64(metadata, "folderid");
+    }
+
     private static async Task<IReadOnlyList<PCloudSnapshotDto>> ListSnapshotsAsync(
         string apiHost,
         string accessToken,
@@ -684,6 +885,7 @@ internal sealed class PCloudBackupService
         long folderId,
         string sourcePath,
         string fileName,
+        string contentType,
         CancellationToken cancellationToken)
     {
         var query = string.Join('&', new Dictionary<string, string>
@@ -702,7 +904,7 @@ internal sealed class PCloudBackupService
             bufferSize: 1024 * 1024,
             useAsync: true);
         using var fileContent = new StreamContent(source, 1024 * 1024);
-        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/vnd.sqlite3");
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue(contentType);
         fileContent.Headers.ContentLength = source.Length;
         request.Content = fileContent;
 
@@ -715,7 +917,230 @@ internal sealed class PCloudBackupService
         }
 
         var metadata = metadataArray[0];
-        return new UploadedFile(ReadString(metadata, "name"), ReadInt64(metadata, "size"));
+        return new UploadedFile(ReadInt64(metadata, "fileid"), ReadString(metadata, "name"), ReadInt64(metadata, "size"));
+    }
+
+    private static async Task<UploadedFile> UploadArchiveFileAsync(
+        string apiHost,
+        string accessToken,
+        long folderId,
+        string sourcePath,
+        string remoteDirectory,
+        IDictionary<string, UploadedFile>? existingFiles,
+        CancellationToken cancellationToken)
+    {
+        var fileName = Path.GetFileName(sourcePath);
+        var localSize = new FileInfo(sourcePath).Length;
+        UploadedFile? existing;
+        if (existingFiles is not null)
+        {
+            existingFiles.TryGetValue(fileName, out existing);
+        }
+        else
+        {
+            existing = await FindFileAsync(apiHost, accessToken, folderId, fileName, cancellationToken);
+        }
+
+        UploadedFile uploaded;
+        if (existing is not null)
+        {
+            if (existing.SizeBytes != localSize)
+            {
+                throw new InvalidOperationException(
+                    $"pCloudのアーカイブ先に同名でサイズの異なるファイルがあります: {remoteDirectory}/{fileName}");
+            }
+            uploaded = existing;
+        }
+        else
+        {
+            uploaded = await UploadFileAsync(
+                apiHost,
+                accessToken,
+                folderId,
+                sourcePath,
+                fileName,
+                "application/octet-stream",
+                cancellationToken);
+            if (!string.Equals(uploaded.FileName, fileName, StringComparison.Ordinal))
+            {
+                await DeleteRemoteFileAsync(apiHost, accessToken, uploaded.FileId, cancellationToken);
+                throw new InvalidOperationException(
+                    "アップロード中にアーカイブ先へ同名ファイルが作成されたため、ローカルファイルは削除していません。");
+            }
+            existingFiles?[fileName] = uploaded;
+        }
+
+        if (uploaded.SizeBytes != localSize)
+        {
+            throw new InvalidDataException(
+                $"pCloud上のファイルサイズがローカルファイルと一致しません。ローカル: {localSize:N0} bytes / pCloud: {uploaded.SizeBytes:N0} bytes");
+        }
+        return uploaded;
+    }
+
+    private static async Task<Dictionary<string, UploadedFile>> ListFolderFilesAsync(
+        string apiHost,
+        string accessToken,
+        long folderId,
+        CancellationToken cancellationToken)
+    {
+        using var request = CreateAuthorizedRequest(
+            HttpMethod.Get,
+            apiHost,
+            $"listfolder?folderid={folderId.ToString(CultureInfo.InvariantCulture)}",
+            accessToken);
+        using var document = await SendApiRequestAsync(request, cancellationToken);
+        if (!document.RootElement.TryGetProperty("metadata", out var metadata) ||
+            !metadata.TryGetProperty("contents", out var contents) ||
+            contents.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException("pCloudからアーカイブ先フォルダの内容が返されませんでした。");
+        }
+
+        var files = new Dictionary<string, UploadedFile>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in contents.EnumerateArray())
+        {
+            if (item.TryGetProperty("isfolder", out var isFolder) && isFolder.ValueKind == JsonValueKind.True)
+            {
+                continue;
+            }
+            var name = ReadString(item, "name");
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                files[name] = new UploadedFile(ReadInt64(item, "fileid"), name, ReadInt64(item, "size"));
+            }
+        }
+        return files;
+    }
+
+    private static async Task<UploadedFile?> FindFileAsync(
+        string apiHost,
+        string accessToken,
+        long folderId,
+        string fileName,
+        CancellationToken cancellationToken)
+    {
+        using var request = CreateAuthorizedRequest(
+            HttpMethod.Get,
+            apiHost,
+            $"listfolder?folderid={folderId.ToString(CultureInfo.InvariantCulture)}",
+            accessToken);
+        using var document = await SendApiRequestAsync(request, cancellationToken);
+        if (!document.RootElement.TryGetProperty("metadata", out var metadata) ||
+            !metadata.TryGetProperty("contents", out var contents) ||
+            contents.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException("pCloudからアーカイブ先フォルダの内容が返されませんでした。");
+        }
+
+        foreach (var item in contents.EnumerateArray())
+        {
+            if (item.TryGetProperty("isfolder", out var isFolder) && isFolder.ValueKind == JsonValueKind.True)
+            {
+                continue;
+            }
+            if (string.Equals(ReadString(item, "name"), fileName, StringComparison.OrdinalIgnoreCase))
+            {
+                return new UploadedFile(ReadInt64(item, "fileid"), fileName, ReadInt64(item, "size"));
+            }
+        }
+        return null;
+    }
+
+    private static async Task DeleteRemoteFileAsync(
+        string apiHost,
+        string accessToken,
+        long fileId,
+        CancellationToken cancellationToken)
+    {
+        using var request = CreateAuthorizedRequest(HttpMethod.Post, apiHost, "deletefile", accessToken);
+        request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["fileid"] = fileId.ToString(CultureInfo.InvariantCulture)
+        });
+        using var document = await SendApiRequestAsync(request, cancellationToken);
+    }
+
+    private static IReadOnlyList<string> GetCreatorRelativePathSegments(string entryPath, string creator)
+    {
+        var isDirectory = Directory.Exists(entryPath);
+        var entryDirectory = isDirectory
+            ? new DirectoryInfo(entryPath)
+            : new FileInfo(entryPath).Directory
+              ?? throw new InvalidOperationException("アーカイブ対象の親フォルダを確認できません。");
+        var expectedFolderName = string.IsNullOrWhiteSpace(creator)
+            ? string.Empty
+            : $"【{creator.Trim()}】";
+        DirectoryInfo? creatorFolder = null;
+        DirectoryInfo? nearestBracketedFolder = null;
+        for (var current = entryDirectory; current is not null; current = current.Parent)
+        {
+            if (nearestBracketedFolder is null && current.Name.StartsWith('【') && current.Name.EndsWith('】'))
+            {
+                nearestBracketedFolder = current;
+            }
+            if (!string.IsNullOrWhiteSpace(expectedFolderName) &&
+                string.Equals(current.Name, expectedFolderName, StringComparison.OrdinalIgnoreCase))
+            {
+                creatorFolder = current;
+                break;
+            }
+        }
+        creatorFolder ??= nearestBracketedFolder;
+        if (creatorFolder is null)
+        {
+            throw new InvalidOperationException("ファイルパスから作者フォルダ（【作者名】）を確認できません。");
+        }
+
+        var directories = new Stack<string>();
+        for (var current = entryDirectory; current is not null; current = current.Parent)
+        {
+            directories.Push(current.Name);
+            if (string.Equals(current.FullName, creatorFolder.FullName, StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+        }
+        return isDirectory
+            ? directories.ToArray()
+            : directories.Append(Path.GetFileName(entryPath)).ToArray();
+    }
+
+    private static ArchiveTree EnumerateArchiveTree(string rootPath)
+    {
+        var rootAttributes = File.GetAttributes(rootPath);
+        if (rootAttributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            throw new InvalidOperationException("リンクまたはジャンクションのフォルダはpCloudへアーカイブできません。");
+        }
+
+        var directories = new List<string>();
+        var files = new List<string>();
+        var pending = new Queue<string>();
+        pending.Enqueue(rootPath);
+        while (pending.Count > 0)
+        {
+            var current = pending.Dequeue();
+            foreach (var entry in Directory.EnumerateFileSystemEntries(current).Order(StringComparer.OrdinalIgnoreCase))
+            {
+                var attributes = File.GetAttributes(entry);
+                if (attributes.HasFlag(FileAttributes.ReparsePoint))
+                {
+                    throw new InvalidOperationException(
+                        $"リンクまたはジャンクションを含むためpCloudへアーカイブできません: {entry}");
+                }
+                if (attributes.HasFlag(FileAttributes.Directory))
+                {
+                    directories.Add(entry);
+                    pending.Enqueue(entry);
+                }
+                else
+                {
+                    files.Add(entry);
+                }
+            }
+        }
+        return new ArchiveTree(directories, files);
     }
 
     private static HttpRequestMessage CreateAuthorizedRequest(
@@ -918,7 +1343,8 @@ internal sealed class PCloudBackupService
         """;
 
     private sealed record OAuthTokenResult(string ApiHost, string AccessToken);
-    private sealed record UploadedFile(string FileName, long SizeBytes);
+    private sealed record UploadedFile(long FileId, string FileName, long SizeBytes);
+    private sealed record ArchiveTree(IReadOnlyList<string> Directories, IReadOnlyList<string> Files);
     private sealed record PendingRestoreManifest(
         long FileId,
         string FileName,

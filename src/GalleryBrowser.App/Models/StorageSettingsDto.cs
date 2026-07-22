@@ -24,6 +24,7 @@ public sealed record GalleryDatabaseMergeResult(
 public sealed record PCloudBackupSettingsDto(
     string ApiHost,
     string TargetFolder,
+    string ArchiveRootFolder,
     string ClientId,
     string RedirectUri,
     bool HasAccessToken,
@@ -50,6 +51,18 @@ public sealed record PCloudBackupResult(
     string TargetFolder,
     int RemovedOldSnapshots = 0,
     string RetentionWarning = "");
+
+public sealed record PCloudArchiveResult(
+    string LocalPath,
+    string RemotePath,
+    long SizeBytes,
+    DateTimeOffset UploadedAt,
+    int FileCount = 1);
+
+public sealed record PCloudArchiveProgress(
+    int CompletedFiles,
+    int TotalFiles,
+    string CurrentPath);
 
 public sealed record PCloudSnapshotDto(
     long FileId,
