@@ -16,10 +16,19 @@ export const userGuideTranslations: Record<string, UserGuideTranslation> = {
   'はじめに': ['Introduction', '简介', '簡介'],
   '初期設定と基本の流れ': ['Getting started', '初始设置与基本流程', '初始設定與基本流程'],
   'Bookmark・付箋': ['Bookmark & Sticky Notes', 'Bookmark与便笺', 'Bookmark與便箋'],
+  'Bookmark・Sticky Notes・Board': ['Bookmarks, Sticky Notes & Board', 'Bookmark、便笺与Board', 'Bookmark、便箋與Board'],
+  'Creators・Creator Tracking': ['Creators & Creator Tracking', 'Creators与Creator Tracking', 'Creators與Creator Tracking'],
+  'Filters・Tags': ['Filters & Tags', 'Filters与Tags', 'Filters與Tags'],
   'DB・キャッシュ・バックアップ': ['Database, cache & backup', '数据库、缓存与备份', '資料庫、快取與備份'],
   'ショートカット': ['Shortcuts', '快捷键', '快速鍵'],
   '困ったときは': ['Troubleshooting', '故障排除', '疑難排解'],
   '謝辞': ['Acknowledgements', '致谢', '致謝'],
+  '通知': ['Notifications', '通知', '通知'],
+  'Creator Trackingの有効なサブスク更新予定を月・週ビューで確認します': [
+    'Review active Creator Tracking subscription renewals in month and week views.',
+    '在月视图和周视图中查看Creator Tracking的有效订阅更新计划。',
+    '在月檢視與週檢視中查看Creator Tracking的有效訂閱更新計畫。'
+  ],
 
   // 01 — Introduction
   '作品・作者・ファイルを': ['Works, creators, and files', '作品、作者与文件', '作品、作者與檔案'],
@@ -59,6 +68,12 @@ export const userGuideTranslations: Record<string, UserGuideTranslation> = {
     '是唯一标识作品文件的ID。',
     '是唯一識別作品檔案的ID。'
   ],
+  '最新版の現行仕様': ['Current guide for the latest version', '最新版当前规格', '最新版目前規格'],
+  'このガイドはv1.0以降に追加されたCalendar、Discord・LINE通知、ランダムピック、回帰分析、Explorer詳細表示、外部アプリ連携、pCloudアーカイブを含む最新版を対象にしています。': [
+    'This guide covers the latest version, including Calendar, Discord and LINE notifications, Random Pick, regression analysis, Explorer details view, external app integration, and pCloud archiving added since v1.0.',
+    '本指南面向最新版，包含v1.0以来新增的Calendar、Discord与LINE通知、随机选取、回归分析、Explorer详细视图、外部应用联动和pCloud归档。',
+    '本指南適用於最新版，包含v1.0以來新增的Calendar、Discord與LINE通知、隨機選取、迴歸分析、Explorer詳細檢視、外部應用程式整合與pCloud封存。'
+  ],
 
   // 02 — Getting started
   'フォルダを登録してから作品を探せるようになるまで': [
@@ -86,6 +101,11 @@ export const userGuideTranslations: Record<string, UserGuideTranslation> = {
     '：在“手动更新SQLiteDB”中选择目标区分并执行更新。',
     '：在「手動更新SQLiteDB」中選擇目標區分並執行更新。'
   ],
+  'の「SQLiteDBの手動更新」から対象区分を選び、更新を実行します。運用が安定したら定期走査の曜日・時刻・区分を設定できます。': [
+    ': choose a section under Manual SQLiteDB Update and run the update. Once your setup is stable, you can schedule recurring scans by weekday, time, and section.',
+    '：在“手动更新SQLiteDB”中选择目标区分并执行更新。运行稳定后，可设置定期扫描的星期、时间和区分。',
+    '：在「手動更新SQLiteDB」中選擇目標區分並執行更新。運作穩定後，可設定定期掃描的星期、時間與區分。'
+  ],
   'Galleryで内容を確認': ['Review the results in Gallery', '在Gallery中检查结果', '在Gallery中檢查結果'],
   '左のGallery配下から区分を開き、作品カード、Creator、Title、Character、Tagが意図どおり表示されるか確認します。': [
     'Open a section under Gallery on the left and confirm that work cards, Creator, Title, Character, and Tag appear as expected.',
@@ -109,6 +129,28 @@ export const userGuideTranslations: Record<string, UserGuideTranslation> = {
     'Overly broad directories or extensions can register unintended files. Start with a small folder to verify the result.',
     '目标目录或扩展名范围过大时，可能会登记非预期文件。建议先用小文件夹确认。',
     '目標目錄或副檔名範圍過大時，可能會登錄非預期檔案。建議先用小資料夾確認。'
+  ],
+  '検索、ランダムピック、Bookmark、付箋、選択CreatorのTracking表示、登録済みストレージをExplorerで開く操作をまとめています。': [
+    'Provides search, Random Pick, Bookmarks, sticky notes, opening the selected Creator in Tracking, and opening registered storage in Explorer.',
+    '集中提供搜索、随机选取、Bookmark、便笺、打开所选Creator的Tracking，以及在Explorer中打开已登记存储位置等操作。',
+    '集中提供搜尋、隨機選取、Bookmark、便箋、開啟所選Creator的Tracking，以及在Explorer中開啟已登錄儲存位置等操作。'
+  ],
+  'ランダムピック': ['Random Pick', '随机选取', '隨機選取'],
+  'は評価値・画像枚数・Tag・Title重複数などの条件から作品を抽出します。設定値は再起動後も保持され、実行するたびに候補をシャッフルします。': [
+    ' selects works using criteria such as rating, image count, Tags, and permitted Title duplication. Settings persist across restarts, and candidates are reshuffled each time.',
+    '会根据评价值、图片数量、Tag、Title重复数量等条件抽取作品。设置值在重启后仍会保留，每次执行都会重新打乱候选。',
+    '會依據評價值、圖片數量、Tag、Title重複數量等條件抽取作品。設定值在重新啟動後仍會保留，每次執行都會重新洗牌候選。'
+  ],
+  '属性の一括登録': ['Bulk attribute assignment', '批量登记属性', '批次登錄屬性'],
+  'では複数Characterや複数Tagを一度に付与できます。Title登録からCharacterを続けて作成・選択し、まとめて登録することもできます。': [
+    ' lets you assign multiple Characters or Tags at once. You can also create or select Characters while assigning a Title and register them together.',
+    '可一次分配多个Character或Tag。也可以在登记Title时继续创建或选择Character并一并登记。',
+    '可一次指派多個Character或Tag。也可以在登錄Title時接著建立或選取Character並一併登錄。'
+  ],
+  '選択カードはGalleryBrowser外のアプリへドラッグ＆ドロップできます。右クリックから表示先を許可した起動プログラムで開く、またはpCloudへアーカイブすることもできます。': [
+    'Selected cards can be dragged and dropped into applications outside GalleryBrowser. You can also use the context menu to open them with an allowed launcher or archive them to pCloud.',
+    '可将所选卡片拖放到GalleryBrowser之外的应用中，也可通过右键菜单使用获准显示的启动程序打开，或归档到pCloud。',
+    '可將所選卡片拖放至GalleryBrowser以外的應用程式，也可透過右鍵選單使用獲准顯示的啟動程式開啟，或封存至pCloud。'
   ],
 
   // 03 — Gallery
@@ -506,7 +548,212 @@ export const userGuideTranslations: Record<string, UserGuideTranslation> = {
     '變更設定或功能後，請務必先在小範圍內確認結果，再套用至正式環境。'
   ],
 
-  // 13 — Acknowledgements
+  // Latest feature additions
+  '分割表示では左右それぞれをサムネイル表示または詳細表示に切り替え、境界をドラッグして幅を調整できます。分割状態と幅は再起動後も復元されます。': [
+    'In split view, each side can independently use thumbnail or details view. Drag the divider to resize the panes; the split layout and widths are restored after restart.',
+    '在分屏视图中，左右两侧可分别切换为缩略图或详细视图。拖动分隔线可调整宽度，重启后会恢复分屏状态和宽度。',
+    '在分割檢視中，左右兩側可分別切換為縮圖或詳細檢視。拖曳分隔線可調整寬度，重新啟動後會還原分割狀態與寬度。'
+  ],
+  '詳細表示ではファイルサイズ、画像枚数、画像1枚あたりの平均サイズなどを列として表示できます。': [
+    'Details view can show columns such as file size, image count, and average size per image.',
+    '详细视图可显示文件大小、图片数量、每张图片的平均大小等列。',
+    '詳細檢視可顯示檔案大小、圖片數量、每張圖片的平均大小等欄位。'
+  ],
+  '親フォルダへ移動すると移動元フォルダが選択され、サムネイルと詳細の両方で見える位置までスクロールします。': [
+    'When moving to the parent folder, the folder you came from is selected and scrolled into view in both thumbnail and details views.',
+    '移动到上级文件夹时，会选中原文件夹，并在缩略图和详细视图中滚动到可见位置。',
+    '移動至上層資料夾時，會選取原資料夾，並在縮圖與詳細檢視中捲動至可見位置。'
+  ],
+  '標準画質のJPGに変換': ['Convert to standard-quality JPG', '转换为标准画质JPG', '轉換為標準畫質JPG'],
+  '：ZIP内のPNG・WebP・JPG・HEIC・AVIFを、設定したNConvertで標準化します。': [
+    ': standardizes PNG, WebP, JPG, HEIC, and AVIF images inside ZIP archives using the configured NConvert.',
+    '：使用已设置的NConvert，将ZIP内的PNG、WebP、JPG、HEIC和AVIF标准化。',
+    '：使用已設定的NConvert，將ZIP內的PNG、WebP、JPG、HEIC與AVIF標準化。'
+  ],
+  'ファイルを削除': ['Delete files', '删除文件', '刪除檔案'],
+  '：本体削除またはpCloudへのアーカイブを選びます。通常削除では関連DBとキャッシュも整理されます。': [
+    ': choose permanent deletion or archiving to pCloud. Permanent deletion also removes related database records and caches.',
+    '：选择删除文件本体或归档到pCloud。普通删除还会清理相关数据库记录和缓存。',
+    '：選擇刪除檔案本體或封存至pCloud。一般刪除也會清理相關資料庫記錄與快取。'
+  ],
+  '：現在の階層から作者フォルダを探して対応画面へ移動します。': [
+    ': finds the creator folder above the current level and opens the corresponding view.',
+    '：从当前层级向上查找作者文件夹，并转到相应画面。',
+    '：從目前層級向上尋找作者資料夾，並移至對應畫面。'
+  ],
+  '選択項目は外部アプリへドラッグ＆ドロップでき、登録した起動プログラムでも開けます。': [
+    'Selected items can be dragged and dropped into external apps or opened with a registered launcher.',
+    '所选项目可拖放到外部应用，也可使用已登记的启动程序打开。',
+    '所選項目可拖放至外部應用程式，也可使用已登錄的啟動程式開啟。'
+  ],
+  'Category、Title、Characterの標準名・別名を管理し、Galleryの各区分へマッピングします。検索エンジンには通常検索またはGemini APIを使用できます。': [
+    'Manage standard names and aliases for Category, Title, and Character, then map them to Gallery sections. Standard web search or the Gemini API can be used as the search engine.',
+    '管理Category、Title、Character的标准名与别名，并映射到Gallery各区分。搜索引擎可使用普通搜索或Gemini API。',
+    '管理Category、Title、Character的標準名稱與別名，並對應至Gallery各區分。搜尋引擎可使用一般搜尋或Gemini API。'
+  ],
+  'Galleryの作品カードから、Title・Character・Tagを登録または解除します。複数Character・複数Tagの一括付与に対応し、新規項目は各登録画面からエディタへ移動して追加できます。': [
+    'Assign or remove Title, Character, and Tag from Gallery work cards. Multiple Characters and Tags can be assigned at once, and new items can be added by opening the editor from each assignment dialog.',
+    '可从Gallery作品卡片登记或解除Title、Character和Tag，支持批量分配多个Character与多个Tag，也可从各登记对话框转到编辑器添加新项目。',
+    '可從Gallery作品卡片登錄或解除Title、Character與Tag，支援批次指派多個Character與多個Tag，也可從各登錄對話框移至編輯器新增項目。'
+  ],
+  '複数作者をタブで開き、切り替え時やアプリ終了時に自動保存します。前回のタブ状態も再起動時に復元します。': [
+    'Open multiple creators in tabs. Changes are saved when switching tabs or exiting, and the previous tab state is restored after restart.',
+    '可在多个标签页中打开作者，切换标签或退出应用时自动保存，重启后还会恢复上次标签状态。',
+    '可在多個分頁中開啟作者，切換分頁或結束應用程式時自動儲存，重新啟動後也會還原上次分頁狀態。'
+  ],
+  'Indexタブでは区分内の登録作者、最終確認日、Warning／Alert状態を一覧・並べ替えできます。': [
+    'The Index tab lists creators registered in the section together with the last check date and Warning/Alert status, and supports sorting.',
+    'Index标签页可列出区分内已登记的作者、最后确认日期和Warning／Alert状态，并支持排序。',
+    'Index分頁可列出區分內已登錄的作者、最後確認日期與Warning／Alert狀態，並支援排序。'
+  ],
+  '作者ページの新規作成と、ファイル本体を残したまま作者データだけを削除する操作に対応しています。': [
+    'You can create creator pages manually or delete only creator data while leaving files and folders untouched.',
+    '支持手动新建作者页面，也可在不删除文件和文件夹本体的情况下仅删除作者数据。',
+    '支援手動建立作者頁面，也可在不刪除檔案與資料夾本體的情況下僅刪除作者資料。'
+  ],
+  'サブスク集計': ['Subscription totals', '订阅统计', '訂閱統計'],
+  'Wishlistは課金集計から除外されます。継続中は開始日から更新予定日未満、終了済みは開始日から終了日未満の支払い回数を頻度に応じて集計します。': [
+    'Wishlist entries are excluded from payment totals. Active subscriptions count payments from the start date up to, but not including, the next renewal date; ended subscriptions count up to, but not including, the end date.',
+    'Wishlist项目不计入付费统计。持续中的订阅按频率统计从开始日到更新预定日之前的付款次数；已结束的订阅统计到结束日之前。',
+    'Wishlist項目不計入付費統計。持續中的訂閱依頻率統計從開始日至更新預定日前的付款次數；已結束的訂閱統計至結束日前。'
+  ],
+  'ロジスティック回帰分析': ['Logistic regression analysis', '逻辑回归分析', '羅吉斯迴歸分析'],
+  '購入と評価値への寄与を、DB内の作者・作品情報から分析します。「分析実行」を押したときだけ計算し、結果はアプリ終了後も保持します。オッズ比、p値、AIC、VIFなどを確認できますが、標本数が少ない段階の結果は参考値として扱ってください。': [
+    'Analyze how creator and work data in the database contribute to purchases and ratings. Calculation runs only when you press Analyze, and results persist after exit. Odds ratios, p-values, AIC, and VIF are shown; treat results from small samples as preliminary.',
+    '利用数据库中的作者与作品信息分析其对购买和评价值的贡献。仅在按下“执行分析”时计算，结果在应用退出后仍会保留。可查看优势比、p值、AIC和VIF；样本较少时请将结果视为参考。',
+    '利用資料庫中的作者與作品資訊分析其對購買與評價值的貢獻。僅在按下「執行分析」時計算，結果在應用程式結束後仍會保留。可查看勝算比、p值、AIC與VIF；樣本較少時請將結果視為參考。'
+  ],
+
+  '有効なサブスクの更新予定を月・2週間で確認': [
+    'Review active subscription renewals by month or two-week period',
+    '按月或两周查看有效订阅的更新计划',
+    '按月或兩週查看有效訂閱的更新計畫'
+  ],
+  '予定を確認する': ['Review schedules', '查看计划', '查看計畫'],
+  'Creator Trackingに登録したサブスクの更新予定日をカレンダーへ表示します。': [
+    'Displays renewal dates for subscriptions registered in Creator Tracking.',
+    '在日历中显示Creator Tracking登记的订阅更新预定日。',
+    '在行事曆中顯示Creator Tracking登錄的訂閱更新預定日。'
+  ],
+  'Monthと2 Weeksを切り替え、当日はアクセントカラーの枠で確認できます。': [
+    'Switch between Month and 2 Weeks; today is outlined with the accent color.',
+    '可在Month与2 Weeks之间切换，当天以强调色边框显示。',
+    '可在Month與2 Weeks之間切換，當天以強調色外框顯示。'
+  ],
+  '終了予定のサブスクは警告スタイルで表示されます。': [
+    'Subscriptions marked to end are displayed in a warning style.',
+    '计划结束的订阅会以警告样式显示。',
+    '預計結束的訂閱會以警告樣式顯示。'
+  ],
+  '予定をクリックすると対象のCreator Trackingタブへ移動します。': [
+    'Click an event to open the relevant Creator Tracking tab.',
+    '单击计划可转到相应的Creator Tracking标签页。',
+    '按一下計畫可移至對應的Creator Tracking分頁。'
+  ],
+  'Google Calendar同期': ['Google Calendar sync', 'Google Calendar同步', 'Google Calendar同步'],
+  'SettingsでGoogle Calendar APIのデスクトップアプリ用OAuth Client IDを設定し、連携します。': [
+    'Configure the OAuth Client ID for a Google Calendar API desktop app in Settings, then authorize it.',
+    '在Settings中设置Google Calendar API桌面应用的OAuth Client ID并完成授权。',
+    '在Settings中設定Google Calendar API桌面應用程式的OAuth Client ID並完成授權。'
+  ],
+  '同期先カレンダーを選び、GalleryBrowserのサブスク予定をGoogle Calendarへ反映します。': [
+    'Select a destination calendar and sync GalleryBrowser subscription events to Google Calendar.',
+    '选择目标日历，将GalleryBrowser的订阅计划同步到Google Calendar。',
+    '選擇目標行事曆，將GalleryBrowser的訂閱計畫同步至Google Calendar。'
+  ],
+  '現在の同期方向はGalleryBrowserからGoogle Calendarへの一方向です。': [
+    'Synchronization currently runs one way, from GalleryBrowser to Google Calendar.',
+    '目前同步方向为从GalleryBrowser到Google Calendar的单向同步。',
+    '目前同步方向為從GalleryBrowser到Google Calendar的單向同步。'
+  ],
+  '週の開始曜日はSettingsで変更できます。': [
+    'The first day of the week can be changed in Settings.',
+    '可在Settings中更改一周的起始日。',
+    '可在Settings中變更一週的起始日。'
+  ],
+  'DiscordとLINEへ、自分用の確認事項をまとめて送信': [
+    'Send personal reminders to Discord and LINE',
+    '将个人确认事项汇总发送到Discord和LINE',
+    '將個人確認事項彙整傳送至Discord與LINE'
+  ],
+  '送信先': ['Destinations', '发送目标', '傳送目標'],
+  'Discord WebhookとLINE Messaging APIを片方だけ、または併用できます。認証情報はWindows資格情報マネージャーへ保存します。': [
+    'Use either a Discord Webhook or the LINE Messaging API, or both. Credentials are stored in Windows Credential Manager.',
+    '可单独使用Discord Webhook或LINE Messaging API，也可同时使用。认证信息保存在Windows凭据管理器中。',
+    '可單獨使用Discord Webhook或LINE Messaging API，也可同時使用。驗證資訊儲存在Windows認證管理員中。'
+  ],
+  'Creator確認': ['Creator checks', 'Creator确认', 'Creator確認'],
+  '最終確認日のWarning（黄色）とAlert（赤色）を通知対象として個別に設定できます。': [
+    'Warning (yellow) and Alert (red) states based on the last check date can be enabled independently.',
+    '可分别设置基于最后确认日期的Warning（黄色）和Alert（红色）通知。',
+    '可分別設定依最後確認日期判定的Warning（黃色）與Alert（紅色）通知。'
+  ],
+  'サブスク': ['Subscriptions', '订阅', '訂閱'],
+  '終了予定の前日と、アラートをONにした更新予定を通知できます。': [
+    'Notify one day before a planned end date and for renewals whose alert is enabled.',
+    '可在计划结束日前一天，以及开启提醒的更新计划到期时发送通知。',
+    '可在預計結束日前一天，以及開啟提醒的更新計畫到期時傳送通知。'
+  ],
+  '定期走査': ['Scheduled scans', '定期扫描', '定期掃描'],
+  '定期フォルダ走査の開始・完了を発生時に通知できます。': [
+    'Send notifications when a scheduled folder scan starts and completes.',
+    '可在定期文件夹扫描开始和完成时发送通知。',
+    '可在定期資料夾掃描開始與完成時傳送通知。'
+  ],
+  '通知スケジュール': ['Notification schedule', '通知计划', '通知排程'],
+  '1日に複数の送信時刻を設定できます。同じ時刻のCreator確認・解除予定・更新アラートは最新DBで再集計し、1通へまとめて送信します。各通知種別は設定画面から個別にテストできます。': [
+    'Configure multiple send times per day. Creator checks, planned cancellations, and renewal alerts at the same time are recalculated from the latest database and combined into one message. Every notification type can be tested individually in Settings.',
+    '每天可设置多个发送时间。同一时间的Creator确认、解除计划和更新提醒会基于最新数据库重新汇总，并合并为一条消息发送。每种通知均可在设置画面中单独测试。',
+    '每天可設定多個傳送時間。同一時間的Creator確認、解除計畫與更新提醒會依最新資料庫重新彙整，並合併為一則訊息傳送。每種通知均可在設定畫面中個別測試。'
+  ],
+  'Creator Trackingの既定値、新規タブ候補、Calendar、通知、マウスジェスチャ、キーボードショートカットを設定します。': [
+    'Configure Creator Tracking defaults, new-tab candidates, Calendar, notifications, mouse gestures, and keyboard shortcuts.',
+    '设置Creator Tracking默认值、新标签候选、Calendar、通知、鼠标手势和键盘快捷键。',
+    '設定Creator Tracking預設值、新分頁候選、Calendar、通知、滑鼠手勢與鍵盤快速鍵。'
+  ],
+  '区分と走査対象、gid、サムネイルキャッシュ、本体DB・キャッシュDB、定期走査、pCloudバックアップと作品アーカイブを管理します。': [
+    'Manage sections and scan targets, gid, thumbnail cache, main and cache databases, scheduled scans, pCloud backup, and work archiving.',
+    '管理区分与扫描目标、gid、缩略图缓存、主数据库与缓存数据库、定期扫描、pCloud备份和作品归档。',
+    '管理區分與掃描目標、gid、縮圖快取、主資料庫與快取資料庫、定期掃描、pCloud備份與作品封存。'
+  ],
+  '起動プログラム、WinRAR、FFmpeg、NConvert、検索エンジンなど外部機能との連携を設定します。': [
+    'Configure integration with launchers, WinRAR, FFmpeg, NConvert, search engines, and other external tools.',
+    '设置启动程序、WinRAR、FFmpeg、NConvert、搜索引擎等外部功能的联动。',
+    '設定啟動程式、WinRAR、FFmpeg、NConvert、搜尋引擎等外部功能的整合。'
+  ],
+  '複数の曜日・時刻・区分をスケジュールできます。実行中は進捗、経過時間、直近3日間の実績に基づく予想所要時間を表示し、安全な中断を要求できます。': [
+    'Schedule multiple combinations of weekdays, times, and sections. During execution, progress, elapsed time, and an estimated duration based on the last three days are shown, and a safe stop can be requested.',
+    '可设置多组星期、时间和区分。执行时会显示进度、经过时间和根据最近3天实绩估算的耗时，并可请求安全中止。',
+    '可設定多組星期、時間與區分。執行時會顯示進度、經過時間與依最近3天實績估算的所需時間，並可要求安全中止。'
+  ],
+  '2種類のpCloud機能': ['Two pCloud features', '两种pCloud功能', '兩種pCloud功能'],
+  'DBバックアップは本体DBのスナップショットを世代管理します。作品アーカイブはGallery／Explorerからファイルやフォルダを指定先へアップロードし、ローカル本体を削除してarchived状態として保持します。': [
+    'Database backup retains generations of main-database snapshots. Work archiving uploads files or folders from Gallery or Explorer to the configured destination, removes the local copy, and retains the record as archived.',
+    '数据库备份会对主数据库快照进行版本保留。作品归档会从Gallery／Explorer将文件或文件夹上传到指定位置，删除本地本体，并将记录保留为archived状态。',
+    '資料庫備份會對主資料庫快照進行世代保留。作品封存會從Gallery／Explorer將檔案或資料夾上傳至指定位置，刪除本機本體，並將記錄保留為archived狀態。'
+  ],
+  '通常検索ウィンドウを開く': ['Open the standard search window', '打开普通搜索窗口', '開啟一般搜尋視窗'],
+  '前の画面へ戻る': ['Return to the previous view', '返回上一画面', '返回上一畫面'],
+  'Google Calendarへ予定が増えない': ['Events are not appearing in Google Calendar', 'Google Calendar中没有新增计划', 'Google Calendar中沒有新增計畫'],
+  'Calendar API、OAuthのテストユーザー、データアクセス、同期先カレンダーを確認します。連携済み表示の後にCalendar画面のGoogle同期を実行してください。': [
+    'Check the Calendar API, OAuth test users, data access, and destination calendar. After the connected indicator appears, run Google sync from the Calendar view.',
+    '请检查Calendar API、OAuth测试用户、数据访问权限和目标日历。显示已连接后，请在Calendar画面执行Google同步。',
+    '請檢查Calendar API、OAuth測試使用者、資料存取權限與目標行事曆。顯示已連接後，請在Calendar畫面執行Google同步。'
+  ],
+  'Discord／LINE通知が届かない': ['Discord or LINE notifications do not arrive', '收不到Discord／LINE通知', '收不到Discord／LINE通知'],
+  '通知機能と送信先をONにし、各送信先の接続情報を確認してテスト送信します。LINEは公式アカウント側と端末側の通知設定も確認してください。': [
+    'Enable notifications and the destination, verify its connection details, and send a test. For LINE, also check notification settings for the official account and on the device.',
+    '请开启通知功能与发送目标，确认各目标的连接信息并执行测试发送。LINE还需检查官方账号侧和设备侧的通知设置。',
+    '請開啟通知功能與傳送目標，確認各目標的連線資訊並執行測試傳送。LINE也需檢查官方帳號端與裝置端的通知設定。'
+  ],
+  '外部プログラムや画像変換を実行できない': ['External programs or image conversion do not run', '无法运行外部程序或图片转换', '無法執行外部程式或圖片轉換'],
+  'Settings ＞ Advancedで表示先、対象拡張子、実行ファイルのパスを確認します。NConvert変換は一時フォルダへの書き込み権限と空き容量も必要です。': [
+    'In Settings > Advanced, check the views where the command appears, target extensions, and executable path. NConvert also requires write access and free space in the temporary folder.',
+    '请在Settings > Advanced中检查显示位置、目标扩展名和可执行文件路径。NConvert转换还需要临时文件夹的写入权限和可用空间。',
+    '請在Settings > Advanced中檢查顯示位置、目標副檔名與執行檔路徑。NConvert轉換也需要暫存資料夾的寫入權限與可用空間。'
+  ],
+
+  // 15 — Acknowledgements
   'GalleryBrowserの発想と開発を支えたソフトウェア・技術へ': [
     'For the software and technologies that inspired and supported GalleryBrowser',
     '致启发并支持GalleryBrowser开发的软件与技术',

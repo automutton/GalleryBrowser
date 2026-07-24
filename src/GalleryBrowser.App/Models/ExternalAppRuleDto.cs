@@ -8,4 +8,6 @@ public sealed record ExternalAppRuleDto(
     bool AllowMultiple,
     string ClickExtensions,
     string DoubleClickExtensions,
-    string ContextMenuExtensions);
+    string ContextMenuExtensions,
+    bool ShowInGalleryContextMenu,
+    bool ShowInExplorerContextMenu);

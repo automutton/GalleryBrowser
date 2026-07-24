@@ -4,6 +4,8 @@ public sealed record UiNavigationStateDto(
     string ActiveView,
     bool ExplorerBookmarksExpanded,
     string ExplorerDetailColumns,
+    bool ExplorerDetailOnly,
+    string ExplorerSplitState,
     string MouseGestureSettings,
     string GalleryCardColumns,
     int ExplorerCardColumns,
@@ -13,4 +15,5 @@ public sealed record UiNavigationStateDto(
     string KeyboardShortcutSettings,
     string GalleryFilterSorts,
     string GalleryThumbnailSorts,
+    string GalleryRandomPickSettings,
     string CreatorTrackingTabs);

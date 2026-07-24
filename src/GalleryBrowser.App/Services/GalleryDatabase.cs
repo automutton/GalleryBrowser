@@ -27,8 +27,8 @@ public sealed class GalleryDatabase
     private const string DefaultCreatorTrackingDisplayCurrency = "JPY";
     private const int DefaultCreatorTrackingCompositionLabelLimit = 5;
     private const string CreatorSummaryCacheVersion = "v4";
-    private const string UserMetricsCacheVersion = "v2";
-    private const string CreatorTrackingDashboardCacheVersion = "v1";
+    private const string UserMetricsCacheVersion = "v3";
+    private const string CreatorTrackingDashboardCacheVersion = "v2";
     private const string GalleryWorksCacheVersion = "v2";
     private const string GalleryFiltersCacheVersion = "v1";
     private const string DefaultGidTargetExtensions = "zip;rar;7z;cbz;cbr";
@@ -272,6 +272,8 @@ public sealed class GalleryDatabase
                 extension TEXT NOT NULL UNIQUE,
                 executable_path TEXT NOT NULL,
                 arguments_template TEXT NOT NULL DEFAULT '"{path}"',
+                show_in_gallery_context_menu INTEGER NOT NULL DEFAULT 0,
+                show_in_explorer_context_menu INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -350,13 +352,16 @@ public sealed class GalleryDatabase
                 active_view TEXT NOT NULL DEFAULT 'library',
                 explorer_bookmarks_expanded INTEGER NOT NULL DEFAULT 1,
                 explorer_detail_columns TEXT NOT NULL DEFAULT 'icon,name,pages,gid,modified,type,size',
+                explorer_detail_only INTEGER NOT NULL DEFAULT 0,
+                explorer_split_state TEXT NOT NULL DEFAULT '{"enabled":false}',
                 mouse_gesture_settings TEXT NOT NULL DEFAULT '',
                 gallery_card_columns TEXT NOT NULL DEFAULT '{}',
                 explorer_card_columns INTEGER NOT NULL DEFAULT 5,
                 window_width REAL NOT NULL DEFAULT 0,
                 window_height REAL NOT NULL DEFAULT 0,
                 window_is_maximized INTEGER NOT NULL DEFAULT 0,
-                keyboard_shortcut_settings TEXT NOT NULL DEFAULT ''
+                keyboard_shortcut_settings TEXT NOT NULL DEFAULT '',
+                gallery_random_pick_settings TEXT NOT NULL DEFAULT '{}'
             );
 
             CREATE TABLE IF NOT EXISTS winrar_settings (
@@ -487,6 +492,17 @@ public sealed class GalleryDatabase
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS notification_delivery_log (
+                channel TEXT NOT NULL COLLATE NOCASE,
+                event_key TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT NOT NULL DEFAULT '',
+                error_message TEXT NOT NULL DEFAULT '',
+                attempted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                delivered_at TEXT NULL,
+                PRIMARY KEY (channel, event_key)
+            );
+
             CREATE TABLE IF NOT EXISTS gid_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 target_extensions TEXT NOT NULL DEFAULT 'zip;rar;7z;cbz;cbr',
@@ -542,6 +558,12 @@ public sealed class GalleryDatabase
                 image_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (creator, category, snapshot_date)
+            );
+
+            CREATE TABLE IF NOT EXISTS user_metrics_regression_results (
+                category TEXT PRIMARY KEY COLLATE NOCASE,
+                generated_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS creator_tracking_settings (
@@ -713,6 +735,17 @@ public sealed class GalleryDatabase
                     gid TEXT PRIMARY KEY,
                     source_path TEXT NOT NULL DEFAULT '',
                     issued_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS notification_delivery_log (
+                    channel TEXT NOT NULL COLLATE NOCASE,
+                    event_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    message TEXT NOT NULL DEFAULT '',
+                    error_message TEXT NOT NULL DEFAULT '',
+                    attempted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    delivered_at TEXT NULL,
+                    PRIMARY KEY (channel, event_key)
                 );
                 """;
             command.ExecuteNonQuery();
@@ -1186,7 +1219,11 @@ public sealed class GalleryDatabase
                         item.StartedOn,
                         item.RenewalOn,
                         item.EndingPlanned || item.Status is "一時停止" or "解約済み",
-                        item.Reminder))
+                        item.Reminder)
+                    {
+                        IsEnded = item.Status == "解約済み",
+                        EndedOn = item.Status == "解約済み" ? item.RenewalOn : string.Empty
+                    })
                     .ToArray());
             }
             catch (JsonException)
@@ -1490,6 +1527,8 @@ public sealed class GalleryDatabase
         AddExternalAppRuleColumn(connection, columns, "contextmenuextensions", "context_menu_extensions TEXT NOT NULL DEFAULT ''");
         AddExternalAppRuleColumn(connection, columns, "allowmultiple", "allow_multiple INTEGER NOT NULL DEFAULT 0");
         AddExternalAppRuleColumn(connection, columns, "position", "position INTEGER NOT NULL DEFAULT 0");
+        AddExternalAppRuleColumn(connection, columns, "showingallerycontextmenu", "show_in_gallery_context_menu INTEGER NOT NULL DEFAULT 0");
+        AddExternalAppRuleColumn(connection, columns, "showinexplorercontextmenu", "show_in_explorer_context_menu INTEGER NOT NULL DEFAULT 1");
 
         using var normalizeExtensions = connection.CreateCommand();
         normalizeExtensions.CommandText = """
@@ -1628,12 +1667,15 @@ public sealed class GalleryDatabase
 
         EnsureUiNavigationStateColumn(connection, columns, "gallerycardcolumns", "gallery_card_columns TEXT NOT NULL DEFAULT '{}'");
         EnsureUiNavigationStateColumn(connection, columns, "explorercardcolumns", "explorer_card_columns INTEGER NOT NULL DEFAULT 5");
+        EnsureUiNavigationStateColumn(connection, columns, "explorerdetailonly", "explorer_detail_only INTEGER NOT NULL DEFAULT 0");
+        EnsureUiNavigationStateColumn(connection, columns, "explorersplitstate", "explorer_split_state TEXT NOT NULL DEFAULT '{\"enabled\":false}'");
         EnsureUiNavigationStateColumn(connection, columns, "windowwidth", "window_width REAL NOT NULL DEFAULT 0");
         EnsureUiNavigationStateColumn(connection, columns, "windowheight", "window_height REAL NOT NULL DEFAULT 0");
         EnsureUiNavigationStateColumn(connection, columns, "windowismaximized", "window_is_maximized INTEGER NOT NULL DEFAULT 0");
         EnsureUiNavigationStateColumn(connection, columns, "keyboardshortcutsettings", "keyboard_shortcut_settings TEXT NOT NULL DEFAULT ''");
         EnsureUiNavigationStateColumn(connection, columns, "galleryfiltersorts", "gallery_filter_sorts TEXT NOT NULL DEFAULT '[]'");
         EnsureUiNavigationStateColumn(connection, columns, "gallerythumbnailsorts", "gallery_thumbnail_sorts TEXT NOT NULL DEFAULT '[]'");
+        EnsureUiNavigationStateColumn(connection, columns, "galleryrandompicksettings", "gallery_random_pick_settings TEXT NOT NULL DEFAULT '{}'");
         EnsureUiNavigationStateColumn(connection, columns, "creatortrackingtabs", "creator_tracking_tabs TEXT NOT NULL DEFAULT '{\"tabs\":[],\"activeIndex\":0}'");
     }
 
@@ -1676,7 +1718,8 @@ public sealed class GalleryDatabase
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT id, name, executable_path, arguments_template, allow_multiple, click_extensions, double_click_extensions, context_menu_extensions
+            SELECT id, name, executable_path, arguments_template, allow_multiple, click_extensions, double_click_extensions, context_menu_extensions,
+                   show_in_gallery_context_menu, show_in_explorer_context_menu
             FROM external_app_rules
             ORDER BY position, id;
             """;
@@ -1693,7 +1736,9 @@ public sealed class GalleryDatabase
                 reader.GetInt64(4) != 0,
                 reader.GetString(5),
                 reader.GetString(6),
-                reader.GetString(7)));
+                reader.GetString(7),
+                reader.GetInt64(8) != 0,
+                reader.GetInt64(9) != 0));
         }
 
         return rules;
@@ -1707,7 +1752,9 @@ public sealed class GalleryDatabase
         bool allowMultiple,
         string clickExtensions,
         string doubleClickExtensions,
-        string contextMenuExtensions)
+        string contextMenuExtensions,
+        bool showInGalleryContextMenu,
+        bool showInExplorerContextMenu)
     {
         EnsureCreated();
 
@@ -1735,12 +1782,14 @@ public sealed class GalleryDatabase
                     click_extensions = $click_extensions,
                     double_click_extensions = $double_click_extensions,
                     context_menu_extensions = $context_menu_extensions,
+                    show_in_gallery_context_menu = $show_in_gallery_context_menu,
+                    show_in_explorer_context_menu = $show_in_explorer_context_menu,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = $id;
                 """
             : """
-                INSERT INTO external_app_rules (name, target_kind, extension, executable_path, arguments_template, allow_multiple, click_extensions, double_click_extensions, context_menu_extensions, position)
-                VALUES ($name, 'file', $extension, $executable_path, $launch_options, $allow_multiple, $click_extensions, $double_click_extensions, $context_menu_extensions,
+                INSERT INTO external_app_rules (name, target_kind, extension, executable_path, arguments_template, allow_multiple, click_extensions, double_click_extensions, context_menu_extensions, show_in_gallery_context_menu, show_in_explorer_context_menu, position)
+                VALUES ($name, 'file', $extension, $executable_path, $launch_options, $allow_multiple, $click_extensions, $double_click_extensions, $context_menu_extensions, $show_in_gallery_context_menu, $show_in_explorer_context_menu,
                     (SELECT COALESCE(MAX(position), -1) + 1 FROM external_app_rules));
                 """;
         command.Parameters.AddWithValue("$name", name);
@@ -1750,6 +1799,8 @@ public sealed class GalleryDatabase
         command.Parameters.AddWithValue("$click_extensions", clickExtensions);
         command.Parameters.AddWithValue("$double_click_extensions", doubleClickExtensions);
         command.Parameters.AddWithValue("$context_menu_extensions", contextMenuExtensions);
+        command.Parameters.AddWithValue("$show_in_gallery_context_menu", showInGalleryContextMenu ? 1 : 0);
+        command.Parameters.AddWithValue("$show_in_explorer_context_menu", showInExplorerContextMenu ? 1 : 0);
         if (id is long ruleId)
         {
             command.Parameters.AddWithValue("$id", ruleId);
@@ -2909,36 +2960,42 @@ public sealed class GalleryDatabase
 
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT active_view, explorer_bookmarks_expanded, explorer_detail_columns, mouse_gesture_settings, gallery_card_columns, explorer_card_columns, window_width, window_height, window_is_maximized, keyboard_shortcut_settings, gallery_filter_sorts, gallery_thumbnail_sorts, creator_tracking_tabs FROM ui_navigation_state WHERE id = 1;";
+        command.CommandText = "SELECT active_view, explorer_bookmarks_expanded, explorer_detail_columns, explorer_detail_only, explorer_split_state, mouse_gesture_settings, gallery_card_columns, explorer_card_columns, window_width, window_height, window_is_maximized, keyboard_shortcut_settings, gallery_filter_sorts, gallery_thumbnail_sorts, gallery_random_pick_settings, creator_tracking_tabs FROM ui_navigation_state WHERE id = 1;";
         using var reader = command.ExecuteReader();
         return reader.Read()
             ? new UiNavigationStateDto(
                 reader.GetString(0),
                 reader.GetInt64(1) != 0,
                 reader.GetString(2),
-                reader.GetString(3),
+                reader.GetInt64(3) != 0,
                 reader.GetString(4),
-                reader.GetInt32(5),
-                reader.GetDouble(6),
-                reader.GetDouble(7),
-                reader.GetInt64(8) != 0,
-                reader.GetString(9),
-                reader.GetString(10),
+                reader.GetString(5),
+                reader.GetString(6),
+                reader.GetInt32(7),
+                reader.GetDouble(8),
+                reader.GetDouble(9),
+                reader.GetInt64(10) != 0,
                 reader.GetString(11),
-                reader.GetString(12))
-            : new UiNavigationStateDto("library", true, "icon,name,pages,gid,modified,type,size", string.Empty, "{}", 5, 0, 0, false, string.Empty, "[]", "[]", "{\"tabs\":[],\"activeIndex\":0}");
+                reader.GetString(12),
+                reader.GetString(13),
+                reader.GetString(14),
+                reader.GetString(15))
+            : new UiNavigationStateDto("library", true, "icon,name,pages,gid,modified,type,size", false, "{\"enabled\":false}", string.Empty, "{}", 5, 0, 0, false, string.Empty, "[]", "[]", "{}", "{\"tabs\":[],\"activeIndex\":0}");
     }
 
     public void SaveUiNavigationState(
         string activeView,
         bool explorerBookmarksExpanded,
         string explorerDetailColumns,
+        bool explorerDetailOnly,
+        string explorerSplitState,
         string mouseGestureSettings,
         string galleryCardColumns,
         int explorerCardColumns,
         string keyboardShortcutSettings,
         string galleryFilterSorts,
         string galleryThumbnailSorts,
+        string galleryRandomPickSettings,
         string creatorTrackingTabs)
     {
         EnsureCreated();
@@ -2950,18 +3007,21 @@ public sealed class GalleryDatabase
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO ui_navigation_state (id, active_view, explorer_bookmarks_expanded, explorer_detail_columns, mouse_gesture_settings, gallery_card_columns, explorer_card_columns, keyboard_shortcut_settings, gallery_filter_sorts, gallery_thumbnail_sorts, creator_tracking_tabs)
-            VALUES (1, $activeView, $bookmarksExpanded, $detailColumns, $mouseGestureSettings, $galleryCardColumns, $explorerCardColumns, $keyboardShortcutSettings, $galleryFilterSorts, $galleryThumbnailSorts, $creatorTrackingTabs)
+            INSERT INTO ui_navigation_state (id, active_view, explorer_bookmarks_expanded, explorer_detail_columns, explorer_detail_only, explorer_split_state, mouse_gesture_settings, gallery_card_columns, explorer_card_columns, keyboard_shortcut_settings, gallery_filter_sorts, gallery_thumbnail_sorts, gallery_random_pick_settings, creator_tracking_tabs)
+            VALUES (1, $activeView, $bookmarksExpanded, $detailColumns, $detailOnly, $explorerSplitState, $mouseGestureSettings, $galleryCardColumns, $explorerCardColumns, $keyboardShortcutSettings, $galleryFilterSorts, $galleryThumbnailSorts, $galleryRandomPickSettings, $creatorTrackingTabs)
             ON CONFLICT(id) DO UPDATE SET
                 active_view = excluded.active_view,
                 explorer_bookmarks_expanded = excluded.explorer_bookmarks_expanded,
                 explorer_detail_columns = excluded.explorer_detail_columns,
+                explorer_detail_only = excluded.explorer_detail_only,
+                explorer_split_state = excluded.explorer_split_state,
                 mouse_gesture_settings = excluded.mouse_gesture_settings,
                 gallery_card_columns = excluded.gallery_card_columns,
                 explorer_card_columns = excluded.explorer_card_columns,
                 keyboard_shortcut_settings = excluded.keyboard_shortcut_settings,
                 gallery_filter_sorts = excluded.gallery_filter_sorts,
                 gallery_thumbnail_sorts = excluded.gallery_thumbnail_sorts,
+                gallery_random_pick_settings = excluded.gallery_random_pick_settings,
                 creator_tracking_tabs = excluded.creator_tracking_tabs;
             """;
         command.Parameters.AddWithValue("$activeView", normalizedView);
@@ -2969,12 +3029,15 @@ public sealed class GalleryDatabase
         command.Parameters.AddWithValue("$detailColumns", string.IsNullOrWhiteSpace(explorerDetailColumns)
             ? "icon,name,pages,gid,modified,type,size"
             : explorerDetailColumns);
+        command.Parameters.AddWithValue("$detailOnly", explorerDetailOnly ? 1 : 0);
+        command.Parameters.AddWithValue("$explorerSplitState", string.IsNullOrWhiteSpace(explorerSplitState) ? "{\"enabled\":false}" : explorerSplitState);
         command.Parameters.AddWithValue("$mouseGestureSettings", mouseGestureSettings ?? string.Empty);
         command.Parameters.AddWithValue("$galleryCardColumns", string.IsNullOrWhiteSpace(galleryCardColumns) ? "{}" : galleryCardColumns);
         command.Parameters.AddWithValue("$explorerCardColumns", Math.Clamp(explorerCardColumns, 4, 7));
         command.Parameters.AddWithValue("$keyboardShortcutSettings", keyboardShortcutSettings ?? string.Empty);
         command.Parameters.AddWithValue("$galleryFilterSorts", string.IsNullOrWhiteSpace(galleryFilterSorts) ? "[]" : galleryFilterSorts);
         command.Parameters.AddWithValue("$galleryThumbnailSorts", string.IsNullOrWhiteSpace(galleryThumbnailSorts) ? "[]" : galleryThumbnailSorts);
+        command.Parameters.AddWithValue("$galleryRandomPickSettings", string.IsNullOrWhiteSpace(galleryRandomPickSettings) ? "{}" : galleryRandomPickSettings);
         command.Parameters.AddWithValue("$creatorTrackingTabs", string.IsNullOrWhiteSpace(creatorTrackingTabs) ? "{\"tabs\":[],\"activeIndex\":0}" : creatorTrackingTabs);
         command.ExecuteNonQuery();
         PersistUiState();
@@ -4474,6 +4537,91 @@ public sealed class GalleryDatabase
         };
     }
 
+    public IReadOnlyList<CreatorTrackingIndexItemDto> ListCreatorTrackingIndex()
+    {
+        EnsureCreated();
+
+        using var connection = OpenApplicationDataConnection();
+        var categoriesByCreator = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        using (var categoryCommand = connection.CreateCommand())
+        {
+            categoryCommand.CommandText = """
+                SELECT creator, category
+                FROM items
+                WHERE archived_flg = 0
+                  AND TRIM(creator) <> ''
+                  AND TRIM(category) <> ''
+                GROUP BY creator, category
+                UNION
+                SELECT creator, category
+                FROM creator_tracking_archive_snapshots
+                WHERE TRIM(creator) <> ''
+                  AND TRIM(category) <> ''
+                GROUP BY creator, category;
+                """;
+            using var categoryReader = categoryCommand.ExecuteReader();
+            while (categoryReader.Read())
+            {
+                var creator = categoryReader.GetString(0).Trim();
+                var category = categoryReader.GetString(1).Trim();
+                if (string.IsNullOrWhiteSpace(creator) || string.IsNullOrWhiteSpace(category))
+                {
+                    continue;
+                }
+
+                if (!categoriesByCreator.TryGetValue(creator, out var categories))
+                {
+                    categories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    categoriesByCreator[creator] = categories;
+                }
+                categories.Add(category);
+            }
+        }
+
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        var items = new List<CreatorTrackingIndexItemDto>();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT creator, display_name, alternate_name, last_activity_on, activity_links_json
+            FROM creator_tracking
+            ORDER BY creator COLLATE NOCASE;
+            """;
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var creator = reader.GetString(0).Trim();
+            if (string.IsNullOrWhiteSpace(creator))
+            {
+                continue;
+            }
+
+            var (displayName, alternateName) = SplitLegacyCreatorTrackingDisplayName(
+                creator,
+                reader.GetString(1),
+                reader.GetString(2));
+            var lastCheckedOn = reader.GetString(3).Trim();
+            var followStatus = CalculateCreatorTrackingFollowStatus(
+                lastCheckedOn,
+                DeserializeCreatorTrackingActivityLinks(reader.GetString(4)),
+                today);
+            var categories = categoriesByCreator.TryGetValue(creator, out var registeredCategories)
+                ? registeredCategories.OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase).ToArray()
+                : [];
+
+            items.Add(new CreatorTrackingIndexItemDto(
+                creator,
+                string.IsNullOrWhiteSpace(displayName) ? creator : displayName,
+                alternateName,
+                categories,
+                lastCheckedOn,
+                followStatus.SinceLastCheckDays,
+                followStatus.FollowWarnFlg,
+                followStatus.FollowAlertFlg));
+        }
+
+        return items;
+    }
+
     public IReadOnlyList<CalendarSubscriptionEventDto> ListCalendarSubscriptionEvents()
     {
         EnsureCreated();
@@ -4533,7 +4681,7 @@ public sealed class GalleryDatabase
             foreach (var subscription in subscriptions)
             {
                 if (subscription.Wishlist ||
-                    !subscription.IsActive ||
+                    subscription.IsEnded ||
                     string.IsNullOrWhiteSpace(subscription.RenewalOn) ||
                     !TryParseCreatorTrackingDate(subscription.RenewalOn, out _))
                 {
@@ -4561,6 +4709,74 @@ public sealed class GalleryDatabase
             .ThenBy(entry => entry.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(entry => entry.Platform, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    public bool WasNotificationDelivered(string channel, string eventKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channel);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventKey);
+        EnsureCreated();
+
+        using var connection = OpenApplicationDataConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT 1
+            FROM notification_delivery_log
+            WHERE channel = $channel COLLATE NOCASE
+              AND event_key = $eventKey
+              AND status = 'success'
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$channel", channel.Trim());
+        command.Parameters.AddWithValue("$eventKey", eventKey.Trim());
+        return command.ExecuteScalar() is not null;
+    }
+
+    public void RecordNotificationDelivery(
+        string channel,
+        string eventKey,
+        bool succeeded,
+        string message,
+        string errorMessage = "")
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channel);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventKey);
+        EnsureCreated();
+
+        using var connection = OpenApplicationDataConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO notification_delivery_log (
+                channel,
+                event_key,
+                status,
+                message,
+                error_message,
+                attempted_at,
+                delivered_at
+            )
+            VALUES (
+                $channel,
+                $eventKey,
+                $status,
+                $message,
+                $errorMessage,
+                CURRENT_TIMESTAMP,
+                CASE WHEN $status = 'success' THEN CURRENT_TIMESTAMP ELSE NULL END
+            )
+            ON CONFLICT(channel, event_key) DO UPDATE SET
+                status = excluded.status,
+                message = excluded.message,
+                error_message = excluded.error_message,
+                attempted_at = excluded.attempted_at,
+                delivered_at = excluded.delivered_at;
+            """;
+        command.Parameters.AddWithValue("$channel", channel.Trim());
+        command.Parameters.AddWithValue("$eventKey", eventKey.Trim());
+        command.Parameters.AddWithValue("$status", succeeded ? "success" : "failed");
+        command.Parameters.AddWithValue("$message", message.Trim());
+        command.Parameters.AddWithValue("$errorMessage", errorMessage.Trim());
+        command.ExecuteNonQuery();
     }
 
     public async Task<CreatorTrackingDashboardDto> GetCreatorTrackingDashboardAsync(
@@ -4958,7 +5174,13 @@ public sealed class GalleryDatabase
         command.Parameters.AddWithValue("$lifetimeSpend", Math.Max(0, tracking.LifetimeSpend));
         command.Parameters.AddWithValue("$currency", primarySubscription?.Currency ?? NormalizeCreatorTrackingCurrency(tracking.Currency));
         command.Parameters.AddWithValue("$supportStartedOn", primarySubscription?.StartedOn ?? tracking.SupportStartedOn.Trim());
-        command.Parameters.AddWithValue("$supportEndedOn", primarySubscription?.RenewalOn ?? tracking.SupportEndedOn.Trim());
+        command.Parameters.AddWithValue(
+            "$supportEndedOn",
+            primarySubscription is null
+                ? tracking.SupportEndedOn.Trim()
+                : primarySubscription.IsEnded
+                    ? primarySubscription.EndedOn
+                    : primarySubscription.RenewalOn);
         command.Parameters.AddWithValue("$supportMemo", tracking.SupportMemo.Trim());
         command.ExecuteNonQuery();
     }
@@ -5141,37 +5363,8 @@ public sealed class GalleryDatabase
 
         foreach (var subscription in NormalizeCreatorTrackingSubscriptions(subscriptions))
         {
-            if (subscription.Wishlist ||
-                subscription.Amount <= 0 ||
-                !TryParseCreatorTrackingDate(subscription.StartedOn, out var startedOn) ||
-                startedOn > today)
+            foreach (var chargeDate in CreatorTrackingSubscriptionSchedule.ListChargeDates(subscription, today))
             {
-                continue;
-            }
-
-            var intervalMonths = subscription.BillingFrequency switch
-            {
-                "quarterly" => 3,
-                "semiannual" => 6,
-                "annual" => 12,
-                _ => 1
-            };
-            var lastChargeDate = today;
-            if (subscription.EndingPlanned)
-            {
-                lastChargeDate = TryParseCreatorTrackingDate(subscription.RenewalOn, out var renewalOn)
-                    ? DateOnly.FromDayNumber(Math.Max(startedOn.DayNumber, renewalOn.DayNumber - 1))
-                    : startedOn;
-            }
-
-            for (var cycle = 0; cycle < 1200; cycle++)
-            {
-                var chargeDate = AddCreatorTrackingBillingMonths(startedOn, cycle * intervalMonths);
-                if (chargeDate > lastChargeDate || chargeDate > today)
-                {
-                    break;
-                }
-
                 charges.Add(new CreatorTrackingCharge(chargeDate, subscription.Amount, subscription.Currency));
             }
         }
@@ -5508,15 +5701,6 @@ public sealed class GalleryDatabase
         return result;
     }
 
-    private static DateOnly AddCreatorTrackingBillingMonths(DateOnly date, int months)
-    {
-        var firstDay = new DateOnly(date.Year, date.Month, 1).AddMonths(months);
-        return new DateOnly(
-            firstDay.Year,
-            firstDay.Month,
-            Math.Min(date.Day, DateTime.DaysInMonth(firstDay.Year, firstDay.Month)));
-    }
-
     private static bool TryParseCreatorTrackingDate(string value, out DateOnly date)
     {
         return DateOnly.TryParseExact(
@@ -5574,6 +5758,28 @@ public sealed class GalleryDatabase
                 link.FollowUpEnabled,
                 Math.Clamp(link.FollowUpDays, 1, 99)))
             .ToArray();
+    }
+
+    private static (int SinceLastCheckDays, bool FollowWarnFlg, bool FollowAlertFlg)
+        CalculateCreatorTrackingFollowStatus(
+            string lastActivityOn,
+            IReadOnlyList<CreatorTrackingActivityLinkDto> activityLinks,
+            DateOnly today)
+    {
+        var sinceLastCheckDays = TryParseCreatorTrackingDate(lastActivityOn, out var lastActivityDate)
+            ? Math.Max(0, today.DayNumber - lastActivityDate.DayNumber)
+            : -1;
+        var followUpDays = activityLinks
+            .Where(link => link.FollowUpEnabled)
+            .Select(link => Math.Clamp(link.FollowUpDays, 1, 99))
+            .DefaultIfEmpty(0)
+            .Min();
+        var followWarnFlg = followUpDays > 0 && sinceLastCheckDays >= followUpDays;
+        var followAlertDays = followUpDays > 0
+            ? (int)Math.Ceiling(followUpDays * 1.5d)
+            : 0;
+        var followAlertFlg = followAlertDays > 0 && sinceLastCheckDays >= followAlertDays;
+        return (sinceLastCheckDays, followWarnFlg, followAlertFlg);
     }
 
     private static IReadOnlyList<CreatorTrackingStorageLocationDto> DeserializeCreatorTrackingStorageLocations(
@@ -5699,7 +5905,8 @@ public sealed class GalleryDatabase
                 !subscription.Wishlist && subscription.Reminder)
             {
                 Wishlist = subscription.Wishlist,
-                IsActive = !subscription.Wishlist && subscription.IsActive
+                IsEnded = !subscription.Wishlist && subscription.IsEnded,
+                EndedOn = subscription.EndedOn?.Trim() ?? string.Empty
             })
             .ToArray();
     }
@@ -6114,6 +6321,212 @@ public sealed class GalleryDatabase
         }
     }
 
+    public GalleryRandomPickResultDto PickRandomGalleryWorks(
+        string category,
+        IReadOnlyList<int> ratings,
+        IReadOnlyList<string> tags,
+        IReadOnlyList<string> creators,
+        IReadOnlyList<string> titles,
+        IReadOnlyList<string> characters,
+        bool applyCurrentFilters,
+        int pickCount,
+        int minimumRating,
+        int minimumImageCount,
+        int minimumDaysSinceAccess,
+        IReadOnlyList<string> requiredTags,
+        bool requireAllTags,
+        int maximumPerTitle)
+    {
+        if (!File.Exists(ExternalGalleryDatabasePath))
+        {
+            return new GalleryRandomPickResultDto([], 0, 0);
+        }
+
+        EnsureExternalGalleryGidSchema();
+
+        try
+        {
+            category = category.Trim();
+            if (string.IsNullOrWhiteSpace(category))
+            {
+                return new GalleryRandomPickResultDto([], 0, 0);
+            }
+
+            pickCount = Math.Clamp(pickCount, 1, 50);
+            minimumRating = Math.Clamp(minimumRating, 0, 6);
+            minimumImageCount = Math.Clamp(minimumImageCount, 0, 1_000_000);
+            minimumDaysSinceAccess = Math.Clamp(minimumDaysSinceAccess, 0, 36_500);
+            maximumPerTitle = Math.Clamp(maximumPerTitle, 0, 10);
+            requiredTags = requiredTags
+                .Select(value => value.Trim())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(50)
+                .ToArray();
+
+            var emptyRatings = Array.Empty<int>();
+            var emptyStrings = Array.Empty<string>();
+            var effectiveRatings = applyCurrentFilters ? ratings : emptyRatings;
+            var effectiveTags = applyCurrentFilters ? tags : emptyStrings;
+            var effectiveCreators = applyCurrentFilters ? creators : emptyStrings;
+            var effectiveTitles = applyCurrentFilters ? titles : emptyStrings;
+            var effectiveCharacters = applyCurrentFilters ? characters : emptyStrings;
+            var targetPaths = ListGalleryScanTargets(category)
+                .Select(target => NormalizeGalleryTargetPath(target.Path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var supportedExtensions = GetGalleryScanSettings(category).SupportedExtensions
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(NormalizeExtension)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = ExternalGalleryDatabasePath,
+                Mode = SqliteOpenMode.ReadOnly,
+                Cache = SqliteCacheMode.Shared
+            }.ConnectionString);
+            connection.Open();
+
+            var where = BuildGalleryWorkWhere(
+                effectiveRatings,
+                effectiveTags,
+                effectiveCreators,
+                effectiveTitles,
+                effectiveCharacters,
+                targetPaths,
+                supportedExtensions);
+            var additionalClauses = new List<string>
+            {
+                "COALESCE(i.rating, 0) >= $pickMinimumRating",
+                "COALESCE(i.image_count, 0) >= $pickMinimumImageCount"
+            };
+            if (requiredTags.Count > 0)
+            {
+                additionalClauses.Add(requireAllTags
+                    ? string.Join(" AND ", requiredTags.Select((_, index) =>
+                        $"EXISTS (SELECT 1 FROM item_tags AS pick_tag_map_{index} JOIN tags AS pick_tag_{index} ON pick_tag_{index}.tag_id = pick_tag_map_{index}.tag_id WHERE pick_tag_map_{index}.gid = i.gid AND pick_tag_{index}.tag = $pickTag{index})"))
+                    : $"EXISTS (SELECT 1 FROM item_tags AS pick_tag_map JOIN tags AS pick_tag ON pick_tag.tag_id = pick_tag_map.tag_id WHERE pick_tag_map.gid = i.gid AND pick_tag.tag IN ({string.Join(", ", requiredTags.Select((_, index) => $"$pickTag{index}"))}))");
+            }
+
+            var titleSelect = BuildGalleryWorkAttributeSelectExpression("title", "title");
+            var characterSelect = BuildGalleryWorkAttributeSelectExpression("character", "character");
+            using var command = connection.CreateCommand();
+            command.CommandText = $"""
+                SELECT
+                    i.gid AS id,
+                    i.current_path,
+                    COALESCE(i.source_zip_name, ''),
+                    COALESCE(i.category, ''),
+                    COALESCE(i.top_folder, ''),
+                    COALESCE(i.creator, ''),
+                    {titleSelect},
+                    {characterSelect},
+                    COALESCE(i.rating, 0),
+                    COALESCE(i.image_count, 0),
+                    i.duration_seconds,
+                    COALESCE(i.last_access_time, ''),
+                    COALESCE(i.last_write_time, ''),
+                    COALESCE(group_concat(t.tag, '|'), '') AS tags
+                FROM items AS i
+                LEFT JOIN item_tags AS it ON it.gid = i.gid
+                LEFT JOIN tags AS t ON t.tag_id = it.tag_id
+                WHERE {where} AND {string.Join(" AND ", additionalClauses)}
+                GROUP BY i.gid;
+                """;
+            AddGalleryWorkParameters(
+                command,
+                category,
+                effectiveRatings,
+                effectiveTags,
+                effectiveCreators,
+                effectiveTitles,
+                effectiveCharacters,
+                targetPaths,
+                supportedExtensions);
+            command.Parameters.AddWithValue("$pickMinimumRating", minimumRating);
+            command.Parameters.AddWithValue("$pickMinimumImageCount", minimumImageCount);
+            for (var index = 0; index < requiredTags.Count; index++)
+            {
+                command.Parameters.AddWithValue($"$pickTag{index}", requiredTags[index]);
+            }
+
+            using var reader = command.ExecuteReader();
+            var candidates = new List<GalleryWorkDto>();
+            var accessCutoff = DateTime.Now.AddDays(-minimumDaysSinceAccess);
+            while (reader.Read())
+            {
+                var lastAccessTime = reader.GetString(11);
+                if (minimumDaysSinceAccess > 0 &&
+                    DateTime.TryParse(lastAccessTime, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var parsedAccess) &&
+                    parsedAccess > accessCutoff)
+                {
+                    continue;
+                }
+
+                candidates.Add(new GalleryWorkDto(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.GetString(4),
+                    reader.GetString(5),
+                    reader.GetString(6),
+                    reader.GetString(7),
+                    reader.GetInt32(8),
+                    reader.GetInt32(9),
+                    reader.IsDBNull(10) ? null : reader.GetDouble(10),
+                    lastAccessTime,
+                    reader.GetString(12),
+                    reader.GetString(13).Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)));
+            }
+
+            for (var index = candidates.Count - 1; index > 0; index--)
+            {
+                var swapIndex = Random.Shared.Next(index + 1);
+                (candidates[index], candidates[swapIndex]) = (candidates[swapIndex], candidates[index]);
+            }
+
+            var titleCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var selected = new List<GalleryWorkDto>(Math.Min(pickCount, candidates.Count));
+            foreach (var candidate in candidates)
+            {
+                var titleKeys = candidate.Title
+                    .Split(" / ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                if (maximumPerTitle > 0 &&
+                    titleKeys.Any(title => titleCounts.GetValueOrDefault(title) >= maximumPerTitle))
+                {
+                    continue;
+                }
+
+                selected.Add(candidate);
+                foreach (var title in titleKeys)
+                {
+                    titleCounts[title] = titleCounts.GetValueOrDefault(title) + 1;
+                }
+                if (selected.Count >= pickCount)
+                {
+                    break;
+                }
+            }
+
+            return new GalleryRandomPickResultDto(
+                selected,
+                candidates.Count,
+                selected.SelectMany(item => item.Title
+                        .Split(" / ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count());
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("Galleryのランダムピックを実行できませんでした。", ex);
+        }
+    }
+
     public GalleryWorkFiltersDto ListGalleryWorkFilters(
         string category,
         IReadOnlyList<int> ratings,
@@ -6287,19 +6700,7 @@ public sealed class GalleryDatabase
                 ListCreatorTrackingCharges(subscriptions, DeserializeCreatorTrackingPurchases(reader.GetString(7))),
                 DefaultCreatorTrackingDisplayCurrency,
                 exchangeRates);
-            var sinceLastCheckDays = TryParseCreatorTrackingDate(lastActivityOn, out var lastActivityDate)
-                ? Math.Max(0, today.DayNumber - lastActivityDate.DayNumber)
-                : -1;
-            var followUpDays = activityLinks
-                .Where(link => link.FollowUpEnabled)
-                .Select(link => Math.Clamp(link.FollowUpDays, 1, 99))
-                .DefaultIfEmpty(0)
-                .Min();
-            var followWarnFlg = followUpDays > 0 && sinceLastCheckDays >= followUpDays;
-            var followAlertDays = followUpDays > 0
-                ? (int)Math.Ceiling(followUpDays * 1.5d)
-                : 0;
-            var followAlertFlg = followAlertDays > 0 && sinceLastCheckDays >= followAlertDays;
+            var followStatus = CalculateCreatorTrackingFollowStatus(lastActivityOn, activityLinks, today);
             var sites = activityLinks
                 .Select(link => link.Label.Trim())
                 .Where(label => !string.IsNullOrWhiteSpace(label))
@@ -6307,9 +6708,9 @@ public sealed class GalleryDatabase
                 .ToArray();
             facts[creator] = new CreatorTrackingSummaryFacts(
                 lastActivityOn.Trim(),
-                sinceLastCheckDays,
-                followWarnFlg,
-                followAlertFlg,
+                followStatus.SinceLastCheckDays,
+                followStatus.FollowWarnFlg,
+                followStatus.FollowAlertFlg,
                 CalculateCreatorTrackingDays(lastCheckedOn, lastActivityOn),
                 spend.Total,
                 sites,
@@ -6934,6 +7335,29 @@ public sealed class GalleryDatabase
         {
             throw new InvalidOperationException("User Metricsを集計できませんでした。", ex);
         }
+    }
+
+    public UserMetricsRegressionResultDto? GetUserMetricsRegressionResult(string category)
+    {
+        var service = new UserMetricsRegressionService(
+            ExternalGalleryDatabasePath,
+            _databasePath,
+            GetCreatorTrackingMetricSettings());
+        return service.Read(category);
+    }
+
+    public UserMetricsRegressionResultDto RunUserMetricsRegression(string category)
+    {
+        if (!File.Exists(ExternalGalleryDatabasePath))
+        {
+            throw new FileNotFoundException("Gallery SQLiteDBファイルが見つかりません。", ExternalGalleryDatabasePath);
+        }
+        EnsureExternalApplicationDataSchema();
+        var service = new UserMetricsRegressionService(
+            ExternalGalleryDatabasePath,
+            _databasePath,
+            GetCreatorTrackingMetricSettings());
+        return service.Analyze(category);
     }
 
     private static UserMetricsDashboardDto CreateEmptyUserMetricsDashboard(string category) =>

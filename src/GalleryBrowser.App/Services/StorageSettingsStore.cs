@@ -12,6 +12,9 @@ internal sealed class StorageSettingsStore
     private const string PCloudCredentialTarget = "GalleryBrowser/pCloudOAuthAccessToken";
     private const string GoogleCalendarClientSecretCredentialTarget = "GalleryBrowser/GoogleCalendarClientSecret";
     private const string GoogleCalendarRefreshTokenCredentialTarget = "GalleryBrowser/GoogleCalendarRefreshToken";
+    private const string DiscordWebhookCredentialTarget = "GalleryBrowser/DiscordWebhookUrl";
+    private const string LineChannelAccessTokenCredentialTarget = "GalleryBrowser/LineChannelAccessToken";
+    private const string LineRecipientUserIdCredentialTarget = "GalleryBrowser/LineRecipientUserId";
     private const string DefaultPCloudApiHost = "eapi.pcloud.com";
     private const string DefaultPCloudTargetFolder = "";
     private const string DefaultPCloudArchiveRootFolder = "";
@@ -109,6 +112,72 @@ internal sealed class StorageSettingsStore
             if (changed)
             {
                 WriteUnsafe(settings with { DatabaseScanSchedules = schedules });
+            }
+        }
+    }
+
+    public IReadOnlyList<NotificationScheduleDto> GetNotificationSchedules()
+    {
+        lock (_sync)
+        {
+            return NormalizeNotificationSchedules(ReadUnsafe().NotificationSchedules)
+                .Select(ToNotificationScheduleDto)
+                .ToArray();
+        }
+    }
+
+    public void SaveNotificationSchedules(IEnumerable<NotificationScheduleDto> schedules)
+    {
+        lock (_sync)
+        {
+            var settings = ReadUnsafe();
+            var existingSchedules = NormalizeNotificationSchedules(settings.NotificationSchedules)
+                .GroupBy(schedule => schedule.Id, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+            var stored = NormalizeNotificationSchedules(schedules.Select(schedule => new NotificationScheduleStorage
+            {
+                Id = schedule.Id,
+                Time = schedule.Time,
+                LastStartedAt = existingSchedules.TryGetValue(schedule.Id, out var existing)
+                    ? existing.LastStartedAt
+                    : schedule.LastStartedAt
+            }));
+            WriteUnsafe(settings with { NotificationSchedules = stored });
+        }
+    }
+
+    public void MarkNotificationSchedulesStarted(
+        IEnumerable<string> scheduleIds,
+        DateTimeOffset startedAt)
+    {
+        var requestedIds = scheduleIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .ToHashSet(StringComparer.Ordinal);
+        if (requestedIds.Count == 0)
+        {
+            return;
+        }
+
+        lock (_sync)
+        {
+            var settings = ReadUnsafe();
+            var schedules = NormalizeNotificationSchedules(settings.NotificationSchedules);
+            var changed = false;
+            for (var index = 0; index < schedules.Length; index++)
+            {
+                if (!requestedIds.Contains(schedules[index].Id))
+                {
+                    continue;
+                }
+
+                schedules[index] = schedules[index] with { LastStartedAt = startedAt };
+                changed = true;
+            }
+
+            if (changed)
+            {
+                WriteUnsafe(settings with { NotificationSchedules = schedules });
             }
         }
     }
@@ -454,6 +523,173 @@ internal sealed class StorageSettingsStore
         }
     }
 
+    public DiscordNotificationSettingsDto GetDiscordNotificationSettings()
+    {
+        lock (_sync)
+        {
+            var settings = ReadUnsafe().DiscordNotifications ?? new DiscordNotificationStorageSettings();
+            return new DiscordNotificationSettingsDto(
+                settings.Enabled,
+                !string.IsNullOrWhiteSpace(WindowsCredentialStore.Read(DiscordWebhookCredentialTarget)),
+                settings.NotifyCreatorFollowAlert,
+                settings.NotifySubscriptionEnding,
+                settings.NotifySubscriptionReminder,
+                settings.NotifyScheduledScanStarted,
+                settings.NotifyScheduledScanCompleted);
+        }
+    }
+
+    public string GetDiscordWebhookUrl()
+    {
+        lock (_sync)
+        {
+            return WindowsCredentialStore.Read(DiscordWebhookCredentialTarget)?.Trim() ?? string.Empty;
+        }
+    }
+
+    public void SaveDiscordNotificationConfiguration(
+        bool enabled,
+        string? webhookUrl,
+        bool notifyCreatorFollowAlert,
+        bool notifySubscriptionEnding,
+        bool notifySubscriptionReminder,
+        bool notifyScheduledScanStarted,
+        bool notifyScheduledScanCompleted)
+    {
+        lock (_sync)
+        {
+            if (!string.IsNullOrWhiteSpace(webhookUrl))
+            {
+                WindowsCredentialStore.Write(DiscordWebhookCredentialTarget, webhookUrl.Trim());
+            }
+
+            if (enabled && string.IsNullOrWhiteSpace(WindowsCredentialStore.Read(DiscordWebhookCredentialTarget)))
+            {
+                throw new InvalidOperationException("Discord通知を有効にするにはWebhook URLを登録してください。");
+            }
+
+            var settings = ReadUnsafe();
+            WriteUnsafe(settings with
+            {
+                DiscordNotifications = new DiscordNotificationStorageSettings
+                {
+                    Enabled = enabled,
+                    NotifyCreatorFollowAlert = notifyCreatorFollowAlert,
+                    NotifySubscriptionEnding = notifySubscriptionEnding,
+                    NotifySubscriptionReminder = notifySubscriptionReminder,
+                    NotifyScheduledScanStarted = notifyScheduledScanStarted,
+                    NotifyScheduledScanCompleted = notifyScheduledScanCompleted
+                }
+            });
+        }
+    }
+
+    public void DisconnectDiscordNotifications()
+    {
+        lock (_sync)
+        {
+            WindowsCredentialStore.Delete(DiscordWebhookCredentialTarget);
+            var settings = ReadUnsafe();
+            var current = settings.DiscordNotifications ?? new DiscordNotificationStorageSettings();
+            WriteUnsafe(settings with
+            {
+                DiscordNotifications = current with { Enabled = false }
+            });
+        }
+    }
+
+    public LineNotificationSettingsDto GetLineNotificationSettings()
+    {
+        lock (_sync)
+        {
+            var settings = ReadUnsafe().LineNotifications ?? new LineNotificationStorageSettings();
+            return new LineNotificationSettingsDto(
+                settings.Enabled,
+                !string.IsNullOrWhiteSpace(WindowsCredentialStore.Read(LineChannelAccessTokenCredentialTarget)),
+                !string.IsNullOrWhiteSpace(WindowsCredentialStore.Read(LineRecipientUserIdCredentialTarget)),
+                settings.NotifyCreatorFollowAlert,
+                settings.NotifySubscriptionEnding,
+                settings.NotifySubscriptionReminder,
+                settings.NotifyScheduledScanStarted,
+                settings.NotifyScheduledScanCompleted);
+        }
+    }
+
+    public (string ChannelAccessToken, string RecipientUserId) GetLineCredentials()
+    {
+        lock (_sync)
+        {
+            return (
+                WindowsCredentialStore.Read(LineChannelAccessTokenCredentialTarget)?.Trim() ?? string.Empty,
+                WindowsCredentialStore.Read(LineRecipientUserIdCredentialTarget)?.Trim() ?? string.Empty);
+        }
+    }
+
+    public void SaveLineNotificationConfiguration(
+        bool enabled,
+        string? channelAccessToken,
+        string? recipientUserId,
+        bool notifyCreatorFollowAlert,
+        bool notifySubscriptionEnding,
+        bool notifySubscriptionReminder,
+        bool notifyScheduledScanStarted,
+        bool notifyScheduledScanCompleted)
+    {
+        lock (_sync)
+        {
+            if (!string.IsNullOrWhiteSpace(channelAccessToken))
+            {
+                WindowsCredentialStore.Write(LineChannelAccessTokenCredentialTarget, channelAccessToken.Trim());
+            }
+            if (!string.IsNullOrWhiteSpace(recipientUserId))
+            {
+                WindowsCredentialStore.Write(LineRecipientUserIdCredentialTarget, recipientUserId.Trim());
+            }
+
+            if (enabled)
+            {
+                var credentials = GetLineCredentials();
+                if (string.IsNullOrWhiteSpace(credentials.ChannelAccessToken))
+                {
+                    throw new InvalidOperationException("LINE通知を有効にするにはチャネルアクセストークンを登録してください。");
+                }
+                if (string.IsNullOrWhiteSpace(credentials.RecipientUserId))
+                {
+                    throw new InvalidOperationException("LINE通知を有効にするには受信先User IDを登録してください。");
+                }
+            }
+
+            var settings = ReadUnsafe();
+            WriteUnsafe(settings with
+            {
+                LineNotifications = new LineNotificationStorageSettings
+                {
+                    Enabled = enabled,
+                    NotifyCreatorFollowAlert = notifyCreatorFollowAlert,
+                    NotifySubscriptionEnding = notifySubscriptionEnding,
+                    NotifySubscriptionReminder = notifySubscriptionReminder,
+                    NotifyScheduledScanStarted = notifyScheduledScanStarted,
+                    NotifyScheduledScanCompleted = notifyScheduledScanCompleted
+                }
+            });
+        }
+    }
+
+    public void DisconnectLineNotifications()
+    {
+        lock (_sync)
+        {
+            WindowsCredentialStore.Delete(LineChannelAccessTokenCredentialTarget);
+            WindowsCredentialStore.Delete(LineRecipientUserIdCredentialTarget);
+            var settings = ReadUnsafe();
+            var current = settings.LineNotifications ?? new LineNotificationStorageSettings();
+            WriteUnsafe(settings with
+            {
+                LineNotifications = current with { Enabled = false }
+            });
+        }
+    }
+
     private static string NormalizeGoogleCalendarId(string? calendarId) =>
         string.IsNullOrWhiteSpace(calendarId) ? "primary" : calendarId.Trim();
 
@@ -556,6 +792,48 @@ internal sealed class StorageSettingsStore
     private static DatabaseScanScheduleDto ToDatabaseScanScheduleDto(DatabaseScanScheduleStorage schedule) =>
         new(schedule.Id, schedule.Weekdays, schedule.Time, schedule.Categories, schedule.LastStartedAt);
 
+    private static NotificationScheduleStorage[] NormalizeNotificationSchedules(
+        IEnumerable<NotificationScheduleStorage>? schedules)
+    {
+        var normalized = new List<NotificationScheduleStorage>();
+        var registeredTimes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var schedule in schedules ?? [])
+        {
+            if (normalized.Count >= 32)
+            {
+                break;
+            }
+
+            if (!TimeOnly.TryParseExact(
+                    schedule.Time?.Trim(),
+                    "HH:mm",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out var parsedTime))
+            {
+                throw new ArgumentException("通知スケジュールの時刻はHH:mm形式で指定してください。");
+            }
+
+            var time = parsedTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+            if (!registeredTimes.Add(time))
+            {
+                continue;
+            }
+
+            normalized.Add(schedule with
+            {
+                Id = string.IsNullOrWhiteSpace(schedule.Id)
+                    ? Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)
+                    : schedule.Id.Trim(),
+                Time = time
+            });
+        }
+        return normalized.ToArray();
+    }
+
+    private static NotificationScheduleDto ToNotificationScheduleDto(NotificationScheduleStorage schedule) =>
+        new(schedule.Id, schedule.Time, schedule.LastStartedAt);
+
     private static DatabaseScanRunHistoryStorage[] NormalizeDatabaseScanRunHistory(
         IEnumerable<DatabaseScanRunHistoryStorage>? history) =>
         (history ?? [])
@@ -623,6 +901,12 @@ internal sealed class StorageSettingsStore
         public string CacheDatabasePath { get; init; } = string.Empty;
         public PCloudStorageSettings? PCloud { get; init; }
         public GoogleCalendarStorageSettings? GoogleCalendar { get; init; }
+        public DiscordNotificationStorageSettings? DiscordNotifications { get; init; }
+        public LineNotificationStorageSettings? LineNotifications { get; init; }
+        public NotificationScheduleStorage[] NotificationSchedules { get; init; } =
+        [
+            new() { Id = "default-0900", Time = "09:00" }
+        ];
         public DatabaseScanScheduleStorage[] DatabaseScanSchedules { get; init; } = [];
         public DatabaseScanRunHistoryStorage[] DatabaseScanRunHistory { get; init; } = [];
 
@@ -680,6 +964,42 @@ internal sealed class StorageSettingsStore
         public string CalendarId { get; init; } = "primary";
         public DateTimeOffset? LastSyncedAt { get; init; }
         public string LastSyncError { get; init; } = string.Empty;
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }
+    }
+
+    private sealed record DiscordNotificationStorageSettings
+    {
+        public bool Enabled { get; init; }
+        public bool NotifyCreatorFollowAlert { get; init; } = true;
+        public bool NotifySubscriptionEnding { get; init; } = true;
+        public bool NotifySubscriptionReminder { get; init; } = true;
+        public bool NotifyScheduledScanStarted { get; init; } = true;
+        public bool NotifyScheduledScanCompleted { get; init; } = true;
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }
+    }
+
+    private sealed record LineNotificationStorageSettings
+    {
+        public bool Enabled { get; init; }
+        public bool NotifyCreatorFollowAlert { get; init; } = true;
+        public bool NotifySubscriptionEnding { get; init; } = true;
+        public bool NotifySubscriptionReminder { get; init; } = true;
+        public bool NotifyScheduledScanStarted { get; init; } = true;
+        public bool NotifyScheduledScanCompleted { get; init; } = true;
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }
+    }
+
+    private sealed record NotificationScheduleStorage
+    {
+        public string Id { get; init; } = string.Empty;
+        public string Time { get; init; } = "09:00";
+        public DateTimeOffset? LastStartedAt { get; init; }
 
         [JsonExtensionData]
         public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }

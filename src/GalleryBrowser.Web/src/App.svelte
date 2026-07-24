@@ -5,10 +5,12 @@
   import {
     Archive,
     AlarmClock,
+    BellRing,
     ArrowRight,
     ArrowUp,
     Bookmark,
     BookOpenText,
+    BrainCircuit,
     CalendarCheck,
     Check,
     ChartNoAxesCombined,
@@ -22,6 +24,7 @@
     Code2,
     Copy,
     Coins,
+    Dices,
     Download,
     ExternalLink,
     File,
@@ -36,9 +39,11 @@
     Keyboard,
     Layers3,
     LayoutGrid,
+    List,
     ListFilter,
     Link,
     Languages,
+    MessageCircle,
     Minus,
     OctagonAlert,
     PanelLeft,
@@ -46,7 +51,9 @@
     Pencil,
     Pin,
     Plus,
+    Play,
     RefreshCw,
+    RotateCcw,
     Search,
     Settings,
     Sparkles,
@@ -76,8 +83,9 @@
   type ActiveView = 'library' | 'bookmarks' | 'creators' | 'creatorTracking' | 'explorer' | 'filters' | 'tags' | 'userMetrics' | 'board' | 'calendar' | 'settings' | 'userGuide';
   type BookmarkableView = 'library' | 'explorer' | 'creators' | 'creatorTracking';
   type StickyNoteView = BookmarkableView | 'userMetrics';
-  type SettingsSection = 'programs' | 'gestures' | 'keyboardShortcuts' | 'calendar' | 'gid' | 'theme' | 'language' | 'tabCandidates' | 'galleryTargets' | 'creatorTracking' | 'winrar' | 'ffmpeg' | 'nconvert' | 'thumbnailCache' | 'sqliteDatabase' | 'searchEngine';
-  type UserGuideSectionId = 'overview' | 'firstSteps' | 'gallery' | 'explorer' | 'organize' | 'creators' | 'bookmarks' | 'metrics' | 'settings' | 'data' | 'shortcuts' | 'troubleshooting' | 'acknowledgements';
+  type SettingsSection = 'programs' | 'gestures' | 'keyboardShortcuts' | 'calendar' | 'notifications' | 'gid' | 'theme' | 'language' | 'tabCandidates' | 'galleryTargets' | 'creatorTracking' | 'winrar' | 'ffmpeg' | 'nconvert' | 'thumbnailCache' | 'sqliteDatabase' | 'searchEngine';
+  type NotificationTestEvent = 'creatorFollowWarning' | 'creatorFollowAlert' | 'subscriptionEnding' | 'subscriptionReminder' | 'scheduledScanStarted' | 'scheduledScanCompleted';
+  type UserGuideSectionId = 'overview' | 'firstSteps' | 'gallery' | 'explorer' | 'organize' | 'creators' | 'bookmarks' | 'metrics' | 'calendar' | 'notifications' | 'settings' | 'data' | 'shortcuts' | 'troubleshooting' | 'acknowledgements';
   type ColorTheme = 'light' | 'dark';
   type ThemeSettings = {
     theme: ColorTheme;
@@ -97,6 +105,12 @@
     weekdays: number[];
     time: string;
     categories: string[];
+    lastStartedAt?: string | null;
+  };
+
+  type NotificationSchedule = {
+    id: string;
+    time: string;
     lastStartedAt?: string | null;
   };
 
@@ -126,6 +140,34 @@
     lastAccessTime: string;
     lastWriteTime: string;
     tags: string[];
+  };
+
+  type GalleryRandomPickSettings = {
+    pickCount: number;
+    minimumRating: number;
+    minimumImageCount: number;
+    minimumDaysSinceAccess: number;
+    maximumPerTitle: number;
+    requiredTags: string[];
+    tagMatchMode: 'any' | 'all';
+    applyCurrentFilters: boolean;
+  };
+
+  const defaultGalleryRandomPickSettings: GalleryRandomPickSettings = {
+    pickCount: 12,
+    minimumRating: 1,
+    minimumImageCount: 0,
+    minimumDaysSinceAccess: 30,
+    maximumPerTitle: 1,
+    requiredTags: [],
+    tagMatchMode: 'any',
+    applyCurrentFilters: false
+  };
+
+  type GalleryRandomPickSummary = {
+    selectedCount: number;
+    populationCount: number;
+    distinctTitleCount: number;
   };
 
   type GalleryReverseFilterMode = 'title' | 'character';
@@ -232,6 +274,45 @@
     targetTag: string;
   };
 
+  type UserMetricsRegressionFactor = {
+    key: string;
+    label: string;
+    group: string;
+    coefficient: number;
+    oddsRatio: number;
+    standardError: number | null;
+    pValue: number | null;
+    supportCount: number;
+    direction: 'positive' | 'negative';
+  };
+  type UserMetricsRegressionModel = {
+    kind: 'purchase' | 'rating';
+    label: string;
+    status: 'completed' | 'insufficientData';
+    message: string;
+    entityCount: number;
+    positiveObservationCount: number;
+    negativeObservationCount: number;
+    candidateFeatureCount: number;
+    usedFeatureCount: number;
+    areaUnderCurve: number;
+    pseudoRSquared: number;
+    akaikeInformationCriterion: number | null;
+    nullAkaikeInformationCriterion: number | null;
+    deltaAkaikeInformationCriterion: number | null;
+    effectiveParameterCount: number | null;
+    maximumVarianceInflationFactor: number | null;
+    removedCollinearFeatureCount: number;
+    factors: UserMetricsRegressionFactor[];
+    notes: string[];
+  };
+  type UserMetricsRegressionResult = {
+    category: string;
+    generatedAt: string;
+    purchase: UserMetricsRegressionModel;
+    rating: UserMetricsRegressionModel;
+  };
+
   type GalleryCreatorCoreFilterOption = {
     value: string;
     count: number;
@@ -266,7 +347,8 @@
     endingPlanned: boolean;
     reminder: boolean;
     wishlist: boolean;
-    isActive: boolean;
+    isEnded: boolean;
+    endedOn: string;
   };
 
   type CreatorTrackingPurchase = {
@@ -402,6 +484,19 @@
     billingView: 'subscriptions' | 'purchases';
     archiveScale: 'week' | 'month' | 'year';
     requestId: string;
+  };
+
+  type CreatorTrackingIndexSortKey = 'creator' | 'lastChecked' | 'alert';
+  type CreatorTrackingIndexSortDirection = 'asc' | 'desc';
+  type CreatorTrackingIndexItem = {
+    creator: string;
+    displayName: string;
+    alternateName: string;
+    categories: string[];
+    lastCheckedOn: string;
+    sinceLastCheckDays: number;
+    followWarnFlg: boolean;
+    followAlertFlg: boolean;
   };
 
   type CreatorTracking = {
@@ -702,6 +797,8 @@
     clickExtensions: string;
     doubleClickExtensions: string;
     contextMenuExtensions: string;
+    showInGalleryContextMenu: boolean;
+    showInExplorerContextMenu: boolean;
   };
 
   type WinRarSettings = {
@@ -762,6 +859,7 @@
     | 'accessed'
     | 'modified'
     | 'size'
+    | 'averageImageSize'
     | 'resolution'
     | 'ratio'
     | 'width'
@@ -800,6 +898,8 @@
     | 'createExplorerFolder'
     | 'selectNextTab'
     | 'selectPreviousTab'
+    | 'scrollExplorerLeft'
+    | 'scrollExplorerRight'
     | 'copyExplorerSelection'
     | 'cutExplorerSelection'
     | 'pasteExplorerSelection'
@@ -824,6 +924,7 @@
     { id: 'accessed', label: 'アクセス日時', width: '165px' },
     { id: 'modified', label: '更新日時', width: '165px', sort: 'modified' },
     { id: 'size', label: 'サイズ', width: '100px', sort: 'size' },
+    { id: 'averageImageSize', label: '平均画像サイズ', width: '120px' },
     { id: 'resolution', label: '解像度', width: '105px' },
     { id: 'ratio', label: '比', width: '72px' },
     { id: 'width', label: '幅', width: '70px' },
@@ -849,6 +950,8 @@
     { command: 'navigateBack', label: '前の画面へ戻る', scope: 'アプリ全体' },
     { command: 'navigateExplorerParent', label: '親フォルダへ移動', scope: 'Explorer' },
     { command: 'createExplorerFolder', label: '新しいフォルダを作成', scope: 'Explorer' },
+    { command: 'scrollExplorerLeft', label: '詳細一覧を左へスクロール', scope: 'Explorer' },
+    { command: 'scrollExplorerRight', label: '詳細一覧を右へスクロール', scope: 'Explorer' },
     { command: 'copyExplorerSelection', label: '選択項目をコピー', scope: 'Explorer' },
     { command: 'cutExplorerSelection', label: '選択項目を切り取り', scope: 'Explorer' },
     { command: 'pasteExplorerSelection', label: '貼り付け', scope: 'Explorer' },
@@ -863,6 +966,8 @@
     createExplorerFolder: 'Ctrl+N',
     selectNextTab: 'Ctrl+Tab',
     selectPreviousTab: 'Ctrl+Shift+Tab',
+    scrollExplorerLeft: 'Ctrl+Alt+ArrowLeft',
+    scrollExplorerRight: 'Ctrl+Alt+ArrowRight',
     copyExplorerSelection: 'Ctrl+C',
     cutExplorerSelection: 'Ctrl+X',
     pasteExplorerSelection: 'Ctrl+V',
@@ -978,6 +1083,7 @@
     galleryTargets: { title: '区分別の設定', description: '区分ごとの走査対象、使用フィルタ、カード表示とサムネイルの調整を設定します' },
     creatorTracking: { title: 'Creator Tracking', description: '評価・集計・活動場所・表示に関する既定値を設定します' },
     calendar: { title: 'Calendar', description: 'サブスク更新予定の表示とGoogleカレンダー連携用の出力を設定します' },
+    notifications: { title: '通知', description: 'Discord・LINEへ送るCreator、サブスク、定期更新の通知を設定します' },
     winrar: { title: 'WinRAR設定', description: 'WinRAR の実行ファイルと右クリックメニューで扱う書庫形式を設定します' },
     ffmpeg: { title: 'FFmpeg設定', description: '動画サムネイル生成に使用する FFmpeg の実行ファイルと対応形式を設定します' },
     nconvert: { title: 'NConvert設定', description: 'ZIP内の対応画像を標準画質のJPG（JPEGli）へ変換する実行ファイルと一時フォルダを設定します' },
@@ -985,6 +1091,15 @@
     sqliteDatabase: { title: 'データベース', description: '本体DB、キャッシュDB、走査スケジュール、クラウドバックアップを管理します' },
     searchEngine: { title: '検索エンジン', description: 'フィルタエディタで標準名を調べる検索方法を設定します' }
   };
+
+  const notificationTestEvents: Array<{ value: NotificationTestEvent; label: string }> = [
+    { value: 'creatorFollowWarning', label: 'Creator確認（警告）' },
+    { value: 'creatorFollowAlert', label: 'Creator確認（アラート）' },
+    { value: 'subscriptionEnding', label: 'サブスク解除予定' },
+    { value: 'subscriptionReminder', label: 'サブスク更新アラート' },
+    { value: 'scheduledScanStarted', label: '定期走査開始' },
+    { value: 'scheduledScanCompleted', label: '定期走査完了' }
+  ];
 
   const userGuideSections: Array<{ id: UserGuideSectionId; label: string; number: string }> = [
     { id: 'overview', label: 'はじめに', number: '01' },
@@ -995,11 +1110,13 @@
     { id: 'creators', label: 'Creators・Tracking', number: '06' },
     { id: 'bookmarks', label: 'Bookmark・付箋', number: '07' },
     { id: 'metrics', label: 'User Metrics', number: '08' },
-    { id: 'settings', label: 'Settings', number: '09' },
-    { id: 'data', label: 'DB・キャッシュ・バックアップ', number: '10' },
-    { id: 'shortcuts', label: 'ショートカット', number: '11' },
-    { id: 'troubleshooting', label: '困ったときは', number: '12' },
-    { id: 'acknowledgements', label: '謝辞', number: '13' }
+    { id: 'calendar', label: 'Calendar', number: '09' },
+    { id: 'notifications', label: '通知', number: '10' },
+    { id: 'settings', label: 'Settings', number: '11' },
+    { id: 'data', label: 'DB・キャッシュ・バックアップ', number: '12' },
+    { id: 'shortcuts', label: 'ショートカット', number: '13' },
+    { id: 'troubleshooting', label: '困ったときは', number: '14' },
+    { id: 'acknowledgements', label: '謝辞', number: '15' }
   ];
 
   const mouseGestureCommands: Array<{ value: MouseGestureCommand; label: string }> = [
@@ -1163,12 +1280,20 @@
     version: number;
     tabs: Array<{ path: string; label: string }>;
     activeIndex: number;
-    split: { leftIndex: number; rightIndex: number; focusedPane: 'left' | 'right' } | null;
+    split: {
+      leftIndex: number;
+      rightIndex: number;
+      focusedPane: 'left' | 'right';
+      leftViewMode?: ExplorerPaneViewMode;
+      rightViewMode?: ExplorerPaneViewMode;
+      ratio?: number;
+    } | null;
     query: string;
     splitQuery: string;
     sort: string;
     sortDirection: 'asc' | 'desc';
     cardColumns: number;
+    detailOnly?: boolean;
     tabScrollPositions?: Array<{ index: number; gridTop: number; detailTop: number }>;
     splitScroll?: { leftTop: number; rightTop: number };
     stickyNotes?: StickyNoteItem[];
@@ -1184,7 +1309,24 @@
       archiveScale: 'week' | 'month' | 'year';
     }>;
     activeIndex: number;
+    indexOpen?: boolean;
+    indexActive?: boolean;
+    indexSection?: string;
+    indexSortKey?: CreatorTrackingIndexSortKey;
+    indexSortDirection?: CreatorTrackingIndexSortDirection;
     stickyNotes?: StickyNoteItem[];
+  };
+
+  type ExplorerPaneViewMode = 'thumbnail' | 'details';
+
+  type ExplorerSplitSessionState = {
+    enabled: boolean;
+    leftPath?: string;
+    rightPath?: string;
+    focusedPane?: 'left' | 'right';
+    leftViewMode?: ExplorerPaneViewMode;
+    rightViewMode?: ExplorerPaneViewMode;
+    ratio?: number;
   };
 
   type ExplorerSplit = {
@@ -1196,6 +1338,8 @@
     rightSelectedPaths: string[];
     rightIsLoading: boolean;
     rightIsTruncated: boolean;
+    leftViewMode: ExplorerPaneViewMode;
+    rightViewMode: ExplorerPaneViewMode;
   };
 
   type PendingMoveRefresh = {
@@ -1450,6 +1594,11 @@
   let userMetricsError = '';
   let userMetricsRequestId = '';
   let nextUserMetricsRequestId = 1;
+  let userMetricsRegressionResult: UserMetricsRegressionResult | null = null;
+  let userMetricsRegressionIsLoading = false;
+  let userMetricsRegressionRunPending = false;
+  let userMetricsRegressionRequestId = '';
+  let nextUserMetricsRegressionRequestId = 1;
   let calendarSettings: CalendarSettings = { weekStartDay: 0 };
   let calendarWeekStartDraft = 0;
   let calendarEvents: CalendarSubscriptionEvent[] = [];
@@ -1491,6 +1640,16 @@
   let creatorTrackingRefreshRequestIds = new Set<string>();
   let creatorTrackingTabs: CreatorTrackingTab[] = [];
   let activeCreatorTrackingTabId = '';
+  const creatorTrackingIndexTabId = 'creator-tracking-index';
+  let creatorTrackingIndexOpen = false;
+  let creatorTrackingIndexItems: CreatorTrackingIndexItem[] = [];
+  let creatorTrackingIndexIsLoading = false;
+  let creatorTrackingIndexError = '';
+  let creatorTrackingIndexRequestId = '';
+  let creatorTrackingIndexPendingSaveRequestId = '';
+  let creatorTrackingIndexSection = 'all';
+  let creatorTrackingIndexSortKey: CreatorTrackingIndexSortKey = 'creator';
+  let creatorTrackingIndexSortDirection: CreatorTrackingIndexSortDirection = 'asc';
   let creatorTrackingNewDialogOpen = false;
   let creatorTrackingNewCreator = '';
   let creatorTrackingNewCategory = galleryCreatorSummarySection;
@@ -1641,6 +1800,16 @@
   let galleryIsLoading = false;
   let galleryRequestId = '';
   let nextGalleryRequestId = 1;
+  let galleryRandomPickDialogOpen = false;
+  let galleryRandomPickIsLoading = false;
+  let galleryRandomPickRequestId = '';
+  let galleryRandomPickTagQuery = '';
+  let galleryRandomPickSummary: GalleryRandomPickSummary | null = null;
+  let galleryRandomPickSettings: GalleryRandomPickSettings = {
+    ...defaultGalleryRandomPickSettings,
+    requiredTags: []
+  };
+  let galleryRandomPickSettingsSaveTimer: ReturnType<typeof setTimeout> | null = null;
   const requestedGalleryThumbnailIds = new Set<string>();
   const unavailableGalleryThumbnailIds = new Set<string>();
   const pendingGalleryThumbnailRequests = new Map<string, { id: string; path: string; category: string }>();
@@ -1756,6 +1925,35 @@
   let pCloudBusy = false;
   let pCloudStatus = '';
   let pCloudAutoBackupToastMessage = '';
+  let discordNotificationEnabled = false;
+  let discordWebhookUrlDraft = '';
+  let discordHasWebhookUrl = false;
+  let discordNotifyCreatorFollowAlert = true;
+  let discordNotifySubscriptionEnding = true;
+  let discordNotifySubscriptionReminder = true;
+  let discordNotifyScheduledScanStarted = true;
+  let discordNotifyScheduledScanCompleted = true;
+  let discordNotificationBusy = false;
+  let discordNotificationStatus = '';
+  let notificationSchedules: NotificationSchedule[] = [];
+  let notificationScheduleSaving = false;
+  let notificationScheduleStatus = '';
+  let lineNotificationEnabled = false;
+  let lineChannelAccessTokenDraft = '';
+  let lineRecipientUserIdDraft = '';
+  let lineHasChannelAccessToken = false;
+  let lineHasRecipientUserId = false;
+  let lineNotifyCreatorFollowAlert = true;
+  let lineNotifySubscriptionEnding = true;
+  let lineNotifySubscriptionReminder = true;
+  let lineNotifyScheduledScanStarted = true;
+  let lineNotifyScheduledScanCompleted = true;
+  let lineNotificationBusy = false;
+  let lineNotificationStatus = '';
+  let lineQuotaType = '';
+  let lineQuotaLimit: number | null = null;
+  let lineQuotaConsumption: number | null = null;
+  let lineQuotaCheckedAt = '';
   let draggedProgramRule: ExternalAppRule | null = null;
   let programId: number | null = null;
   let programName = '';
@@ -1765,6 +1963,8 @@
   let programClickExtensions = 'zip';
   let programDoubleClickExtensions = '';
   let programContextMenuExtensions = '';
+  let programShowInGalleryContextMenu = false;
+  let programShowInExplorerContextMenu = true;
   let explorerSingleClickLaunches: Record<string, number> = {};
   let newTabCandidates: NewTabCandidate[] = [];
   let newTabCandidatePath = '';
@@ -1817,7 +2017,10 @@
   let nextExplorerTabId = 1;
   let explorerTabsRestored = false;
   let explorerSplit: ExplorerSplit | null = null;
+  let pendingExplorerSplitSessionState: ExplorerSplitSessionState | null = null;
   let splitFocusedPane: 'left' | 'right' = 'left';
+  let explorerSplitRatio = 50;
+  let explorerSplitResizePointerId: number | null = null;
   let cutClipboardSource: { pane: 'left' | 'right'; path: string } | null = null;
   let pendingMoveRefresh: PendingMoveRefresh | null = null;
   let explorerBookmarks: ExplorerBookmark[] = [];
@@ -1916,6 +2119,7 @@
   let winRarPackageName = '';
   let explorerColumnMenu: { x: number; y: number } | null = null;
   let explorerDetailColumns: ExplorerDetailColumnId[] = [...defaultExplorerDetailColumns];
+  let explorerDetailOnly = false;
   let draggedExplorerDetailColumn: ExplorerDetailColumnId | null = null;
   let mouseGestureSettings: MouseGestureSettings = structuredClone(defaultMouseGestureSettings);
   let keyboardShortcutSettings: KeyboardShortcutSettings = structuredClone(defaultKeyboardShortcutSettings);
@@ -1929,6 +2133,7 @@
   let explorerDetailPaneElement: HTMLDivElement | null = null;
   let explorerSplitLeftPaneElement: HTMLDivElement | null = null;
   let explorerSplitRightPaneElement: HTMLDivElement | null = null;
+  let explorerSplitWorkspaceElement: HTMLDivElement | null = null;
   let explorerFilterInputElement: HTMLInputElement | null = null;
   let gallerySearchInputElement: HTMLInputElement | null = null;
   let galleryCreatorSummarySearchInputElement: HTMLInputElement | null = null;
@@ -1936,6 +2141,8 @@
   let explorerTabScrollPositions: Record<string, ExplorerScrollPosition> = {};
   let pendingExplorerScrollRestoreTabId: string | null = null;
   let pendingExplorerSplitScroll: { leftTop: number; rightTop: number } | null = null;
+  let pendingExplorerParentSelectionPath = '';
+  let pendingSplitParentSelectionPath = '';
   const requestedThumbnailIds = new Set<number>();
   const requestedExplorerThumbnailPaths = new Set<string>();
   const unavailableExplorerThumbnailPaths = new Set<string>();
@@ -2082,6 +2289,12 @@
   $: galleryCreatorSummaryCardHeight = ({ 5: 496, 6: 424, 7: 368, 8: 328, 9: 300 } as Record<number, number>)[galleryCreatorSummaryCardColumns] ?? 368;
   $: galleryCreatorSummaryCardAspect = getGalleryCardAspect(galleryCreatorSummarySection);
   $: galleryCreatorSummaryGridStyle = `--gallery-card-width: ${galleryCreatorSummaryCardWidth}px; --gallery-card-height: ${galleryCreatorSummaryCardHeight}px; --gallery-card-body-height: 149px; --gallery-landscape-card-body-height: 149px; --gallery-card-title-lines: 2; --gallery-card-title-height: 2.64em; --gallery-card-title-size: 0.95rem; --gallery-card-meta-size: 0.8rem; --gallery-card-sub-size: 0.75rem;`;
+  $: creatorTrackingIndexActive = activeCreatorTrackingTabId === creatorTrackingIndexTabId;
+  $: visibleCreatorTrackingIndexItems = getVisibleCreatorTrackingIndexItems(
+    creatorTrackingIndexItems,
+    creatorTrackingIndexSection,
+    creatorTrackingIndexSortKey,
+    creatorTrackingIndexSortDirection);
   $: visibleGalleryTagAssignmentCreatorTitleTags = galleryTagAssignment
     ? getGalleryTagAssignmentCreatorTitleTags(galleryTagAssignment)
     : [];
@@ -2094,7 +2307,14 @@
   $: visibleExplorerDetailColumns = explorerDetailColumns
     .map((columnId) => explorerDetailColumnDefinitions.find((column) => column.id === columnId))
     .filter((column): column is ExplorerDetailColumn => column !== undefined);
-  $: explorerDetailGridStyle = `--detail-grid-template: ${visibleExplorerDetailColumns.map((column) => column.width).join(' ')};`;
+  $: explorerDetailMinimumWidth = visibleExplorerDetailColumns.reduce((total, column) => {
+    const width = Number(column.width.match(/(\d+)px/)?.[1] ?? 0);
+    return total + width;
+  }, 20 + Math.max(0, visibleExplorerDetailColumns.length - 1) * 10);
+  $: explorerDetailGridStyle = `--detail-grid-template: ${visibleExplorerDetailColumns.map((column) => column.width).join(' ')}; --detail-grid-min-width: ${explorerDetailMinimumWidth}px;`;
+  $: explorerFocusedPaneDetailMode = explorerSplit
+    ? (splitFocusedPane === 'right' ? explorerSplit.rightViewMode : explorerSplit.leftViewMode) === 'details'
+    : explorerDetailOnly;
 
   onMount(() => {
     applyThemeToDocument(appliedThemeSettings);
@@ -2107,12 +2327,17 @@
       postHostMessage({ type: 'app.userActivity' });
     };
     window.galleryBrowserFlushCreatorTracking = () => {
+      flushGalleryRandomPickSettingsSave();
       flushStickyNoteSaves();
       flushCreatorTrackingBeforeExit();
     };
     window.chrome?.webview?.addEventListener('message', (event) => {
       if (event.data?.type === 'app.context') {
         hostStatus = `${event.data.appName} ${event.data.version}`;
+      }
+
+      if (event.data?.type === 'external.fileDrag.error') {
+        showExplorerToast(event.data.message ?? '外部アプリへのドラッグを開始できませんでした。', 'error');
       }
 
       if (event.data?.type === 'gallery.list.result') {
@@ -2137,6 +2362,34 @@
         galleryTotal = page?.total ?? 0;
         galleryIsLoading = false;
         continueGalleryBookmarkScrollRestore();
+      }
+
+      if (event.data?.type === 'gallery.randomPick.result' && event.data.requestId === galleryRandomPickRequestId) {
+        const result = event.data.result;
+        const nextItems: GalleryWork[] = result?.items ?? [];
+        applyCachedGalleryThumbnailUris(event.data.thumbnailUris);
+        galleryWorks = nextItems;
+        galleryTotal = nextItems.length;
+        galleryRandomPickSummary = {
+          selectedCount: nextItems.length,
+          populationCount: Number(result?.populationCount ?? 0),
+          distinctTitleCount: Number(result?.distinctTitleCount ?? 0)
+        };
+        galleryRandomPickDialogOpen = false;
+        galleryRandomPickIsLoading = false;
+        selectedGalleryWorkIds = new Set();
+        gallerySelectionAnchorId = '';
+        galleryContentElement?.scrollTo({ top: 0, behavior: 'smooth' });
+        showExplorerToast(
+          nextItems.length > 0
+            ? `${Number(result?.populationCount ?? 0).toLocaleString('ja-JP')}件から${nextItems.length}件をピックしました。`
+            : '指定した条件に一致する作品がありませんでした。',
+          nextItems.length > 0 ? 'success' : 'progress');
+      }
+
+      if (event.data?.type === 'gallery.randomPick.error' && event.data.requestId === galleryRandomPickRequestId) {
+        galleryRandomPickIsLoading = false;
+        showExplorerToast(event.data.message ?? 'Galleryのランダムピックを実行できませんでした。', 'error');
       }
 
       if (event.data?.type === 'gallery.works.filters.result' && event.data.requestId === pendingGalleryBookmarkRestore?.requestId) {
@@ -2309,6 +2562,21 @@
         showExplorerToast(userMetricsError, 'error');
       }
 
+      if (event.data?.type === 'user.metrics.regression.result' && event.data.requestId === userMetricsRegressionRequestId) {
+        userMetricsRegressionResult = event.data.result as UserMetricsRegressionResult | null;
+        userMetricsRegressionIsLoading = false;
+        if (userMetricsRegressionRunPending && event.data.result) {
+          showExplorerToast('ロジスティック回帰分析を更新しました。', 'success');
+        }
+        userMetricsRegressionRunPending = false;
+      }
+
+      if (event.data?.type === 'user.metrics.regression.error' && event.data.requestId === userMetricsRegressionRequestId) {
+        userMetricsRegressionIsLoading = false;
+        userMetricsRegressionRunPending = false;
+        showExplorerToast(event.data.message ?? 'ロジスティック回帰分析を実行できませんでした。', 'error');
+      }
+
       if (event.data?.type === 'calendar.subscriptions.result' && event.data.requestId === calendarRequestId) {
         calendarSettings = parseCalendarSettings(event.data.settings);
         calendarWeekStartDraft = calendarSettings.weekStartDay;
@@ -2332,6 +2600,31 @@
 
       if (event.data?.type === 'calendar.ics.error' && event.data.requestId === calendarIcsRequestId) {
         showExplorerToast(event.data.message ?? 'iCalendarファイルを保存できませんでした。', 'error');
+      }
+
+      if (event.data?.type === 'creator.tracking.index.result' && event.data.requestId === creatorTrackingIndexRequestId) {
+        creatorTrackingIndexItems = Array.isArray(event.data.items)
+          ? event.data.items.map((item: Partial<CreatorTrackingIndexItem>) => ({
+              creator: String(item.creator ?? '').trim(),
+              displayName: String(item.displayName ?? item.creator ?? '').trim(),
+              alternateName: String(item.alternateName ?? '').trim(),
+              categories: Array.isArray(item.categories)
+                ? item.categories.map(value => String(value).trim()).filter(Boolean)
+                : [],
+              lastCheckedOn: String(item.lastCheckedOn ?? '').trim(),
+              sinceLastCheckDays: Number(item.sinceLastCheckDays ?? -1),
+              followWarnFlg: item.followWarnFlg === true,
+              followAlertFlg: item.followAlertFlg === true
+            })).filter((item: CreatorTrackingIndexItem) => item.creator)
+          : [];
+        creatorTrackingIndexIsLoading = false;
+        creatorTrackingIndexError = '';
+      }
+
+      if (event.data?.type === 'creator.tracking.index.error' && event.data.requestId === creatorTrackingIndexRequestId) {
+        creatorTrackingIndexIsLoading = false;
+        creatorTrackingIndexError = event.data.message ?? 'Creator Tracking Indexを読み込めませんでした。';
+        showExplorerToast(creatorTrackingIndexError, 'error');
       }
 
       if (event.data?.type === 'creator.tracking.result') {
@@ -2383,6 +2676,7 @@
       }
 
       if (event.data?.type === 'creator.tracking.saved') {
+        const refreshIndexAfterSave = creatorTrackingIndexPendingSaveRequestId === event.data.requestId;
         const savedTab = creatorTrackingTabs.find(tab => tab.requestId === event.data.requestId);
         if (savedTab) {
           const refreshed = creatorTrackingRefreshRequestIds.has(event.data.requestId);
@@ -2431,8 +2725,21 @@
               : `${tracking.displayName || tracking.creator}のCreator Trackingを保存しました。`,
             'success');
           if (preserveNewerDraft) {
-            queueMicrotask(() => saveCreatorTrackingTab(savedTab.id));
+            queueMicrotask(() => {
+              const nextRequestId = saveCreatorTrackingTab(savedTab.id);
+              if (!refreshIndexAfterSave) return;
+              creatorTrackingIndexPendingSaveRequestId = nextRequestId;
+              if (!nextRequestId) loadCreatorTrackingIndex();
+            });
           }
+          else if (refreshIndexAfterSave) {
+            creatorTrackingIndexPendingSaveRequestId = '';
+            loadCreatorTrackingIndex();
+          }
+        }
+        else if (refreshIndexAfterSave) {
+          creatorTrackingIndexPendingSaveRequestId = '';
+          loadCreatorTrackingIndex();
         }
       }
 
@@ -2469,6 +2776,7 @@
       }
 
       if (event.data?.type === 'creator.tracking.error') {
+        const refreshIndexAfterError = creatorTrackingIndexPendingSaveRequestId === event.data.requestId;
         const errorTab = creatorTrackingTabs.find(tab => tab.requestId === event.data.requestId);
         if (errorTab) {
           if (creatorTrackingRefreshRequestIds.has(event.data.requestId)) {
@@ -2485,6 +2793,11 @@
             creatorTrackingError = message;
           }
           showExplorerToast(message, 'error');
+        }
+        if (refreshIndexAfterError) {
+          creatorTrackingIndexPendingSaveRequestId = '';
+          creatorTrackingIndexIsLoading = false;
+          creatorTrackingIndexError = event.data.message ?? 'Creator Trackingの保存後にIndexを更新できませんでした。';
         }
       }
 
@@ -2927,6 +3240,14 @@
         externalAppRules = event.data.rules ?? [];
       }
 
+      if (event.data?.type === 'gallery.externalApp.open.result') {
+        showExplorerToast(event.data.message ?? '外部アプリで作品を開きました。', 'success');
+      }
+
+      if (event.data?.type === 'gallery.externalApp.open.error') {
+        showExplorerToast(event.data.message ?? '外部アプリで作品を開けませんでした。', 'error');
+      }
+
       if (event.data?.type === 'filters.editor.result') {
         pendingFilterEditorDefinitionDeletion = null;
         filterEditorCategories = event.data.categories ?? [];
@@ -3365,6 +3686,108 @@
         }
       }
 
+      if (event.data?.type === 'settings.notifications.result') {
+        notificationSchedules = Array.isArray(event.data.schedules)
+          ? event.data.schedules.map((schedule: NotificationSchedule) => ({
+              id: String(schedule.id ?? ''),
+              time: String(schedule.time ?? '09:00'),
+              lastStartedAt: schedule.lastStartedAt ?? null
+            }))
+          : [];
+      }
+
+      if (event.data?.type === 'settings.notifications.schedules.saved') {
+        notificationScheduleSaving = false;
+        notificationScheduleStatus = event.data.message ?? '通知スケジュールを保存しました。';
+        showExplorerToast(notificationScheduleStatus, 'success');
+      }
+
+      if (event.data?.type === 'settings.notifications.schedules.executed' &&
+          Array.isArray(event.data.schedules)) {
+        const executedById = new Map(
+          event.data.schedules.map((schedule: NotificationSchedule) => [
+            String(schedule.id ?? ''),
+            schedule.lastStartedAt ?? null
+          ]));
+        notificationSchedules = notificationSchedules.map(schedule => ({
+          ...schedule,
+          lastStartedAt: executedById.has(schedule.id)
+            ? executedById.get(schedule.id)
+            : schedule.lastStartedAt
+        }));
+      }
+
+      if (event.data?.type === 'settings.notifications.schedules.error') {
+        notificationScheduleSaving = false;
+        notificationScheduleStatus = event.data.message ?? '通知スケジュールを保存できませんでした。';
+        showExplorerToast(notificationScheduleStatus, 'error', 7_000);
+      }
+
+      if (event.data?.type === 'settings.discord.result') {
+        discordNotificationEnabled = Boolean(event.data.settings?.enabled);
+        discordHasWebhookUrl = Boolean(event.data.settings?.hasWebhookUrl);
+        discordNotifyCreatorFollowAlert = event.data.settings?.notifyCreatorFollowAlert !== false;
+        discordNotifySubscriptionEnding = event.data.settings?.notifySubscriptionEnding !== false;
+        discordNotifySubscriptionReminder = event.data.settings?.notifySubscriptionReminder !== false;
+        discordNotifyScheduledScanStarted = event.data.settings?.notifyScheduledScanStarted !== false;
+        discordNotifyScheduledScanCompleted = event.data.settings?.notifyScheduledScanCompleted !== false;
+        discordWebhookUrlDraft = '';
+      }
+
+      if (event.data?.type === 'settings.discord.operation.result') {
+        discordNotificationBusy = false;
+        discordNotificationStatus = event.data.message ?? '';
+        discordWebhookUrlDraft = '';
+        showExplorerToast(discordNotificationStatus || 'Discord通知設定を更新しました。', 'success');
+      }
+
+      if (event.data?.type === 'settings.discord.operation.error') {
+        discordNotificationBusy = false;
+        discordNotificationStatus = event.data.message ?? 'Discord通知を処理できませんでした。';
+        showExplorerToast(discordNotificationStatus, 'error', 7_000);
+      }
+
+      if (event.data?.type === 'settings.line.result') {
+        lineNotificationEnabled = Boolean(event.data.settings?.enabled);
+        lineHasChannelAccessToken = Boolean(event.data.settings?.hasChannelAccessToken);
+        lineHasRecipientUserId = Boolean(event.data.settings?.hasRecipientUserId);
+        lineNotifyCreatorFollowAlert = event.data.settings?.notifyCreatorFollowAlert !== false;
+        lineNotifySubscriptionEnding = event.data.settings?.notifySubscriptionEnding !== false;
+        lineNotifySubscriptionReminder = event.data.settings?.notifySubscriptionReminder !== false;
+        lineNotifyScheduledScanStarted = event.data.settings?.notifyScheduledScanStarted !== false;
+        lineNotifyScheduledScanCompleted = event.data.settings?.notifyScheduledScanCompleted !== false;
+        lineChannelAccessTokenDraft = '';
+        lineRecipientUserIdDraft = '';
+      }
+
+      if (event.data?.type === 'settings.line.operation.result') {
+        lineNotificationBusy = false;
+        lineNotificationStatus = event.data.message ?? '';
+        lineChannelAccessTokenDraft = '';
+        lineRecipientUserIdDraft = '';
+        if (event.data.quota) {
+          lineQuotaType = String(event.data.quota.type ?? '');
+          lineQuotaLimit = event.data.quota.limit !== null &&
+                           event.data.quota.limit !== undefined &&
+                           Number.isFinite(Number(event.data.quota.limit))
+            ? Number(event.data.quota.limit)
+            : null;
+          lineQuotaConsumption = event.data.quota.consumption !== null &&
+                                 event.data.quota.consumption !== undefined &&
+                                 Number.isFinite(Number(event.data.quota.consumption))
+            ? Number(event.data.quota.consumption)
+            : null;
+          lineQuotaCheckedAt = String(event.data.quota.checkedAt ?? '');
+        }
+        showExplorerToast(lineNotificationStatus || 'LINE通知設定を更新しました。', 'success');
+      }
+
+      if (event.data?.type === 'settings.line.operation.error') {
+        lineNotificationBusy = false;
+        lineNotificationStatus = event.data.message ?? 'LINE通知を処理できませんでした。';
+        showExplorerToast(lineNotificationStatus, 'error', 7_000);
+      }
+
       if (event.data?.type === 'settings.sqliteDatabase.update.progress') {
         const message = event.data.message ?? 'SQLiteDBを更新中...';
         sqliteDatabaseStatus = message;
@@ -3593,15 +4016,23 @@
             ? [...defaultExplorerDetailColumns]
             : restoredColumns;
         }
+        explorerDetailOnly = Boolean(event.data.state?.explorerDetailOnly);
+        pendingExplorerSplitSessionState = parseExplorerSplitSessionState(event.data.state?.explorerSplitState);
         mouseGestureSettings = parseMouseGestureSettings(event.data.state?.mouseGestureSettings);
         keyboardShortcutSettings = parseKeyboardShortcutSettings(event.data.state?.keyboardShortcutSettings);
         galleryCardColumnModes = parseGalleryCardColumnModes(event.data.state?.galleryCardColumns);
         galleryFilterSorts = parseGalleryFilterSortState(event.data.state?.galleryFilterSorts);
         galleryThumbnailSorts = parseGalleryThumbnailSortState(event.data.state?.galleryThumbnailSorts);
+        galleryRandomPickSettings = parseGalleryRandomPickSettings(event.data.state?.galleryRandomPickSettings);
         const creatorTrackingTabsState = parseCreatorTrackingSessionState(event.data.state?.creatorTrackingTabs);
-        if (creatorTrackingTabsState && creatorTrackingTabsState.tabs.length > 0) {
+        if (creatorTrackingTabsState && (creatorTrackingTabsState.tabs.length > 0 || creatorTrackingTabsState.indexOpen)) {
           pendingCreatorTrackingSessionRestore = { state: creatorTrackingTabsState, activate: restoredView === 'creatorTracking' };
-          if (galleryCreatorSummaries.length > 0 && !galleryCreatorSummaryIsLoading) {
+          if (creatorTrackingTabsState.tabs.length === 0 && creatorTrackingTabsState.indexOpen) {
+            const pending = pendingCreatorTrackingSessionRestore;
+            pendingCreatorTrackingSessionRestore = null;
+            restoreCreatorTrackingSession(pending.state, pending.activate);
+          }
+          else if (galleryCreatorSummaries.length > 0 && !galleryCreatorSummaryIsLoading) {
             const pending = pendingCreatorTrackingSessionRestore;
             pendingCreatorTrackingSessionRestore = null;
             restoreCreatorTrackingSession(pending.state, pending.activate);
@@ -3614,6 +4045,7 @@
         if ([4, 5, 6, 7].includes(restoredExplorerCardColumns)) {
           explorerCardColumns = restoredExplorerCardColumns;
         }
+        tryRestoreExplorerSplitSession();
         loadGalleryWorks();
       }
 
@@ -3633,12 +4065,14 @@
               showExplorerToast(event.data.message, 'success');
             }
           syncExplorerTabById(rightTabId, event.data.path ?? '');
+          persistNavigationState();
           rememberExplorerHistory(event.data.path ?? '', 'right');
             prefetchExplorerThumbnails(explorerSplit.rightEntries, 'right');
             continueRenameAfterRefresh('right', explorerSplit.rightEntries);
             finishExplorerPaste('right', event.data.path ?? '');
             finishPendingMoveRefresh('right', event.data.path ?? '');
             if (!rarToZipBatchInProgress) finishWinRarProgress();
+            focusPendingExplorerParentSelection('right');
             focusPastedExplorerEntries(event.data.focusPaths ?? [], 'right');
             restoreExplorerSplitScroll();
             return;
@@ -3657,6 +4091,7 @@
         selectedPaths = [];
         prefetchExplorerThumbnails(explorerEntries, 'left');
         syncExplorerTab(explorerPath);
+        if (explorerSplit) persistNavigationState();
         rememberExplorerHistory(explorerPath, 'left');
         continueRenameAfterRefresh('left', explorerEntries);
           finishExplorerPaste('left', explorerPath);
@@ -3664,6 +4099,7 @@
           restoreExplorerTabScroll();
           restoreExplorerSplitScroll();
           if (!rarToZipBatchInProgress) finishWinRarProgress();
+          focusPendingExplorerParentSelection('left');
           focusPastedExplorerEntries(event.data.focusPaths ?? [], 'left');
         }
 
@@ -3797,7 +4233,8 @@
         }
         explorerTabsRestored = true;
 
-        if (activeView === 'explorer' && !explorerPath && activeExplorerTabId) {
+        const restoredSplit = tryRestoreExplorerSplitSession();
+        if (!restoredSplit && activeView === 'explorer' && !explorerPath && activeExplorerTabId) {
           const activeTab = explorerTabs.find((tab) => tab.id === activeExplorerTabId);
           if (activeTab) loadExplorer(activeTab.path);
         }
@@ -4009,6 +4446,9 @@
     postHostMessage({ type: 'settings.thumbnailCache.list' });
     postHostMessage({ type: 'settings.sqliteDatabase.list' });
     postHostMessage({ type: 'settings.pcloud.list' });
+    postHostMessage({ type: 'settings.notifications.list' });
+    postHostMessage({ type: 'settings.discord.list' });
+    postHostMessage({ type: 'settings.line.list' });
     postHostMessage({ type: 'settings.galleryTargets.list' });
     postHostMessage({ type: 'settings.thumbnailAdjustments.list' });
     postHostMessage({ type: 'settings.newTabCandidates.list' });
@@ -4075,6 +4515,12 @@
       if (event.key === 'Escape' && galleryContextMenu) {
         event.preventDefault();
         closeGalleryContextMenu();
+        return;
+      }
+
+      if (event.key === 'Escape' && galleryRandomPickDialogOpen && !galleryRandomPickIsLoading) {
+        event.preventDefault();
+        galleryRandomPickDialogOpen = false;
         return;
       }
 
@@ -4406,6 +4852,11 @@
       return;
     }
 
+    if (!append) {
+      galleryRandomPickRequestId = '';
+      galleryRandomPickIsLoading = false;
+      galleryRandomPickSummary = null;
+    }
     galleryIsLoading = true;
     const offset = append ? galleryWorks.length : 0;
     galleryRequestId = `gallery-${nextGalleryRequestId++}`;
@@ -4523,6 +4974,28 @@
     userMetricsError = '';
     userMetricsRequestId = `user-metrics-${nextUserMetricsRequestId++}`;
     postHostMessage({ type: 'user.metrics.get', requestId: userMetricsRequestId, category, forceRefresh });
+    loadUserMetricsRegression(category);
+  }
+
+  function loadUserMetricsRegression(category = userMetricsCategory) {
+    userMetricsRegressionResult = null;
+    userMetricsRegressionIsLoading = true;
+    userMetricsRegressionRunPending = false;
+    userMetricsRegressionRequestId = `user-metrics-regression-${nextUserMetricsRegressionRequestId++}`;
+    postHostMessage({ type: 'user.metrics.regression.get', requestId: userMetricsRegressionRequestId, category });
+  }
+
+  function runUserMetricsRegression() {
+    if (userMetricsRegressionIsLoading) return;
+    userMetricsRegressionIsLoading = true;
+    userMetricsRegressionRunPending = true;
+    userMetricsRegressionRequestId = `user-metrics-regression-${nextUserMetricsRegressionRequestId++}`;
+    showExplorerToast('ロジスティック回帰分析を実行しています...', 'progress', null);
+    postHostMessage({
+      type: 'user.metrics.regression.run',
+      requestId: userMetricsRegressionRequestId,
+      category: userMetricsCategory
+    });
   }
 
   function loadCalendarSubscriptions() {
@@ -5101,6 +5574,146 @@
       : tab);
   }
 
+  function loadCreatorTrackingIndex() {
+    creatorTrackingIndexRequestId = `creator-tracking-index-${nextCreatorTrackingRequestId++}`;
+    creatorTrackingIndexIsLoading = true;
+    creatorTrackingIndexError = '';
+    postHostMessage({
+      type: 'creator.tracking.index.list',
+      requestId: creatorTrackingIndexRequestId
+    });
+  }
+
+  function activateCreatorTrackingIndex() {
+    if (creatorTrackingIndexActive && activeView === 'creatorTracking') {
+      if (!creatorTrackingIndexPendingSaveRequestId) loadCreatorTrackingIndex();
+      return;
+    }
+    if (activeView === 'creatorTracking') recordNavigationHistory();
+    const pendingSaveRequestId = saveCreatorTracking();
+    captureActiveCreatorTrackingTab();
+    creatorTrackingIndexOpen = true;
+    activeCreatorTrackingTabId = creatorTrackingIndexTabId;
+    activateView('creatorTracking');
+    if (pendingSaveRequestId) {
+      creatorTrackingIndexPendingSaveRequestId = pendingSaveRequestId;
+      creatorTrackingIndexIsLoading = true;
+      creatorTrackingIndexError = '';
+    }
+    else {
+      loadCreatorTrackingIndex();
+    }
+    persistNavigationState();
+  }
+
+  function closeCreatorTrackingIndexTab(event: MouseEvent) {
+    event.stopPropagation();
+    const wasActive = creatorTrackingIndexActive;
+    creatorTrackingIndexOpen = false;
+    creatorTrackingIndexPendingSaveRequestId = '';
+    creatorTrackingIndexIsLoading = false;
+    if (!wasActive) {
+      persistNavigationState();
+      return;
+    }
+
+    const nextTab = creatorTrackingTabs[0];
+    if (nextTab) {
+      applyCreatorTrackingTab(nextTab);
+      persistNavigationState();
+      return;
+    }
+
+    activeCreatorTrackingTabId = '';
+    creatorTrackingSummary = null;
+    creatorTracking = null;
+    creatorTrackingDashboard = null;
+    creatorTrackingDashboardContext = null;
+    activateView('creators');
+    persistNavigationState();
+  }
+
+  function getCreatorTrackingIndexAlertRank(item: CreatorTrackingIndexItem) {
+    return item.followAlertFlg ? 2 : item.followWarnFlg ? 1 : 0;
+  }
+
+  function formatCreatorTrackingIndexName(item: CreatorTrackingIndexItem) {
+    const name = item.displayName || item.creator;
+    return item.alternateName ? `${name}（${item.alternateName}）` : name;
+  }
+
+  function getVisibleCreatorTrackingIndexItems(
+    items: CreatorTrackingIndexItem[],
+    section: string,
+    sortKey: CreatorTrackingIndexSortKey,
+    sortDirection: CreatorTrackingIndexSortDirection) {
+    const sectionItems = section === 'all'
+      ? items
+      : items.filter(item =>
+          item.categories.some(category => category.localeCompare(
+            section,
+            'ja-JP',
+            { sensitivity: 'base' }) === 0));
+    const direction = sortDirection === 'asc' ? 1 : -1;
+    return [...sectionItems].sort((left, right) => {
+      let compared = 0;
+      if (sortKey === 'lastChecked') {
+        if (!left.lastCheckedOn && right.lastCheckedOn) return 1;
+        if (left.lastCheckedOn && !right.lastCheckedOn) return -1;
+        compared = left.lastCheckedOn.localeCompare(right.lastCheckedOn);
+      }
+      else if (sortKey === 'alert') {
+        compared = getCreatorTrackingIndexAlertRank(left) - getCreatorTrackingIndexAlertRank(right);
+      }
+      else {
+        compared = (left.displayName || left.creator).localeCompare(
+          right.displayName || right.creator,
+          'ja-JP',
+          { sensitivity: 'base', numeric: true });
+      }
+      if (compared !== 0) return compared * direction;
+      return left.creator.localeCompare(right.creator, 'ja-JP', { sensitivity: 'base', numeric: true });
+    });
+  }
+
+  function getCreatorTrackingIndexSectionCount(section: string, items: CreatorTrackingIndexItem[]) {
+    if (section === 'all') return items.length;
+    return items.filter(item =>
+      item.categories.some(category => category.localeCompare(section, 'ja-JP', { sensitivity: 'base' }) === 0)).length;
+  }
+
+  function selectCreatorTrackingIndexSection(section: string) {
+    creatorTrackingIndexSection = section === 'all' || gallerySections.some(item => item.id === section)
+      ? section
+      : 'all';
+    persistNavigationState();
+  }
+
+  function setCreatorTrackingIndexSort(key: CreatorTrackingIndexSortKey) {
+    if (creatorTrackingIndexSortKey === key) {
+      creatorTrackingIndexSortDirection = creatorTrackingIndexSortDirection === 'asc' ? 'desc' : 'asc';
+    }
+    else {
+      creatorTrackingIndexSortKey = key;
+      creatorTrackingIndexSortDirection = key === 'creator' ? 'asc' : 'desc';
+    }
+    persistNavigationState();
+  }
+
+  function openCreatorTrackingFromIndex(item: CreatorTrackingIndexItem) {
+    const selectedCategory = creatorTrackingIndexSection !== 'all'
+      && item.categories.includes(creatorTrackingIndexSection)
+      ? creatorTrackingIndexSection
+      : item.categories.find(category => gallerySections.some(section => section.id === category))
+        ?? gallerySections[0]?.id
+        ?? defaultGallerySectionId;
+    const summary = galleryCreatorSummaries.find(candidate =>
+      candidate.category === selectedCategory &&
+      candidate.creator.trim().localeCompare(item.creator.trim(), 'ja-JP', { sensitivity: 'base' }) === 0)
+      ?? createCreatorTrackingTemplateSummary(item.creator, selectedCategory, '');
+    openCreatorTrackingForSummary(summary);
+  }
+
   function captureCreatorTrackingTabSessionState() {
     captureActiveCreatorTrackingTab();
     const activeIndex = Math.max(0, creatorTrackingTabs.findIndex((tab) => tab.id === activeCreatorTrackingTabId));
@@ -5114,6 +5727,11 @@
         archiveScale: tab.id === activeCreatorTrackingTabId ? creatorTrackingArchiveScale : tab.archiveScale
       })),
       activeIndex,
+      indexOpen: creatorTrackingIndexOpen,
+      indexActive: creatorTrackingIndexActive,
+      indexSection: creatorTrackingIndexSection,
+      indexSortKey: creatorTrackingIndexSortKey,
+      indexSortDirection: creatorTrackingIndexSortDirection,
       stickyNotes: []
     };
     return JSON.stringify(state);
@@ -5148,10 +5766,19 @@
   }
 
   function selectRelativeCreatorTrackingTab(offset: number) {
-    if (creatorTrackingTabs.length < 2) return;
-    const currentIndex = creatorTrackingTabs.findIndex(tab => tab.id === activeCreatorTrackingTabId);
-    const nextIndex = (Math.max(0, currentIndex) + offset + creatorTrackingTabs.length) % creatorTrackingTabs.length;
-    activateCreatorTrackingTab(creatorTrackingTabs[nextIndex].id);
+    const tabIds = [
+      ...(creatorTrackingIndexOpen ? [creatorTrackingIndexTabId] : []),
+      ...creatorTrackingTabs.map(tab => tab.id)
+    ];
+    if (tabIds.length < 2) return;
+    const currentIndex = Math.max(0, tabIds.indexOf(activeCreatorTrackingTabId));
+    const nextIndex = (currentIndex + offset + tabIds.length) % tabIds.length;
+    if (tabIds[nextIndex] === creatorTrackingIndexTabId) {
+      activateCreatorTrackingIndex();
+    }
+    else {
+      activateCreatorTrackingTab(tabIds[nextIndex]);
+    }
   }
 
   function handleCreatorTrackingShortcut(event: KeyboardEvent) {
@@ -5276,6 +5903,12 @@
       persistNavigationState();
       return;
     }
+    if (creatorTrackingIndexOpen) {
+      activeCreatorTrackingTabId = creatorTrackingIndexTabId;
+      loadCreatorTrackingIndex();
+      persistNavigationState();
+      return;
+    }
     activeCreatorTrackingTabId = '';
     creatorTrackingSummary = null;
     creatorTracking = null;
@@ -5290,6 +5923,13 @@
     const activeIndex = creatorTrackingTabs.findIndex((tab) => tab.id === activeCreatorTrackingTabId);
     creatorTrackingTabs = creatorTrackingTabs.filter((tab) =>
       tab.creator.trim().toLocaleLowerCase('ja-JP') !== normalizedCreator);
+
+    if (creatorTrackingTabs.length === 0 && creatorTrackingIndexOpen) {
+      activeCreatorTrackingTabId = creatorTrackingIndexTabId;
+      loadCreatorTrackingIndex();
+      persistNavigationState();
+      return;
+    }
 
     if (creatorTrackingTabs.length === 0) {
       activeCreatorTrackingTabId = '';
@@ -5433,6 +6073,27 @@
     return (/^[a-z]:\\$/i.test(normalized) ? normalized : normalized.replace(/\\+$/, '')).toLocaleLowerCase('ja-JP');
   }
 
+  function getImmediateExplorerChildPath(parentPath: string, currentPath: string) {
+    const normalizedParent = parentPath.trim().replace(/\//g, '\\').replace(/\\+$/, '');
+    const normalizedCurrent = currentPath.trim().replace(/\//g, '\\').replace(/\\+$/, '');
+    const parentKey = normalizeWindowsPath(normalizedParent);
+    const currentKey = normalizeWindowsPath(normalizedCurrent);
+    const prefix = parentKey.endsWith('\\') ? parentKey : `${parentKey}\\`;
+    if (!parentKey || !currentKey.startsWith(prefix)) {
+      return '';
+    }
+
+    const relativePath = normalizedCurrent.slice(normalizedParent.length).replace(/^\\+/, '');
+    const childName = relativePath.split('\\').filter(Boolean)[0];
+    if (!childName) {
+      return '';
+    }
+
+    return normalizedParent.endsWith('\\')
+      ? `${normalizedParent}${childName}`
+      : `${normalizedParent}\\${childName}`;
+  }
+
   function getExplorerPathLabel(path: string) {
     const normalized = path.trim().replace(/\//g, '\\').replace(/\\+$/, '');
     return normalized.split('\\').filter(Boolean).at(-1) ?? normalized;
@@ -5483,6 +6144,7 @@
     persistExplorerTabs();
 
     if (splitWhenTwo && tabs.length >= 2) {
+      pendingExplorerSplitSessionState = null;
       explorerSplit = {
         leftTabId: tabs[0].id,
         rightTabId: tabs[1].id,
@@ -5491,9 +6153,12 @@
         rightEntries: [],
         rightSelectedPaths: [],
         rightIsLoading: true,
-        rightIsTruncated: false
+        rightIsTruncated: false,
+        leftViewMode: explorerDetailOnly ? 'details' : 'thumbnail',
+        rightViewMode: explorerDetailOnly ? 'details' : 'thumbnail'
       };
       splitFocusedPane = 'left';
+      persistNavigationState();
       loadExplorer(tabs[0].path);
       loadSplitExplorer(tabs[1].path);
     }
@@ -5651,8 +6316,11 @@
   }
 
   function saveCreatorTracking() {
-    if (!activeCreatorTrackingTabId) return;
-    saveCreatorTrackingTab(activeCreatorTrackingTabId);
+    if (!activeCreatorTrackingTabId) return '';
+    const requestId = saveCreatorTrackingTab(activeCreatorTrackingTabId);
+    if (requestId) return requestId;
+    return creatorTrackingTabs.find(tab =>
+      tab.id === activeCreatorTrackingTabId && tab.isSaving)?.requestId ?? '';
   }
 
   function refreshCreatorTracking() {
@@ -5844,7 +6512,8 @@
           endingPlanned: false,
           reminder: false,
           wishlist: false,
-          isActive: true
+          isEnded: false,
+          endedOn: ''
         }
       ]
     };
@@ -5867,18 +6536,22 @@
     if (!subscription) return;
     const wishlist = !subscription.wishlist;
     updateCreatorTrackingSubscription(index, wishlist
-      ? { wishlist: true, isActive: false, endingPlanned: false, reminder: false }
+      ? { wishlist: true, isEnded: false, endingPlanned: false, reminder: false }
       : { wishlist: false });
   }
 
-  function toggleCreatorTrackingSubscriptionActive(index: number) {
+  function toggleCreatorTrackingSubscriptionEnded(index: number) {
     if (!creatorTracking) return;
     const subscription = creatorTracking.subscriptionHistory[index];
     if (!subscription) return;
-    const isActive = !subscription.isActive;
-    updateCreatorTrackingSubscription(index, isActive
-      ? { isActive: true, wishlist: false }
-      : { isActive: false });
+    const isEnded = !subscription.isEnded;
+    updateCreatorTrackingSubscription(index, {
+      isEnded,
+      wishlist: false,
+      endedOn: isEnded
+        ? subscription.endedOn || formatCreatorTrackingInputDate(new Date())
+        : subscription.endedOn
+    });
   }
 
   function updateCreatorTrackingSubscriptionSchedule(
@@ -6121,7 +6794,12 @@
           }))
         : [],
       subscriptionHistory: Array.isArray(tracking.subscriptionHistory)
-        ? tracking.subscriptionHistory.map(subscription => ({ ...subscription, plan: subscription.plan ?? '' }))
+        ? tracking.subscriptionHistory.map(subscription => ({
+            ...subscription,
+            plan: subscription.plan ?? '',
+            isEnded: subscription.isEnded === true,
+            endedOn: subscription.endedOn ?? ''
+          }))
         : [],
       purchaseHistory: Array.isArray(tracking.purchaseHistory) ? tracking.purchaseHistory : [],
       storageLocations,
@@ -7652,6 +8330,64 @@
     });
   }
 
+  function openGalleryRandomPickDialog() {
+    galleryRandomPickTagQuery = '';
+    galleryRandomPickDialogOpen = true;
+  }
+
+  function closeGalleryRandomPickDialog() {
+    if (galleryRandomPickIsLoading) return;
+    flushGalleryRandomPickSettingsSave();
+    galleryRandomPickDialogOpen = false;
+  }
+
+  function getGalleryRandomPickTagOptions() {
+    const query = galleryRandomPickTagQuery.trim().toLocaleLowerCase('ja-JP');
+    return galleryTags
+      .filter(option => !query || `${option.label ?? option.value} ${option.value}`.toLocaleLowerCase('ja-JP').includes(query))
+      .slice(0, 100);
+  }
+
+  function toggleGalleryRandomPickTag(tag: string) {
+    updateGalleryRandomPickSettings({
+      ...galleryRandomPickSettings,
+      requiredTags: galleryRandomPickSettings.requiredTags.includes(tag)
+        ? galleryRandomPickSettings.requiredTags.filter(value => value !== tag)
+        : [...galleryRandomPickSettings.requiredTags, tag]
+    });
+  }
+
+  function runGalleryRandomPick() {
+    if (galleryRandomPickIsLoading) return;
+    const settings = parseGalleryRandomPickSettings(galleryRandomPickSettings);
+    galleryRandomPickSettings = settings;
+    persistNavigationState();
+    galleryRandomPickRequestId = `gallery-random-pick-${nextGalleryRequestId++}`;
+    galleryRandomPickIsLoading = true;
+    postHostMessage({
+      type: 'gallery.randomPick.run',
+      requestId: galleryRandomPickRequestId,
+      category: gallerySection,
+      ratings: galleryRatingFilters,
+      tags: galleryTagFilters,
+      creators: galleryCreatorFilters,
+      titles: galleryTitleFilters,
+      characters: galleryCharacterFilters,
+      applyCurrentFilters: settings.applyCurrentFilters,
+      pickCount: settings.pickCount,
+      minimumRating: settings.minimumRating,
+      minimumImageCount: settings.minimumImageCount,
+      minimumDaysSinceAccess: settings.minimumDaysSinceAccess,
+      maximumPerTitle: settings.maximumPerTitle,
+      requiredTags: settings.requiredTags,
+      requireAllTags: settings.tagMatchMode === 'all'
+    });
+  }
+
+  function leaveGalleryRandomPick() {
+    loadGalleryWorks(false, galleryRatingFilters);
+  }
+
   function formatGalleryRating(rating: number) {
     if (rating === 6) {
       return '★6+';
@@ -7784,6 +8520,49 @@
 
   function openGalleryWork(work: GalleryWork, activation: 'single' | 'double') {
     postHostMessage({ type: 'gallery.work.open', path: work.path, activation });
+  }
+
+  function getUniquePaths(paths: string[]) {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const path of paths) {
+      const normalized = path?.trim();
+      const key = normalized.toLocaleLowerCase();
+      if (!normalized || seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      result.push(normalized);
+    }
+
+    return result;
+  }
+
+  function startExternalFileDrag(event: DragEvent, paths: string[]) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const dragPaths = getUniquePaths(paths);
+    if (dragPaths.length === 0) {
+      showExplorerToast('外部アプリへ渡せるファイルまたはフォルダがありません。', 'error');
+      return;
+    }
+
+    postHostMessage({ type: 'external.fileDrag.start', paths: dragPaths });
+  }
+
+  function startGalleryWorkExternalDrag(event: DragEvent, work: GalleryWork) {
+    closeGalleryContextMenu();
+    const works = selectedGalleryWorkIds.has(work.id)
+      ? galleryWorks.filter((item) => selectedGalleryWorkIds.has(item.id))
+      : [work];
+    if (!selectedGalleryWorkIds.has(work.id)) {
+      selectedGalleryWorkIds = new Set([work.id]);
+      gallerySelectionAnchorId = work.id;
+    }
+
+    startExternalFileDrag(event, works.map((item) => item.path));
   }
 
   function clearGalleryWorkSelection() {
@@ -8608,17 +9387,25 @@
       const leftIndex = explorerSplit ? explorerTabs.findIndex((tab) => tab.id === explorerSplit.leftTabId) : -1;
       const rightIndex = explorerSplit ? explorerTabs.findIndex((tab) => tab.id === explorerSplit.rightTabId) : -1;
       const state: ExplorerBookmarkState = {
-        version: 3,
+        version: 5,
         tabs: explorerTabs.map((tab) => ({ path: tab.path, label: tab.label })),
         activeIndex,
         split: explorerSplit && leftIndex >= 0 && rightIndex >= 0
-          ? { leftIndex, rightIndex, focusedPane: splitFocusedPane }
+          ? {
+              leftIndex,
+              rightIndex,
+              focusedPane: splitFocusedPane,
+              leftViewMode: explorerSplit.leftViewMode,
+              rightViewMode: explorerSplit.rightViewMode,
+              ratio: explorerSplitRatio
+            }
           : null,
         query: explorerQuery,
         splitQuery: splitExplorerQuery,
         sort: explorerSort,
         sortDirection: explorerSortDirection,
         cardColumns: explorerCardColumns,
+        detailOnly: explorerDetailOnly,
         tabScrollPositions: explorerTabs.map((tab, index) => ({
           index,
           gridTop: explorerTabScrollPositions[tab.id]?.gridTop ?? 0,
@@ -8682,9 +9469,14 @@
         archiveScale: tab.id === activeCreatorTrackingTabId ? creatorTrackingArchiveScale : tab.archiveScale
       })),
       activeIndex,
+      indexOpen: creatorTrackingIndexOpen,
+      indexActive: creatorTrackingIndexActive,
+      indexSection: creatorTrackingIndexSection,
+      indexSortKey: creatorTrackingIndexSortKey,
+      indexSortDirection: creatorTrackingIndexSortDirection,
       stickyNotes: captureStickyNotesForCurrentContext()
     };
-    const activeCreator = state.tabs[activeIndex]?.creator || '作者';
+    const activeCreator = creatorTrackingIndexActive ? 'Index' : state.tabs[activeIndex]?.creator || '作者';
     return {
       viewType: 'creatorTracking',
       viewLabel: 'Creator Tracking',
@@ -8873,6 +9665,13 @@
         version: Number(state.version ?? 4),
         tabs,
         activeIndex: Math.max(0, Math.min(tabs.length - 1, Math.round(Number(state.activeIndex ?? 0)))),
+        indexOpen: state.indexOpen === true,
+        indexActive: state.indexActive === true,
+        indexSection: String(state.indexSection ?? 'all').trim() || 'all',
+        indexSortKey: state.indexSortKey === 'lastChecked' || state.indexSortKey === 'alert'
+          ? state.indexSortKey
+          : 'creator',
+        indexSortDirection: state.indexSortDirection === 'desc' ? 'desc' : 'asc',
         stickyNotes: []
       };
     }
@@ -9107,6 +9906,7 @@
     activeExplorerTabId = restoredTabs[Math.max(0, activeIndex)]?.id ?? restoredTabs[0].id;
     explorerQuery = state.query ?? '';
     splitExplorerQuery = state.splitQuery ?? '';
+    explorerDetailOnly = Boolean(state.detailOnly);
     explorerSort = ['name', 'modified', 'size', 'type'].includes(state.sort) ? state.sort : 'name';
     explorerSortDirection = state.sortDirection === 'desc' ? 'desc' : 'asc';
     explorerCardColumns = [4, 5, 6, 7].includes(state.cardColumns) ? state.cardColumns : explorerCardColumns;
@@ -9119,6 +9919,7 @@
         }])
     );
     explorerSplit = null;
+    pendingExplorerSplitSessionState = null;
     splitFocusedPane = 'left';
     pendingExplorerSplitScroll = null;
     activeView = 'explorer';
@@ -9133,6 +9934,7 @@
       const right = rightRetainedIndex >= 0 ? restoredTabs[rightRetainedIndex] : null;
       if (left && right && left.id !== right.id) {
         activeExplorerTabId = left.id;
+        explorerSplitRatio = normalizeExplorerSplitRatio(Number(state.split.ratio ?? 50));
         explorerSplit = {
           leftTabId: left.id,
           rightTabId: right.id,
@@ -9141,7 +9943,9 @@
           rightEntries: [],
           rightSelectedPaths: [],
           rightIsLoading: true,
-          rightIsTruncated: false
+          rightIsTruncated: false,
+          leftViewMode: state.split.leftViewMode === 'details' || (!state.split.leftViewMode && state.detailOnly) ? 'details' : 'thumbnail',
+          rightViewMode: state.split.rightViewMode === 'details' || (!state.split.rightViewMode && state.detailOnly) ? 'details' : 'thumbnail'
         };
         splitFocusedPane = state.split.focusedPane === 'right' ? 'right' : 'left';
         pendingExplorerSplitScroll = state.splitScroll
@@ -9151,6 +9955,7 @@
             }
           : { leftTop: 0, rightTop: 0 };
         loadSplitExplorer(right.path);
+        persistNavigationState();
       }
       else {
         warnings.push('分割表示の片方のタブを開けないため、通常表示で復元しました。');
@@ -9252,6 +10057,7 @@
     captureActiveCreatorTrackingTab();
     creatorTrackingTabs = [];
     activeCreatorTrackingTabId = '';
+    restoreCreatorTrackingIndexState(state);
     const warnings: string[] = [];
     const restored: CreatorTrackingTab[] = [];
     for (const savedTab of state.tabs ?? []) {
@@ -9264,19 +10070,29 @@
         ?? createCreatorTrackingTemplateSummary(savedTab.creator, category, savedTab.creatorFolder ?? '');
       restored.push(createCreatorTrackingTab(summary, savedTab.billingView, savedTab.archiveScale));
     }
-    if (restored.length === 0) {
+    if (restored.length === 0 && !creatorTrackingIndexOpen) {
       activeView = 'creators';
       warnings.push('開けるCreator TrackingタブがないためCreatorsを開きました。');
     }
     else {
       creatorTrackingTabs = restored;
-      const originalActiveTab = state.tabs?.[Math.max(0, state.activeIndex)];
-      const activeTab = restored.find((tab) =>
-        tab.creator === originalActiveTab?.creator &&
-        (!originalActiveTab.category || tab.summary.category === originalActiveTab.category)) ?? restored[0];
-      applyCreatorTrackingTab(activeTab);
       activeView = 'creatorTracking';
-      restoreStickyNotesFromBookmark(state.stickyNotes, 'creatorTracking', activeTab.creator, warnings);
+      if (creatorTrackingIndexOpen && state.indexActive) {
+        activeCreatorTrackingTabId = creatorTrackingIndexTabId;
+      }
+      else {
+        const originalActiveTab = state.tabs?.[Math.max(0, state.activeIndex)];
+        const activeTab = restored.find((tab) =>
+          tab.creator === originalActiveTab?.creator &&
+          (!originalActiveTab.category || tab.summary.category === originalActiveTab.category)) ?? restored[0];
+        if (activeTab) {
+          applyCreatorTrackingTab(activeTab);
+          restoreStickyNotesFromBookmark(state.stickyNotes, 'creatorTracking', activeTab.creator, warnings);
+        }
+        else {
+          activeCreatorTrackingTabId = creatorTrackingIndexTabId;
+        }
+      }
     }
     persistNavigationState();
     bookmarkRestoreWarnings = warnings;
@@ -9288,6 +10104,7 @@
     captureActiveCreatorTrackingTab();
     creatorTrackingTabs = [];
     activeCreatorTrackingTabId = '';
+    restoreCreatorTrackingIndexState(state);
     const restored: CreatorTrackingTab[] = [];
     for (const savedTab of state.tabs ?? []) {
       const category = savedTab.category && gallerySections.some((section) => section.id === savedTab.category)
@@ -9300,23 +10117,46 @@
       restored.push(createCreatorTrackingTab(summary, savedTab.billingView, savedTab.archiveScale));
     }
 
-    if (restored.length === 0) {
+    if (restored.length === 0 && !creatorTrackingIndexOpen) {
       return;
     }
 
     creatorTrackingTabs = restored;
-    const originalActiveTab = state.tabs?.[Math.max(0, state.activeIndex)];
-    const activeTab = restored.find((tab) =>
-      tab.creator === originalActiveTab?.creator &&
-      (!originalActiveTab.category || tab.summary.category === originalActiveTab.category)) ?? restored[0];
-    applyCreatorTrackingTab(activeTab);
+    if (creatorTrackingIndexOpen && state.indexActive) {
+      activeCreatorTrackingTabId = creatorTrackingIndexTabId;
+    }
+    else {
+      const originalActiveTab = state.tabs?.[Math.max(0, state.activeIndex)];
+      const activeTab = restored.find((tab) =>
+        tab.creator === originalActiveTab?.creator &&
+        (!originalActiveTab.category || tab.summary.category === originalActiveTab.category)) ?? restored[0];
+      if (activeTab) {
+        applyCreatorTrackingTab(activeTab);
+      }
+      else if (creatorTrackingIndexOpen) {
+        activeCreatorTrackingTabId = creatorTrackingIndexTabId;
+      }
+    }
     if (activate) {
       activeView = 'creatorTracking';
-      queueMicrotask(scrollCreatorTrackingArchiveToEnd);
+      if (!creatorTrackingIndexActive) queueMicrotask(scrollCreatorTrackingArchiveToEnd);
     }
     else if (activeView === 'creatorTracking') {
       activeView = 'creators';
     }
+  }
+
+  function restoreCreatorTrackingIndexState(state: CreatorTrackingBookmarkState) {
+    creatorTrackingIndexOpen = state.indexOpen === true;
+    creatorTrackingIndexSection = state.indexSection === 'all'
+      || gallerySections.some(section => section.id === state.indexSection)
+      ? state.indexSection ?? 'all'
+      : 'all';
+    creatorTrackingIndexSortKey = state.indexSortKey === 'lastChecked' || state.indexSortKey === 'alert'
+      ? state.indexSortKey
+      : 'creator';
+    creatorTrackingIndexSortDirection = state.indexSortDirection === 'desc' ? 'desc' : 'asc';
+    if (creatorTrackingIndexOpen) loadCreatorTrackingIndex();
   }
 
   function setView(view: ActiveView) {
@@ -9393,8 +10233,9 @@
       settingsSection = settingsSection || 'theme';
     }
     if (view === 'userGuide') void restoreUserGuideSection();
+    const restoredExplorerSplit = view === 'explorer' && tryRestoreExplorerSplitSession();
     persistNavigationState();
-    if (view === 'explorer' && !explorerPath && !explorerIsLoading) {
+    if (view === 'explorer' && !restoredExplorerSplit && !explorerPath && !explorerIsLoading) {
       const activeTab = explorerTabs.find((tab) => tab.id === activeExplorerTabId);
       loadExplorer(activeTab?.path);
     }
@@ -9754,17 +10595,104 @@
     });
   }
 
+  function parseExplorerSplitSessionState(value: unknown): ExplorerSplitSessionState {
+    try {
+      const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+      if (!parsed || typeof parsed !== 'object') return { enabled: false };
+      const candidate = parsed as Partial<ExplorerSplitSessionState>;
+      return {
+        enabled: Boolean(candidate.enabled),
+        leftPath: typeof candidate.leftPath === 'string' ? candidate.leftPath : '',
+        rightPath: typeof candidate.rightPath === 'string' ? candidate.rightPath : '',
+        focusedPane: candidate.focusedPane === 'right' ? 'right' : 'left',
+        leftViewMode: candidate.leftViewMode === 'details' ? 'details' : 'thumbnail',
+        rightViewMode: candidate.rightViewMode === 'details' ? 'details' : 'thumbnail',
+        ratio: normalizeExplorerSplitRatio(Number(candidate.ratio ?? 50))
+      };
+    }
+    catch {
+      return { enabled: false };
+    }
+  }
+
+  function captureExplorerSplitSessionState() {
+    if (explorerSplit) {
+      const leftTab = explorerTabs.find((tab) => tab.id === explorerSplit?.leftTabId);
+      const rightTab = explorerTabs.find((tab) => tab.id === explorerSplit?.rightTabId);
+      if (leftTab && rightTab) {
+        return JSON.stringify({
+          enabled: true,
+          leftPath: leftTab.path,
+          rightPath: rightTab.path,
+          focusedPane: splitFocusedPane,
+          leftViewMode: explorerSplit.leftViewMode,
+          rightViewMode: explorerSplit.rightViewMode,
+          ratio: normalizeExplorerSplitRatio(explorerSplitRatio)
+        } satisfies ExplorerSplitSessionState);
+      }
+    }
+
+    return JSON.stringify(pendingExplorerSplitSessionState ?? { enabled: false });
+  }
+
+  function tryRestoreExplorerSplitSession() {
+    if (activeView !== 'explorer' || !explorerTabsRestored || !pendingExplorerSplitSessionState) {
+      return false;
+    }
+
+    const state = pendingExplorerSplitSessionState;
+    pendingExplorerSplitSessionState = null;
+    if (!state.enabled || !state.leftPath || !state.rightPath) {
+      return false;
+    }
+
+    const leftPath = normalizeWindowsPath(state.leftPath);
+    const rightPath = normalizeWindowsPath(state.rightPath);
+    const leftTab = explorerTabs.find((tab) => normalizeWindowsPath(tab.path) === leftPath);
+    const rightTab = explorerTabs.find((tab) => normalizeWindowsPath(tab.path) === rightPath);
+    if (!leftTab || !rightTab || leftTab.id === rightTab.id) {
+      showExplorerToast('前回の分割表示に必要なタブを復元できなかったため、通常表示で開きます。', 'error');
+      return false;
+    }
+
+    activeExplorerTabId = leftTab.id;
+    explorerPath = leftTab.path;
+    explorerPathDraft = leftTab.path;
+    explorerEntries = [];
+    selectedPaths = [];
+    explorerSplitRatio = normalizeExplorerSplitRatio(Number(state.ratio ?? 50));
+    explorerSplit = {
+      leftTabId: leftTab.id,
+      rightTabId: rightTab.id,
+      rightPath: rightTab.path,
+      rightParentPath: null,
+      rightEntries: [],
+      rightSelectedPaths: [],
+      rightIsLoading: true,
+      rightIsTruncated: false,
+      leftViewMode: state.leftViewMode === 'details' ? 'details' : 'thumbnail',
+      rightViewMode: state.rightViewMode === 'details' ? 'details' : 'thumbnail'
+    };
+    splitFocusedPane = state.focusedPane === 'right' ? 'right' : 'left';
+    loadExplorer(leftTab.path, true);
+    loadSplitExplorer(rightTab.path);
+    return true;
+  }
+
   function persistNavigationState() {
     postHostMessage({
       type: 'ui.navigation.save',
       activeView,
       explorerBookmarksExpanded,
       explorerDetailColumns: explorerDetailColumns.join(','),
+      explorerDetailOnly,
+      explorerSplitState: captureExplorerSplitSessionState(),
       mouseGestureSettings: JSON.stringify(mouseGestureSettings),
       keyboardShortcutSettings: JSON.stringify(keyboardShortcutSettings),
       galleryCardColumns: JSON.stringify(galleryCardColumnModes),
       galleryFilterSorts: JSON.stringify(galleryFilterSorts),
       galleryThumbnailSorts: JSON.stringify(galleryThumbnailSorts),
+      galleryRandomPickSettings: JSON.stringify(galleryRandomPickSettings),
       creatorTrackingTabs: captureCreatorTrackingTabSessionState(),
       explorerCardColumns
     });
@@ -10467,17 +11395,77 @@
     }
   }
 
+  function parseGalleryRandomPickSettings(value: unknown): GalleryRandomPickSettings {
+    let candidate: Partial<GalleryRandomPickSettings> = {};
+    try {
+      const parsed = typeof value === 'string' && value.trim() ? JSON.parse(value) : value;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        candidate = parsed as Partial<GalleryRandomPickSettings>;
+      }
+    }
+    catch {
+      // Older or damaged UI state falls back to the current defaults.
+    }
+
+    const normalizeInteger = (raw: unknown, fallback: number, minimum: number, maximum: number) => {
+      const numeric = Number(raw);
+      return Number.isFinite(numeric)
+        ? Math.min(maximum, Math.max(minimum, Math.trunc(numeric)))
+        : fallback;
+    };
+    const requiredTags = Array.isArray(candidate.requiredTags)
+      ? [...new Set(candidate.requiredTags
+          .filter((tag): tag is string => typeof tag === 'string')
+          .map((tag) => tag.trim())
+          .filter(Boolean))]
+      : [];
+
+    return {
+      pickCount: normalizeInteger(candidate.pickCount, defaultGalleryRandomPickSettings.pickCount, 1, 50),
+      minimumRating: normalizeInteger(candidate.minimumRating, defaultGalleryRandomPickSettings.minimumRating, 0, 6),
+      minimumImageCount: normalizeInteger(candidate.minimumImageCount, defaultGalleryRandomPickSettings.minimumImageCount, 0, 1_000_000),
+      minimumDaysSinceAccess: normalizeInteger(candidate.minimumDaysSinceAccess, defaultGalleryRandomPickSettings.minimumDaysSinceAccess, 0, 36_500),
+      maximumPerTitle: normalizeInteger(candidate.maximumPerTitle, defaultGalleryRandomPickSettings.maximumPerTitle, 0, 10),
+      requiredTags,
+      tagMatchMode: candidate.tagMatchMode === 'all' ? 'all' : 'any',
+      applyCurrentFilters: candidate.applyCurrentFilters === true
+    };
+  }
+
+  function scheduleGalleryRandomPickSettingsSave() {
+    if (galleryRandomPickSettingsSaveTimer !== null) {
+      clearTimeout(galleryRandomPickSettingsSaveTimer);
+    }
+    galleryRandomPickSettingsSaveTimer = setTimeout(() => {
+      galleryRandomPickSettingsSaveTimer = null;
+      persistNavigationState();
+    }, 250);
+  }
+
+  function flushGalleryRandomPickSettingsSave() {
+    if (galleryRandomPickSettingsSaveTimer === null) return;
+    clearTimeout(galleryRandomPickSettingsSaveTimer);
+    galleryRandomPickSettingsSaveTimer = null;
+    persistNavigationState();
+  }
+
+  function updateGalleryRandomPickSettings(settings: GalleryRandomPickSettings) {
+    galleryRandomPickSettings = settings;
+    scheduleGalleryRandomPickSettingsSave();
+  }
+
   function setGalleryCardColumns(columns: number, section = gallerySection) {
     const normalizedColumns = Math.min(9, Math.max(5, columns));
     galleryCardColumnModes = { ...galleryCardColumnModes, [section]: normalizedColumns };
     persistNavigationState();
   }
 
-  function loadExplorer(path = explorerPathDraft, restoreScroll = false) {
+  function loadExplorer(path = explorerPathDraft, restoreScroll = false, selectAfterNavigation = '') {
     if (isExplorerFolderUpdateLocked()) {
       return;
     }
 
+    pendingExplorerParentSelectionPath = selectAfterNavigation;
     if (restoreScroll) {
       // The caller captured the previous tab before changing the active tab.
     }
@@ -10494,14 +11482,15 @@
   }
 
   function saveExplorerTabScroll() {
-    if (!activeExplorerTabId || !explorerGridPaneElement || !explorerDetailPaneElement) {
+    if (!activeExplorerTabId || !explorerDetailPaneElement) {
       return;
     }
 
+    const previous = explorerTabScrollPositions[activeExplorerTabId] ?? { gridTop: 0, detailTop: 0 };
     explorerTabScrollPositions = {
       ...explorerTabScrollPositions,
       [activeExplorerTabId]: {
-        gridTop: explorerGridPaneElement.scrollTop,
+        gridTop: explorerGridPaneElement?.scrollTop ?? previous.gridTop,
         detailTop: explorerDetailPaneElement.scrollTop
       }
     };
@@ -10551,6 +11540,7 @@
       return;
     }
 
+    pendingExplorerSplitSessionState = null;
     explorerSplit = {
       leftTabId: leftTab.id,
       rightTabId: rightTab.id,
@@ -10559,9 +11549,12 @@
       rightEntries: [],
       rightSelectedPaths: [],
       rightIsLoading: true,
-      rightIsTruncated: false
+      rightIsTruncated: false,
+      leftViewMode: explorerDetailOnly ? 'details' : 'thumbnail',
+      rightViewMode: explorerDetailOnly ? 'details' : 'thumbnail'
     };
     splitFocusedPane = 'left';
+    persistNavigationState();
     loadSplitExplorer(rightTab.path);
   }
 
@@ -10682,15 +11675,125 @@
   }
 
   function exitExplorerSplit() {
+    if (explorerSplit) {
+      explorerDetailOnly = explorerSplit.leftViewMode === 'details';
+    }
     explorerSplit = null;
+    pendingExplorerSplitSessionState = null;
     splitFocusedPane = 'left';
+    persistNavigationState();
   }
 
-  function loadSplitExplorer(path: string) {
+  function normalizeExplorerSplitRatio(value: number, workspaceWidth = 0) {
+    const finiteValue = Number.isFinite(value) ? value : 50;
+    const minimumRatio = workspaceWidth > 0
+      ? Math.min(45, Math.max(20, (260 / workspaceWidth) * 100))
+      : 20;
+    return Math.min(100 - minimumRatio, Math.max(minimumRatio, finiteValue));
+  }
+
+  function beginExplorerSplitResize(event: PointerEvent) {
+    if (!explorerSplit || !explorerSplitWorkspaceElement) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    explorerSplitResizePointerId = event.pointerId;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    updateExplorerSplitResize(event);
+  }
+
+  function updateExplorerSplitResize(event: PointerEvent) {
+    if (explorerSplitResizePointerId !== event.pointerId || !explorerSplitWorkspaceElement) {
+      return;
+    }
+
+    const bounds = explorerSplitWorkspaceElement.getBoundingClientRect();
+    if (bounds.width <= 0) {
+      return;
+    }
+
+    explorerSplitRatio = normalizeExplorerSplitRatio(
+      ((event.clientX - bounds.left) / bounds.width) * 100,
+      bounds.width);
+  }
+
+  function finishExplorerSplitResize(event: PointerEvent) {
+    if (explorerSplitResizePointerId !== event.pointerId) {
+      return;
+    }
+
+    const target = event.currentTarget as HTMLElement;
+    if (target.hasPointerCapture(event.pointerId)) {
+      target.releasePointerCapture(event.pointerId);
+    }
+    explorerSplitResizePointerId = null;
+    persistNavigationState();
+  }
+
+  function resetExplorerSplitRatio() {
+    explorerSplitRatio = 50;
+    if (explorerSplit) persistNavigationState();
+  }
+
+  function handleExplorerSplitResizeKeydown(event: KeyboardEvent) {
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      event.preventDefault();
+      explorerSplitRatio = normalizeExplorerSplitRatio(
+        explorerSplitRatio + (event.key === 'ArrowLeft' ? -2 : 2),
+        explorerSplitWorkspaceElement?.getBoundingClientRect().width ?? 0);
+      persistNavigationState();
+    }
+    else if (event.key === 'Home') {
+      event.preventDefault();
+      resetExplorerSplitRatio();
+    }
+  }
+
+  function handleExplorerDetailHorizontalWheel(event: WheelEvent) {
+    const container = event.currentTarget as HTMLElement;
+    if (container.scrollWidth <= container.clientWidth) return;
+
+    const rawDelta = Math.abs(event.deltaX) > 0.01
+      ? event.deltaX
+      : event.shiftKey ? event.deltaY : 0;
+    if (Math.abs(rawDelta) <= 0.01) return;
+
+    const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+      ? 24
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? container.clientWidth : 1;
+    const nextScrollLeft = Math.min(
+      container.scrollWidth - container.clientWidth,
+      Math.max(0, container.scrollLeft + rawDelta * scale));
+    if (nextScrollLeft === container.scrollLeft) return;
+
+    event.preventDefault();
+    container.scrollLeft = nextScrollLeft;
+  }
+
+  function scrollExplorerDetailsHorizontally(direction: -1 | 1) {
+    if (activeView !== 'explorer') return;
+    const hoveredPanes = [...document.querySelectorAll<HTMLElement>('.explorer-detail-pane:hover')];
+    const focusedPane = explorerSplit
+      ? splitFocusedPane === 'right' && explorerSplit.rightViewMode === 'details'
+        ? explorerSplitRightPaneElement
+        : splitFocusedPane === 'left' && explorerSplit.leftViewMode === 'details'
+          ? explorerSplitLeftPaneElement
+          : null
+      : explorerDetailPaneElement;
+    const container = hoveredPanes.at(-1) ?? focusedPane;
+    if (!container || container.scrollWidth <= container.clientWidth) return;
+
+    container.scrollBy({ left: direction * 48, behavior: 'auto' });
+  }
+
+  function loadSplitExplorer(path: string, selectAfterNavigation = '') {
     if (!explorerSplit || isExplorerFolderUpdateLocked()) {
       return;
     }
 
+    pendingSplitParentSelectionPath = selectAfterNavigation;
     explorerSplit = { ...explorerSplit, rightIsLoading: true };
     explorerThumbnailPriority += 1;
     postHostMessage({ type: 'explorer.list', path, pane: 'split-right' });
@@ -10698,7 +11801,7 @@
 
   function navigateSplitParent() {
     if (explorerSplit?.rightParentPath) {
-      loadSplitExplorer(explorerSplit.rightParentPath);
+      loadSplitExplorer(explorerSplit.rightParentPath, explorerSplit.rightPath);
     }
   }
 
@@ -10735,11 +11838,11 @@
 
     if (pane === 'left') {
       explorerHistoryIndex = targetIndex;
-      loadExplorer(targetPath);
+      loadExplorer(targetPath, false, getImmediateExplorerChildPath(targetPath, explorerPath));
     }
     else {
       splitExplorerHistoryIndex = targetIndex;
-      loadSplitExplorer(targetPath);
+      loadSplitExplorer(targetPath, getImmediateExplorerChildPath(targetPath, explorerSplit?.rightPath ?? ''));
     }
   }
 
@@ -10816,7 +11919,9 @@
   }
 
   function focusSplitPane(pane: 'left' | 'right') {
+    if (splitFocusedPane === pane) return;
     splitFocusedPane = pane;
+    persistNavigationState();
   }
 
   function updateActiveExplorerQuery(event: Event) {
@@ -10845,7 +11950,7 @@
   function openExplorerBreadcrumb(path: string) {
     explorerDriveMenuOpen = false;
     explorerPathEditing = false;
-    loadExplorer(path);
+    loadExplorer(path, false, getImmediateExplorerChildPath(path, explorerPath));
   }
 
   function toggleExplorerDriveMenu(event: MouseEvent) {
@@ -10878,6 +11983,12 @@
     }
 
     launchExplorerEntry(entry, activation);
+  }
+
+  function onSplitExplorerKeydown(event: KeyboardEvent, entry: ExplorerEntry) {
+    if (event.key === 'Enter') {
+      openSplitEntry(entry);
+    }
   }
 
   function getExplorerGestureRegion(x: number, y: number, pane: 'left' | 'right') {
@@ -11147,11 +12258,8 @@
       return;
     }
 
+    startExternalFileDrag(event, paths);
     draggedExplorerEntries = { paths, sourcePane: pane, sourcePath };
-    event.dataTransfer?.setData('application/x-gallerybrowser-paths', JSON.stringify(paths));
-    if (event.dataTransfer) {
-      event.dataTransfer.effectAllowed = 'copyMove';
-    }
   }
 
   function updateExplorerDropTarget(event: DragEvent, entry: ExplorerEntry) {
@@ -11488,6 +12596,48 @@
     persistNavigationState();
   }
 
+  async function toggleExplorerDetailOnly(pane?: 'left' | 'right') {
+    if (explorerSplit) {
+      const targetPane = pane ?? splitFocusedPane;
+      const currentMode = targetPane === 'right' ? explorerSplit.rightViewMode : explorerSplit.leftViewMode;
+      const nextMode: ExplorerPaneViewMode = currentMode === 'details' ? 'thumbnail' : 'details';
+      explorerSplit = targetPane === 'right'
+        ? { ...explorerSplit, rightViewMode: nextMode }
+        : { ...explorerSplit, leftViewMode: nextMode };
+      splitFocusedPane = targetPane;
+      await tick();
+      const selectedPath = targetPane === 'right'
+        ? explorerSplit.rightSelectedPaths[0]
+        : selectedPaths[0];
+      if (selectedPath) {
+        revealExplorerSplitEntry(selectedPath, targetPane);
+      }
+      persistNavigationState();
+      return;
+    }
+
+    saveExplorerTabScroll();
+    explorerDetailOnly = !explorerDetailOnly;
+    persistNavigationState();
+    pendingExplorerScrollRestoreTabId = activeExplorerTabId || null;
+    await tick();
+    restoreExplorerTabScroll();
+    const selectedPath = selectedPaths[0];
+    if (selectedPath) {
+      revealExplorerEntry(selectedPath, explorerDetailOnly ? 'list' : 'grid');
+    }
+  }
+
+  function revealExplorerSplitEntry(path: string, pane: 'left' | 'right') {
+    requestAnimationFrame(() => {
+      const paneElement = document.querySelector<HTMLElement>(pane === 'right' ? '.split-pane-right' : '.split-pane-left');
+      const item = Array.from(paneElement?.querySelectorAll<HTMLElement>('[data-explorer-path]') ?? [])
+        .find(element => element.dataset.explorerPath === path);
+      item?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      item?.focus({ preventScroll: true });
+    });
+  }
+
   function startExplorerDetailColumnDrag(event: DragEvent, columnId: ExplorerDetailColumnId) {
     draggedExplorerDetailColumn = columnId;
     event.dataTransfer?.setData('text/plain', columnId);
@@ -11763,6 +12913,10 @@
         return entry.isDirectory ? 'フォルダ' : entry.extension || 'ファイル';
       case 'size':
         return formatSize(entry.size);
+      case 'averageImageSize':
+        return entry.size !== null && entry.pageCount !== null && entry.pageCount > 0
+          ? formatSize(Math.round(entry.size / entry.pageCount))
+          : '-';
       case 'created':
         return formatModifiedAt(entry.createdAt);
       case 'accessed':
@@ -12214,12 +13368,12 @@
 
   function navigateToParent() {
     if (explorerParentPath) {
-      loadExplorer(explorerParentPath);
+      loadExplorer(explorerParentPath, false, explorerPath);
     }
   }
 
   function handleExplorerCardZoom(event: WheelEvent) {
-    if (!event.ctrlKey) {
+    if (!event.ctrlKey || explorerDetailOnly) {
       return;
     }
 
@@ -12382,6 +13536,16 @@
     if (matchesKeyboardShortcut(event, 'selectNextTab')) {
       event.preventDefault();
       selectRelativeExplorerTab(1);
+      return;
+    }
+    if (matchesKeyboardShortcut(event, 'scrollExplorerLeft')) {
+      event.preventDefault();
+      scrollExplorerDetailsHorizontally(-1);
+      return;
+    }
+    if (matchesKeyboardShortcut(event, 'scrollExplorerRight')) {
+      event.preventDefault();
+      scrollExplorerDetailsHorizontally(1);
       return;
     }
 
@@ -12988,7 +14152,9 @@
       allowMultiple: programAllowMultiple,
       clickExtensions: programClickExtensions,
       doubleClickExtensions: programDoubleClickExtensions,
-      contextMenuExtensions: programContextMenuExtensions
+      contextMenuExtensions: programContextMenuExtensions,
+      showInGalleryContextMenu: programShowInGalleryContextMenu,
+      showInExplorerContextMenu: programShowInExplorerContextMenu
     });
   }
 
@@ -13142,6 +14308,44 @@
     });
   }
 
+  function focusPendingExplorerParentSelection(pane: 'left' | 'right') {
+    const requestedPath = pane === 'left'
+      ? pendingExplorerParentSelectionPath
+      : pendingSplitParentSelectionPath;
+    if (!requestedPath) {
+      return;
+    }
+
+    if (pane === 'left') {
+      pendingExplorerParentSelectionPath = '';
+    }
+    else {
+      pendingSplitParentSelectionPath = '';
+    }
+
+    const entries = pane === 'left' ? explorerEntries : explorerSplit?.rightEntries ?? [];
+    const entry = entries.find(candidate => normalizeWindowsPath(candidate.path) === normalizeWindowsPath(requestedPath));
+    if (!entry) {
+      return;
+    }
+
+    const query = pane === 'left' ? explorerQuery : splitExplorerQuery;
+    if (query && filterExplorerEntries([entry], query).length === 0) {
+      if (pane === 'left') {
+        explorerQuery = '';
+      }
+      else {
+        splitExplorerQuery = '';
+      }
+    }
+
+    focusPastedExplorerEntries([entry.path], pane);
+    if (pane === 'left' && !explorerSplit) {
+      revealExplorerEntry(entry.path, 'grid');
+      revealExplorerEntry(entry.path, 'list');
+    }
+  }
+
   function focusPastedExplorerEntries(paths: string[], pane: 'left' | 'right') {
     if (paths.length === 0) {
       return;
@@ -13167,7 +14371,9 @@
     requestAnimationFrame(() => {
       const selector = `[data-explorer-path="${CSS.escape(pastedPaths[0])}"]`;
       const element = pane === 'left'
-        ? document.querySelector<HTMLElement>(`.explorer-grid ${selector}, .explorer-detail-body ${selector}`)
+        ? document.querySelector<HTMLElement>(explorerSplit
+            ? `.split-pane-left ${selector}`
+            : explorerDetailOnly ? `.explorer-detail-pane ${selector}` : `.explorer-grid ${selector}`)
         : document.querySelector<HTMLElement>(`.split-pane-right ${selector}`);
       element?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       element?.focus({ preventScroll: true });
@@ -13565,6 +14771,178 @@
     postHostMessage({ type: 'settings.pcloud.disconnect' });
   }
 
+  function addNotificationSchedule() {
+    const id = typeof crypto?.randomUUID === 'function'
+      ? crypto.randomUUID().replaceAll('-', '')
+      : `notification-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const usedTimes = new Set(notificationSchedules.map(schedule => schedule.time));
+    let nextTime = '09:00';
+    for (let offset = 0; offset < 24; offset += 1) {
+      const candidate = `${String((9 + offset) % 24).padStart(2, '0')}:00`;
+      if (!usedTimes.has(candidate)) {
+        nextTime = candidate;
+        break;
+      }
+    }
+    notificationSchedules = [
+      ...notificationSchedules,
+      {
+        id,
+        time: nextTime,
+        lastStartedAt: null
+      }
+    ];
+  }
+
+  function updateNotificationScheduleTime(id: string, time: string) {
+    notificationSchedules = notificationSchedules.map(schedule =>
+      schedule.id === id ? { ...schedule, time } : schedule);
+  }
+
+  function removeNotificationSchedule(id: string) {
+    notificationSchedules = notificationSchedules.filter(schedule => schedule.id !== id);
+  }
+
+  function saveNotificationSchedules() {
+    if (notificationSchedules.some(schedule => !/^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.time))) {
+      notificationScheduleStatus = '各スケジュールに有効な時刻を指定してください。';
+      return;
+    }
+    if (new Set(notificationSchedules.map(schedule => schedule.time)).size !== notificationSchedules.length) {
+      notificationScheduleStatus = '同じ時刻の通知スケジュールは1件にまとめてください。';
+      return;
+    }
+
+    notificationScheduleSaving = true;
+    notificationScheduleStatus = '通知スケジュールを保存しています...';
+    postHostMessage({
+      type: 'settings.notifications.schedules.save',
+      schedules: notificationSchedules
+    });
+  }
+
+  function getDiscordNotificationSettingsMessage(type: string) {
+    return {
+      type,
+      enabled: discordNotificationEnabled,
+      webhookUrl: discordWebhookUrlDraft.trim(),
+      notifyCreatorFollowAlert: discordNotifyCreatorFollowAlert,
+      notifySubscriptionEnding: discordNotifySubscriptionEnding,
+      notifySubscriptionReminder: discordNotifySubscriptionReminder,
+      notifyScheduledScanStarted: discordNotifyScheduledScanStarted,
+      notifyScheduledScanCompleted: discordNotifyScheduledScanCompleted
+    };
+  }
+
+  function saveDiscordNotificationSettings() {
+    discordNotificationBusy = true;
+    discordNotificationStatus = 'Discord通知設定を保存しています...';
+    postHostMessage(getDiscordNotificationSettingsMessage('settings.discord.save'));
+  }
+
+  function testDiscordNotification() {
+    if (!discordHasWebhookUrl && !discordWebhookUrlDraft.trim()) {
+      discordNotificationStatus = 'Discord Webhook URLを入力してください。';
+      return;
+    }
+    discordNotificationBusy = true;
+    discordNotificationStatus = 'Discordへテスト通知を送信しています...';
+    postHostMessage(getDiscordNotificationSettingsMessage('settings.discord.test'));
+  }
+
+  function testDiscordNotificationEvent(eventType: NotificationTestEvent) {
+    if (!discordHasWebhookUrl && !discordWebhookUrlDraft.trim()) {
+      discordNotificationStatus = 'Discord Webhook URLを入力してください。';
+      return;
+    }
+    const label = notificationTestEvents.find(item => item.value === eventType)?.label ?? eventType;
+    discordNotificationBusy = true;
+    discordNotificationStatus = `${label}のテスト通知をDiscordへ送信しています...`;
+    postHostMessage({
+      ...getDiscordNotificationSettingsMessage('settings.discord.event.test'),
+      eventType
+    });
+  }
+
+  function disconnectDiscordNotification() {
+    if (!window.confirm('登録済みのDiscord Webhook URLを削除して通知を無効にしますか？')) return;
+    discordNotificationBusy = true;
+    discordNotificationStatus = 'Discord Webhookの登録を解除しています...';
+    postHostMessage({ type: 'settings.discord.disconnect' });
+  }
+
+  function getLineNotificationSettingsMessage(type: string) {
+    return {
+      type,
+      enabled: lineNotificationEnabled,
+      channelAccessToken: lineChannelAccessTokenDraft.trim(),
+      recipientUserId: lineRecipientUserIdDraft.trim(),
+      notifyCreatorFollowAlert: lineNotifyCreatorFollowAlert,
+      notifySubscriptionEnding: lineNotifySubscriptionEnding,
+      notifySubscriptionReminder: lineNotifySubscriptionReminder,
+      notifyScheduledScanStarted: lineNotifyScheduledScanStarted,
+      notifyScheduledScanCompleted: lineNotifyScheduledScanCompleted
+    };
+  }
+
+  function saveLineNotificationSettings() {
+    lineNotificationBusy = true;
+    lineNotificationStatus = 'LINE通知設定を保存しています...';
+    postHostMessage(getLineNotificationSettingsMessage('settings.line.save'));
+  }
+
+  function testLineNotification() {
+    if (!lineHasChannelAccessToken && !lineChannelAccessTokenDraft.trim()) {
+      lineNotificationStatus = 'LINEのチャネルアクセストークンを入力してください。';
+      return;
+    }
+    if (!lineHasRecipientUserId && !lineRecipientUserIdDraft.trim()) {
+      lineNotificationStatus = 'LINEの受信先User IDを入力してください。';
+      return;
+    }
+    lineNotificationBusy = true;
+    lineNotificationStatus = 'LINEへテスト通知を送信しています...';
+    postHostMessage(getLineNotificationSettingsMessage('settings.line.test'));
+  }
+
+  function testLineNotificationEvent(eventType: NotificationTestEvent) {
+    if (!lineHasChannelAccessToken && !lineChannelAccessTokenDraft.trim()) {
+      lineNotificationStatus = 'LINEのチャネルアクセストークンを入力してください。';
+      return;
+    }
+    if (!lineHasRecipientUserId && !lineRecipientUserIdDraft.trim()) {
+      lineNotificationStatus = 'LINEの受信先User IDを入力してください。';
+      return;
+    }
+    const label = notificationTestEvents.find(item => item.value === eventType)?.label ?? eventType;
+    lineNotificationBusy = true;
+    lineNotificationStatus = `${label}のテスト通知をLINEへ送信しています...`;
+    postHostMessage({
+      ...getLineNotificationSettingsMessage('settings.line.event.test'),
+      eventType
+    });
+  }
+
+  function refreshLineQuota() {
+    if (!lineHasChannelAccessToken && !lineChannelAccessTokenDraft.trim()) {
+      lineNotificationStatus = 'LINEのチャネルアクセストークンを入力してください。';
+      return;
+    }
+    lineNotificationBusy = true;
+    lineNotificationStatus = 'LINE Messaging APIの利用状況を確認しています...';
+    postHostMessage({
+      type: 'settings.line.quota',
+      channelAccessToken: lineChannelAccessTokenDraft.trim()
+    });
+  }
+
+  function disconnectLineNotification() {
+    if (!window.confirm('登録済みのLINE資格情報を削除して通知を無効にしますか？')) return;
+    lineNotificationBusy = true;
+    lineNotificationStatus = 'LINE Messaging APIの登録を解除しています...';
+    postHostMessage({ type: 'settings.line.disconnect' });
+  }
+
   function startDatabaseScheduledScanToast(message: string, estimatedSeconds: number | null) {
     finishDatabaseScheduledScanToast();
     databaseScheduledScanInProgress = true;
@@ -13870,6 +15248,8 @@
     programClickExtensions = rule.clickExtensions.replaceAll('.', '');
     programDoubleClickExtensions = rule.doubleClickExtensions.replaceAll('.', '');
     programContextMenuExtensions = rule.contextMenuExtensions.replaceAll('.', '');
+    programShowInGalleryContextMenu = rule.showInGalleryContextMenu ?? false;
+    programShowInExplorerContextMenu = rule.showInExplorerContextMenu ?? true;
   }
 
   function createProgramRule() {
@@ -13881,6 +15261,8 @@
     programClickExtensions = '';
     programDoubleClickExtensions = '';
     programContextMenuExtensions = '';
+    programShowInGalleryContextMenu = false;
+    programShowInExplorerContextMenu = true;
   }
 
   function isRuleAssignedToExtension(extensions: string, extension: string) {
@@ -13911,12 +15293,34 @@
   }
 
   function getContextAppRules(entry: ExplorerEntry) {
-    return externalAppRules.filter((rule) => isRuleAssignedToExtension(rule.contextMenuExtensions, entry.extension));
+    return externalAppRules.filter((rule) =>
+      (rule.showInExplorerContextMenu ?? true) &&
+      isRuleAssignedToExtension(rule.contextMenuExtensions, entry.extension)
+    );
+  }
+
+  function getGalleryContextAppRules(work: GalleryWork) {
+    const extension = work.path.match(/(\.[^\\/.]+)$/)?.[1] ?? '';
+    return externalAppRules.filter((rule) =>
+      (rule.showInGalleryContextMenu ?? false) &&
+      isRuleAssignedToExtension(rule.contextMenuExtensions, extension)
+    );
   }
 
   function openEntryWithProgram(rule: ExternalAppRule, entry: ExplorerEntry) {
     explorerContextMenu = null;
     postHostMessage({ type: 'explorer.externalApp.open', id: rule.id, path: entry.path });
+  }
+
+  function openGalleryWorkWithProgram(rule: ExternalAppRule, work: GalleryWork) {
+    if (!work) {
+      closeGalleryContextMenu();
+      showExplorerToast('起動対象の作品を特定できませんでした。', 'error');
+      return;
+    }
+    showExplorerToast(`${rule.name}へ起動要求を送信しています...`, 'progress', null);
+    postHostMessage({ type: 'gallery.externalApp.open', id: rule.id, path: work.path });
+    closeGalleryContextMenu();
   }
 
   function getUserMetricsRanking(
@@ -13964,6 +15368,41 @@
 
   function getUserMetricsMetricRanking(dashboard: UserMetricsDashboard, key: string) {
     return dashboard.metricRankings.find(ranking => ranking.key === key)?.items ?? [];
+  }
+
+  function getUserMetricsRegressionFactors(model: UserMetricsRegressionModel, direction: 'positive' | 'negative') {
+    return model.factors
+      .filter(factor => factor.direction === direction)
+      .sort((left, right) => Math.abs(right.coefficient) - Math.abs(left.coefficient))
+      .slice(0, 12);
+  }
+
+  function getUserMetricsRegressionFactorWidth(
+    model: UserMetricsRegressionModel,
+    factor: UserMetricsRegressionFactor,
+    direction: 'positive' | 'negative') {
+    const factors = getUserMetricsRegressionFactors(model, direction);
+    const maximum = Math.max(0.0001, ...factors.map(item => Math.abs(item.coefficient)));
+    return Math.max(4, Math.abs(factor.coefficient) / maximum * 100);
+  }
+
+  function formatUserMetricsRegressionCount(value: number) {
+    return value.toLocaleString('ja-JP', { maximumFractionDigits: 0 });
+  }
+
+  function formatUserMetricsRegressionPValue(value: number | null) {
+    if (value === null || !Number.isFinite(value)) return '—';
+    if (value < 0.001) return '<0.001';
+    return value.toFixed(3);
+  }
+
+  function getUserMetricsRegressionAicAssessment(model: UserMetricsRegressionModel) {
+    const delta = model.deltaAkaikeInformationCriterion;
+    if (delta === null || !Number.isFinite(delta)) return '評価なし';
+    if (delta <= -10) return 'Nullより明確に改善';
+    if (delta <= -4) return 'Nullより改善';
+    if (delta < 0) return 'Nullよりわずかに改善';
+    return 'Nullより悪化';
   }
 
   function getUserMetricsTrendX(index: number, count: number, width = 680) {
@@ -14177,6 +15616,9 @@
           <button class:settings-active={settingsSection === 'calendar'} onclick={() => (settingsSection = 'calendar')}>
             Calendar
           </button>
+          <button class:settings-active={settingsSection === 'notifications'} onclick={() => (settingsSection = 'notifications')}>
+            通知
+          </button>
         </div>
       {/if}
       <button class="settings-category" onclick={() => (settingsFilesExpanded = !settingsFilesExpanded)}>
@@ -14377,12 +15819,13 @@
             <span>作者の活動・保管・評価・課金状況を一か所に集約します</span>
           </div>
           <div class="creator-tracking-toolbar-actions">
+            <button class:active={creatorTrackingIndexActive} class="creator-tracking-index-button" title="Creator Tracking Indexを開く" aria-label="Creator Tracking Indexを開く" onclick={activateCreatorTrackingIndex}><List size={18} /></button>
             <button class="creator-tracking-new-button" title="Creator Trackingを新規作成" aria-label="Creator Trackingを新規作成" onclick={openCreatorTrackingNewDialog}><UserPlus size={18} /></button>
-            <button class="creator-tracking-gallery-button" title="この作者をGalleryで表示" aria-label="この作者をGalleryで表示" disabled={!creatorTracking && !creatorTrackingSummary} onclick={navigateCreatorTrackingToGallery}><LayoutGrid size={18} /></button>
-            <button class="creator-tracking-refresh-button" title="この作者の最新データを反映" aria-label="この作者の最新データを反映" disabled={!creatorTracking || creatorTrackingIsLoading || creatorTrackingIsSaving} onclick={refreshCreatorTracking}><RefreshCw size={18} /></button>
-            <button class="creator-tracking-delete-button" title="作者データを削除" aria-label="作者データを削除" disabled={(!creatorTracking && !creatorTrackingSummary) || creatorTrackingDeleteInProgress} onclick={requestCreatorTrackingDelete}><Trash2 size={18} /></button>
-            <button class="sticky-note-launch-button" title="Creator Trackingに付箋を追加" onclick={createStickyNoteFromToolbar}><StickyNote size={18} /></button>
-            <button class="view-bookmark-button" title="現在のCreator TrackingをBookmark" onclick={captureViewBookmarkFromToolbar}><Bookmark size={18} /></button>
+            <button class="creator-tracking-gallery-button" title="この作者をGalleryで表示" aria-label="この作者をGalleryで表示" disabled={creatorTrackingIndexActive || (!creatorTracking && !creatorTrackingSummary)} onclick={navigateCreatorTrackingToGallery}><LayoutGrid size={18} /></button>
+            <button class="creator-tracking-refresh-button" title="この作者の最新データを反映" aria-label="この作者の最新データを反映" disabled={creatorTrackingIndexActive || !creatorTracking || creatorTrackingIsLoading || creatorTrackingIsSaving} onclick={refreshCreatorTracking}><RefreshCw size={18} /></button>
+            <button class="creator-tracking-delete-button" title="作者データを削除" aria-label="作者データを削除" disabled={creatorTrackingIndexActive || (!creatorTracking && !creatorTrackingSummary) || creatorTrackingDeleteInProgress} onclick={requestCreatorTrackingDelete}><Trash2 size={18} /></button>
+            <button class="sticky-note-launch-button" title="Creator Trackingに付箋を追加" disabled={creatorTrackingIndexActive} onclick={createStickyNoteFromToolbar}><StickyNote size={18} /></button>
+            <button class="view-bookmark-button" title="現在のCreator TrackingをBookmark" disabled={creatorTrackingIndexActive} onclick={captureViewBookmarkFromToolbar}><Bookmark size={18} /></button>
           </div>
         </div>
       {:else if activeView === 'creators'}
@@ -14401,9 +15844,24 @@
       {/if}
     </header>
 
-    {#if activeView === 'creatorTracking' && creatorTrackingTabs.length > 0}
+    {#if activeView === 'creatorTracking' && (creatorTrackingIndexOpen || creatorTrackingTabs.length > 0)}
       <nav class="creator-tracking-tabs" aria-label="開いているCreator Tracking">
         <div class="creator-tracking-tab-strip" role="tablist">
+          {#if creatorTrackingIndexOpen}
+            <div class:active={creatorTrackingIndexActive} class="creator-tracking-tab creator-tracking-index-tab">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={creatorTrackingIndexActive}
+                title="Creator Tracking Index"
+                onclick={activateCreatorTrackingIndex}
+              >
+                <List size={14} />
+                <span class="creator-tracking-tab-label">Index</span>
+              </button>
+              <button type="button" class="creator-tracking-tab-close" title="タブを閉じる" aria-label="Indexを閉じる" onclick={closeCreatorTrackingIndexTab}><X size={13} /></button>
+            </div>
+          {/if}
           {#each creatorTrackingTabs as tab (tab.id)}
             {@const tabLabel = getCreatorTrackingTabLabel(tab)}
             <div class:active={tab.id === activeCreatorTrackingTabId} class="creator-tracking-tab">
@@ -14452,6 +15910,10 @@
               <Sparkles size={19} />
               <div><strong>最初に覚える3つの単位</strong><p><b>区分</b>はライブラリの大分類、<b>属性</b>はCreator・Title・Character・Tagなどの絞り込み情報、<b>gid</b>は作品ファイルを一意に識別するIDです。</p></div>
             </div>
+            <div class="user-guide-note">
+              <RefreshCw size={19} />
+              <div><strong>最新版の現行仕様</strong><p>このガイドはv1.0以降に追加されたCalendar、Discord・LINE通知、ランダムピック、回帰分析、Explorer詳細表示、外部アプリ連携、pCloudアーカイブを含む最新版を対象にしています。</p></div>
+            </div>
           </section>
 
           <section id="user-guide-firstSteps" class="user-guide-section">
@@ -14459,7 +15921,7 @@
             <ol class="user-guide-steps">
               <li><span>1</span><div><strong>本体DBの保存場所を決める</strong><p><b>Settings ＞ Files ＞ データベース</b>で本体DBとキャッシュDBの保存先を確認・設定します。特に本体DBは重要な登録情報を保存するため、遅くとも最初の走査より前に保存場所を決めることを推奨します。</p></div></li>
               <li><span>2</span><div><strong>区分と対象フォルダを登録</strong><p><b>Settings ＞ Files ＞ 区分別の設定</b>で区分を作り、対象ファイルの拡張子と対象ディレクトリを設定します。</p></div></li>
-              <li><span>3</span><div><strong>ファイルを走査</strong><p><b>Settings ＞ Files ＞ データベース</b>の「SQLiteDBの手動更新」から対象区分を選び、更新を実行します。</p></div></li>
+              <li><span>3</span><div><strong>ファイルを走査</strong><p><b>Settings ＞ Files ＞ データベース</b>の「SQLiteDBの手動更新」から対象区分を選び、更新を実行します。運用が安定したら定期走査の曜日・時刻・区分を設定できます。</p></div></li>
               <li><span>4</span><div><strong>Galleryで内容を確認</strong><p>左のGallery配下から区分を開き、作品カード、Creator、Title、Character、Tagが意図どおり表示されるか確認します。</p></div></li>
               <li><span>5</span><div><strong>属性と作者情報を整備</strong><p>作品カードの右クリックメニューからフィルターやTagを登録し、必要な作者はCreator Trackingへ追加します。</p></div></li>
               <li><span>6</span><div><strong>バックアップ方針を決める</strong><p>必要ならpCloudバックアップを設定します。キャッシュは再生成できますが、本体DBは定期的にスナップショットを保存してください。</p></div></li>
@@ -14473,7 +15935,7 @@
               <article><h3>属性フィルタ</h3><p>Rating、Creator、Title、Character、Tagを選んで表示作品を絞り込みます。Expandで候補を展開し、Collapseの右クリックで展開状態をピン留めできます。</p></article>
               <article><h3>Filters Sort</h3><p>属性ボタンの並びをRating、Files、Abcで変更します。複数の条件を選ぶと選択順が優先順位になり、右クリックで条件を解除します。</p></article>
               <article><h3>Thumbnail Sort</h3><p>作品カードをRating、Pics、Access date、Filepathで並べ替えます。複数条件、昇順・降順、右クリック解除の操作はFilters Sortと共通です。</p></article>
-              <article><h3>Utilities</h3><p>検索、Bookmark、付箋、選択CreatorのTracking表示、登録済みストレージをExplorerで開く操作をまとめています。</p></article>
+              <article><h3>Utilities</h3><p>検索、ランダムピック、Bookmark、付箋、選択CreatorのTracking表示、登録済みストレージをExplorerで開く操作をまとめています。</p></article>
             </div>
             <div class="user-guide-operation-list">
               <div><span>01</span><p><strong>カードを右クリック</strong>すると、逆引きフィルタ、フィルターの登録と解除、Tagの登録と解除、ファイル削除などを実行できます。</p></div>
@@ -14481,6 +15943,9 @@
               <div><span>03</span><p><strong>Reset</strong>はCreator・Title・Character・Tagの選択をまとめて解除します。</p></div>
               <div><span>04</span><p><strong>カードは複数選択に対応</strong>しています。Ctrl＋クリックで個別に追加・解除し、Shift＋クリックで基準カードから範囲選択できます。複数作品への属性・Tag操作にも利用できます。</p></div>
               <div><span>05</span><p>作品を1件選択して付箋を作ると、その作品に紐づく付箋になります。作品が表示対象外になると付箋も非表示になります。</p></div>
+              <div><span>06</span><p><strong>ランダムピック</strong>は評価値・画像枚数・Tag・Title重複数などの条件から作品を抽出します。設定値は再起動後も保持され、実行するたびに候補をシャッフルします。</p></div>
+              <div><span>07</span><p><strong>属性の一括登録</strong>では複数Characterや複数Tagを一度に付与できます。Title登録からCharacterを続けて作成・選択し、まとめて登録することもできます。</p></div>
+              <div><span>08</span><p>選択カードはGalleryBrowser外のアプリへドラッグ＆ドロップできます。右クリックから表示先を許可した起動プログラムで開く、またはpCloudへアーカイブすることもできます。</p></div>
             </div>
           </section>
 
@@ -14489,11 +15954,11 @@
             <div class="user-guide-two-column">
               <div>
                 <h3>表示と移動</h3>
-                <ul><li>＋ボタンでタブを追加し、右クリックメニューから登録済み候補を開けます。</li><li>開いているタブを左側メインパネルのExplorerへドラッグ＆ドロップすると、そのフォルダをクイックアクセスとして登録できます。</li><li>分割表示では左右それぞれにフォルダを表示し、フォーカス中のペインへ操作を行います。</li><li>アドレス欄のドライブ名から、アクセス可能な別ドライブへ切り替えられます。</li><li>表示枚数モードやスクロール状態はBookmarkへ保存できます。</li></ul>
+                <ul><li>＋ボタンでタブを追加し、右クリックメニューから登録済み候補を開けます。</li><li>開いているタブを左側メインパネルのExplorerへドラッグ＆ドロップすると、そのフォルダをクイックアクセスとして登録できます。</li><li>分割表示では左右それぞれをサムネイル表示または詳細表示に切り替え、境界をドラッグして幅を調整できます。分割状態と幅は再起動後も復元されます。</li><li>詳細表示ではファイルサイズ、画像枚数、画像1枚あたりの平均サイズなどを列として表示できます。</li><li>親フォルダへ移動すると移動元フォルダが選択され、サムネイルと詳細の両方で見える位置までスクロールします。</li><li>アドレス欄のドライブ名から、アクセス可能な別ドライブへ切り替えられます。</li></ul>
               </div>
               <div>
                 <h3>右クリックメニュー</h3>
-                <ul><li><b>DB管理機能</b>：gid発行、作者フォルダ化などを実行します。</li><li><b>zipに変換</b>：選択したRARを書庫構造とファイル名を保ってZIPへ変換します。</li><li><b>Galleryへ移動</b>／<b>Creator Trackingへ移動</b>：作者フォルダから対応画面へ移動します。</li><li>登録した起動プログラムを使い、拡張子に応じた外部アプリで開けます。</li></ul>
+                <ul><li><b>DB管理機能</b>：gid発行、作者フォルダ化などを実行します。</li><li><b>zipに変換</b>：選択したRARを書庫構造とファイル名を保ってZIPへ変換します。</li><li><b>標準画質のJPGに変換</b>：ZIP内のPNG・WebP・JPG・HEIC・AVIFを、設定したNConvertで標準化します。</li><li><b>ファイルを削除</b>：本体削除またはpCloudへのアーカイブを選びます。通常削除では関連DBとキャッシュも整理されます。</li><li><b>Galleryへ移動</b>／<b>Creator Trackingへ移動</b>：現在の階層から作者フォルダを探して対応画面へ移動します。</li><li>選択項目は外部アプリへドラッグ＆ドロップでき、登録した起動プログラムでも開けます。</li></ul>
               </div>
             </div>
             <div class="user-guide-note"><Hash size={19} /><div><strong>gid発行について</strong><p>発行桁数と対象拡張子はSettingsで管理します。発行後は対象フォルダを走査し、DB登録とサムネイルキャッシュ作成が続けて行われます。</p></div></div>
@@ -14503,10 +15968,10 @@
           <section id="user-guide-organize" class="user-guide-section">
             <header class="user-guide-section-heading"><span>05</span><div><h2>Filters・Tags</h2><p>Galleryで使用する属性とTagの定義・割り当て</p></div></header>
             <div class="user-guide-feature-grid compact">
-              <article><h3>フィルタエディタ</h3><p>Category、Title、Characterの標準名・別名を管理し、Galleryの各区分へマッピングします。</p></article>
+              <article><h3>フィルタエディタ</h3><p>Category、Title、Characterの標準名・別名を管理し、Galleryの各区分へマッピングします。検索エンジンには通常検索またはGemini APIを使用できます。</p></article>
               <article><h3>Import / Export</h3><p>一覧ファイルを使って定義をまとめて確認・更新できます。Import前にIDと更新列の対応を確認してください。</p></article>
               <article><h3>Tagエディタ</h3><p>Tagの追加、削除、並び替えと、各区分で使用できるTagのマッピングを設定します。</p></article>
-              <article><h3>作品への登録</h3><p>Galleryの作品カードから、Title・Character・Tagを登録または解除します。新規項目は各登録画面からエディタへ移動して追加できます。</p></article>
+              <article><h3>作品への登録</h3><p>Galleryの作品カードから、Title・Character・Tagを登録または解除します。複数Character・複数Tagの一括付与に対応し、新規項目は各登録画面からエディタへ移動して追加できます。</p></article>
             </div>
           </section>
 
@@ -14514,10 +15979,11 @@
             <header class="user-guide-section-heading"><span>06</span><div><h2>Creators・Creator Tracking</h2><p>作者単位の集計と継続的なフォローアップ</p></div></header>
             <div class="user-guide-two-column">
               <div><h3>Creators</h3><ul><li>Creators配下の区分を選ぶと、作者カードを一覧表示します。</li><li>Rating、Site、Core title、Core tags、作品傾向などで絞り込めます。</li><li>総評価、最終確認日、フォロー日数、課金額などを最大3条件で複合ソートできます。</li><li>作者カードの右クリックからCreator Trackingを開きます。</li></ul></div>
-              <div><h3>Creator Tracking</h3><ul><li>作者基本情報、作品の傾向、活動場所、ストレージ、課金・購入履歴を作者ごとに記録します。</li><li>複数作者をタブで開き、切り替え時やアプリ終了時に自動保存します。</li><li>更新アイコンは、その作者のGallery用途フォルダを走査して最新情報を反映します。</li><li>SUMMARYではファイル数・画像枚数・評価・課金・構成比・書庫履歴を確認できます。</li></ul></div>
+              <div><h3>Creator Tracking</h3><ul><li>作者基本情報、作品の傾向、活動場所、ストレージ、課金・購入履歴を作者ごとに記録します。</li><li>複数作者をタブで開き、切り替え時やアプリ終了時に自動保存します。前回のタブ状態も再起動時に復元します。</li><li>Indexタブでは区分内の登録作者、最終確認日、Warning／Alert状態を一覧・並べ替えできます。</li><li>更新アイコンは、その作者のGallery用途フォルダを走査して最新情報を反映します。</li><li>SUMMARYではファイル数・画像枚数・評価・課金・構成比・書庫履歴を確認できます。</li><li>作者ページの新規作成と、ファイル本体を残したまま作者データだけを削除する操作に対応しています。</li></ul></div>
             </div>
             <div class="user-guide-note"><Layers3 size={19} /><div><strong>Core title・Core tagsとは</strong><p>作者ごとにTitle／Tag別のファイル数を集計し、その作者の総ファイル数に対して30%以上を占めるTitleをCore title、TagをCore tagsとして扱います。作者の中心的な作品傾向を素早く把握するための指標です。</p></div></div>
             <div class="user-guide-note accent"><CalendarCheck size={19} /><div><strong>フォローアップ</strong><p>活動場所のフォローアップをONにして日数を設定すると、最終確認日からの経過日数に応じてCreatorsのWarning／Alertフィルタを利用できます。</p></div></div>
+            <div class="user-guide-note"><Coins size={19} /><div><strong>サブスク集計</strong><p>Wishlistは課金集計から除外されます。継続中は開始日から更新予定日未満、終了済みは開始日から終了日未満の支払い回数を頻度に応じて集計します。</p></div></div>
           </section>
 
           <section id="user-guide-bookmarks" class="user-guide-section">
@@ -14538,20 +16004,40 @@
               <div><strong>関連性</strong><span>評価、ファイル規模、特定Tagなど複数軸の関係を可視化</span></div>
               <div><strong>再集計</strong><span>右上の更新ボタンで現在のDBから最新の指標を生成</span></div>
             </div>
+            <div class="user-guide-note accent"><BrainCircuit size={19} /><div><strong>ロジスティック回帰分析</strong><p>購入と評価値への寄与を、DB内の作者・作品情報から分析します。「分析実行」を押したときだけ計算し、結果はアプリ終了後も保持します。オッズ比、p値、AIC、VIFなどを確認できますが、標本数が少ない段階の結果は参考値として扱ってください。</p></div></div>
+          </section>
+
+          <section id="user-guide-calendar" class="user-guide-section">
+            <header class="user-guide-section-heading"><span>09</span><div><h2>Calendar</h2><p>有効なサブスクの更新予定を月・2週間で確認</p></div></header>
+            <div class="user-guide-two-column">
+              <div><h3>予定を確認する</h3><ul><li>Creator Trackingに登録したサブスクの更新予定日をカレンダーへ表示します。</li><li>Monthと2 Weeksを切り替え、当日はアクセントカラーの枠で確認できます。</li><li>終了予定のサブスクは警告スタイルで表示されます。</li><li>予定をクリックすると対象のCreator Trackingタブへ移動します。</li></ul></div>
+              <div><h3>Google Calendar同期</h3><ul><li>SettingsでGoogle Calendar APIのデスクトップアプリ用OAuth Client IDを設定し、連携します。</li><li>同期先カレンダーを選び、GalleryBrowserのサブスク予定をGoogle Calendarへ反映します。</li><li>現在の同期方向はGalleryBrowserからGoogle Calendarへの一方向です。</li><li>週の開始曜日はSettingsで変更できます。</li></ul></div>
+            </div>
+          </section>
+
+          <section id="user-guide-notifications" class="user-guide-section">
+            <header class="user-guide-section-heading"><span>10</span><div><h2>通知</h2><p>DiscordとLINEへ、自分用の確認事項をまとめて送信</p></div></header>
+            <div class="user-guide-feature-grid compact">
+              <article><h3>送信先</h3><p>Discord WebhookとLINE Messaging APIを片方だけ、または併用できます。認証情報はWindows資格情報マネージャーへ保存します。</p></article>
+              <article><h3>Creator確認</h3><p>最終確認日のWarning（黄色）とAlert（赤色）を通知対象として個別に設定できます。</p></article>
+              <article><h3>サブスク</h3><p>終了予定の前日と、アラートをONにした更新予定を通知できます。</p></article>
+              <article><h3>定期走査</h3><p>定期フォルダ走査の開始・完了を発生時に通知できます。</p></article>
+            </div>
+            <div class="user-guide-note accent"><BellRing size={19} /><div><strong>通知スケジュール</strong><p>1日に複数の送信時刻を設定できます。同じ時刻のCreator確認・解除予定・更新アラートは最新DBで再集計し、1通へまとめて送信します。各通知種別は設定画面から個別にテストできます。</p></div></div>
           </section>
 
           <section id="user-guide-settings" class="user-guide-section">
-            <header class="user-guide-section-heading"><span>09</span><div><h2>Settings</h2><p>設定は目的別の4カテゴリに分類されています</p></div></header>
+            <header class="user-guide-section-heading"><span>11</span><div><h2>Settings</h2><p>設定は目的別の4カテゴリに分類されています</p></div></header>
             <div class="user-guide-settings-map">
               <article><span><Palette size={19} /></span><div><h3>Appearance</h3><p>テーマ、アクセントカラー、表示言語など、アプリ全体の見た目を設定します。</p></div></article>
-              <article><span><Wrench size={19} /></span><div><h3>Behavior</h3><p>Creator Trackingの既定値、新規タブ候補、マウスジェスチャ、キーボードショートカットを設定します。</p></div></article>
-              <article><span><Folder size={19} /></span><div><h3>Files</h3><p>区分と走査対象、gid、サムネイルキャッシュ、本体DB・キャッシュDB・バックアップを管理します。</p></div></article>
-              <article><span><Code2 size={19} /></span><div><h3>Advanced</h3><p>起動プログラム、WinRAR、FFmpeg、検索エンジンなど外部機能との連携を設定します。</p></div></article>
+              <article><span><Wrench size={19} /></span><div><h3>Behavior</h3><p>Creator Trackingの既定値、新規タブ候補、Calendar、通知、マウスジェスチャ、キーボードショートカットを設定します。</p></div></article>
+              <article><span><Folder size={19} /></span><div><h3>Files</h3><p>区分と走査対象、gid、サムネイルキャッシュ、本体DB・キャッシュDB、定期走査、pCloudバックアップと作品アーカイブを管理します。</p></div></article>
+              <article><span><Code2 size={19} /></span><div><h3>Advanced</h3><p>起動プログラム、WinRAR、FFmpeg、NConvert、検索エンジンなど外部機能との連携を設定します。</p></div></article>
             </div>
           </section>
 
           <section id="user-guide-data" class="user-guide-section">
-            <header class="user-guide-section-heading"><span>10</span><div><h2>DB・キャッシュ・バックアップ</h2><p>失いたくないデータと再生成できるデータを分けて管理</p></div></header>
+            <header class="user-guide-section-heading"><span>12</span><div><h2>DB・キャッシュ・バックアップ</h2><p>失いたくないデータと再生成できるデータを分けて管理</p></div></header>
             <div class="user-guide-data-table">
               <div class="head"><span>データ</span><span>主な内容</span><span>扱い</span></div>
               <div><strong>本体DB</strong><span>作品、属性、Creator Tracking、Bookmark、付箋など</span><em>定期バックアップ推奨</em></div>
@@ -14560,6 +16046,8 @@
               <div><strong>JSON設定</strong><span>アプリUIや外部プログラムの設定</span><em>環境ごとに保持</em></div>
             </div>
             <div class="user-guide-note warning"><Archive size={19} /><div><strong>本体DBの移動・結合</strong><p>移動や外部DB結合の前にはバックアップを作成します。pCloudは任意機能で、アイドル時の自動バックアップ頻度と保持世代数を設定できます。</p></div></div>
+            <div class="user-guide-note"><RefreshCw size={19} /><div><strong>定期走査</strong><p>複数の曜日・時刻・区分をスケジュールできます。実行中は進捗、経過時間、直近3日間の実績に基づく予想所要時間を表示し、安全な中断を要求できます。</p></div></div>
+            <div class="user-guide-note accent"><CloudUpload size={19} /><div><strong>2種類のpCloud機能</strong><p>DBバックアップは本体DBのスナップショットを世代管理します。作品アーカイブはGallery／Explorerからファイルやフォルダを指定先へアップロードし、ローカル本体を削除してarchived状態として保持します。</p></div></div>
             <div class="user-guide-pcloud-setup">
               <div class="user-guide-pcloud-heading"><CloudUpload size={20} /><div><strong>pCloud連携の準備</strong><span>pCloud DevelopersのMy AppsからGalleryBrowserへ接続するまで</span></div></div>
               <ol>
@@ -14574,11 +16062,12 @@
           </section>
 
           <section id="user-guide-shortcuts" class="user-guide-section">
-            <header class="user-guide-section-heading"><span>11</span><div><h2>キーボードショートカット</h2><p>初期設定。Settingsから割り当てを変更できます</p></div></header>
+            <header class="user-guide-section-heading"><span>13</span><div><h2>キーボードショートカット</h2><p>初期設定。Settingsから割り当てを変更できます</p></div></header>
             <div class="user-guide-shortcut-grid">
-              <div><kbd>Ctrl</kbd><i>＋</i><kbd>F</kbd><span>Gallery／Explorerの検索</span></div>
+              <div><kbd>Ctrl</kbd><i>＋</i><kbd>F</kbd><span>通常検索ウィンドウを開く</span></div>
               <div><kbd>Ctrl</kbd><i>＋</i><kbd>Tab</kbd><span>次のタブへ移動</span></div>
               <div><kbd>Ctrl</kbd><i>＋</i><kbd>Shift</kbd><i>＋</i><kbd>Tab</kbd><span>前のタブへ移動</span></div>
+              <div><kbd>Backspace</kbd><span>前の画面へ戻る</span></div>
               <div><kbd>Alt</kbd><i>＋</i><kbd>↑</kbd><span>Explorerで親フォルダへ</span></div>
               <div><kbd>Ctrl</kbd><i>＋</i><kbd>N</kbd><span>新しいフォルダを作成</span></div>
               <div><kbd>F2</kbd><span>選択項目の名前を変更</span></div>
@@ -14589,19 +16078,22 @@
           </section>
 
           <section id="user-guide-troubleshooting" class="user-guide-section">
-            <header class="user-guide-section-heading"><span>12</span><div><h2>困ったときは</h2><p>まず確認する場所と安全な切り分け方</p></div></header>
+            <header class="user-guide-section-heading"><span>14</span><div><h2>困ったときは</h2><p>まず確認する場所と安全な切り分け方</p></div></header>
             <div class="user-guide-troubleshooting-list">
               <details open><summary>Galleryに作品が表示されない</summary><p>区分の対象ディレクトリと拡張子、フィルタ選択、検索文字列を確認します。Reset後も表示されなければ、データベースの手動更新を実行してください。</p></details>
               <details><summary>ファイル操作後に表示が古い</summary><p>各画面の更新ボタンを使用します。作者フォルダの内容はCreator Tracking右上の更新から作者単位で走査できます。</p></details>
               <details><summary>Bookmarkを完全に復元できない</summary><p>保存後に削除・無効化されたフィルタ、存在しなくなったフォルダ、閉じられた作者データは復元できません。表示される確認内容をもとに現在の設定を確認してください。</p></details>
               <details><summary>サムネイルが表示されない／古い</summary><p>Settings ＞ Files ＞ サムネイルキャッシュで保存先と対象ディレクトリを確認し、必要な範囲だけ再構築します。</p></details>
               <details><summary>DBを安全に保ちたい</summary><p>本体DBの場所を確認し、クラウド同期による直接ロックを避けます。pCloudのスナップショットまたは別媒体への定期コピーを利用してください。</p></details>
+              <details><summary>Google Calendarへ予定が増えない</summary><p>Calendar API、OAuthのテストユーザー、データアクセス、同期先カレンダーを確認します。連携済み表示の後にCalendar画面のGoogle同期を実行してください。</p></details>
+              <details><summary>Discord／LINE通知が届かない</summary><p>通知機能と送信先をONにし、各送信先の接続情報を確認してテスト送信します。LINEは公式アカウント側と端末側の通知設定も確認してください。</p></details>
+              <details><summary>外部プログラムや画像変換を実行できない</summary><p>Settings ＞ Advancedで表示先、対象拡張子、実行ファイルのパスを確認します。NConvert変換は一時フォルダへの書き込み権限と空き容量も必要です。</p></details>
             </div>
             <div class="user-guide-critical-notice"><OctagonAlert size={28} /><div><strong>本運用へ広げる前に</strong><span>設定や機能を変更した後は、必ず小さな対象範囲で結果を確認してから本運用へ広げてください。</span></div></div>
           </section>
 
           <section id="user-guide-acknowledgements" class="user-guide-section user-guide-acknowledgements">
-            <header class="user-guide-section-heading"><span>13</span><div><h2>謝辞</h2><p>GalleryBrowserの発想と開発を支えたソフトウェア・技術へ</p></div></header>
+            <header class="user-guide-section-heading"><span>15</span><div><h2>謝辞</h2><p>GalleryBrowserの発想と開発を支えたソフトウェア・技術へ</p></div></header>
             <div class="user-guide-acknowledgement-lead">
               <Sparkles size={24} />
               <p>GalleryBrowserは、優れた先行ソフトウェアから得た着想と、公開されたソース、そしてAIを活用した開発環境が結びついて生まれました。</p>
@@ -14635,6 +16127,7 @@
                 <span>シングルクリックで起動</span>
                 <span>ダブルクリックで起動</span>
                 <span>右クリックメニュー</span>
+                <span>表示先</span>
               </div>
               {#if externalAppRules.length === 0}
                 <div class="empty compact">起動プログラムはまだ登録されていません。</div>
@@ -14656,6 +16149,10 @@
                       <span>{removeExtensionDots(rule.clickExtensions) || '-'}</span>
                       <span>{removeExtensionDots(rule.doubleClickExtensions) || '-'}</span>
                       <span>{rule.contextMenuExtensions || '-'}</span>
+                      <span>{[
+                        rule.showInGalleryContextMenu ? 'Gallery' : '',
+                        (rule.showInExplorerContextMenu ?? true) ? 'Explorer' : ''
+                      ].filter(Boolean).join(' / ') || '-'}</span>
                     </button>
                   </article>
                 {/each}
@@ -14706,6 +16203,17 @@
                   <span>右クリックメニュー</span>
                   <input bind:value={programContextMenuExtensions} placeholder="zip, rar" />
                 </label>
+                <fieldset class="program-context-targets">
+                  <legend>右クリックメニューに表示する機能先</legend>
+                  <label>
+                    <input type="checkbox" bind:checked={programShowInGalleryContextMenu} />
+                    <span>Gallery</span>
+                  </label>
+                  <label>
+                    <input type="checkbox" bind:checked={programShowInExplorerContextMenu} />
+                    <span>Explorer</span>
+                  </label>
+                </fieldset>
                 <label class="program-multiple-toggle">
                   <input type="checkbox" bind:checked={programAllowMultiple} />
                   <span>複数起動を許可する</span>
@@ -14956,6 +16464,313 @@
                 <button type="button" class="primary-button" onclick={syncGoogleCalendar} disabled={googleCalendarBusy || !googleCalendarSyncFeatureEnabled || !googleCalendarHasRefreshToken}>今すぐ同期</button>
                 <button type="button" class="danger-button" onclick={disconnectGoogleCalendar} disabled={googleCalendarBusy || !googleCalendarSyncFeatureEnabled || !googleCalendarHasRefreshToken}>連携解除</button>
               </div>
+            </section>
+          </div>
+        {:else if settingsSection === 'notifications'}
+          <div class="discord-notification-settings-page">
+            <section class="settings-panel discord-notification-settings-card notification-schedule-card">
+              <header class="discord-notification-settings-heading">
+                <span class="language-settings-icon"><AlarmClock size={20} /></span>
+                <div>
+                  <h2>定時通知スケジュール</h2>
+                  <p>Creatorの更新確認、サブスクの解除予定、サブスクの更新アラートを送る毎日の時刻を設定します</p>
+                </div>
+                <button
+                  type="button"
+                  class="primary-button notification-schedule-add"
+                  onclick={addNotificationSchedule}
+                  disabled={notificationScheduleSaving}>
+                  <Plus size={15} />
+                  時刻を追加
+                </button>
+              </header>
+
+              {#if notificationSchedules.length === 0}
+                <p class="database-schedule-empty">定時通知は無効です。通知時刻を追加すると有効になります。</p>
+              {:else}
+                <div class="notification-schedule-list">
+                  {#each notificationSchedules as schedule (schedule.id)}
+                    <div class="notification-schedule-row">
+                      <label>
+                        <span>通知時刻</span>
+                        <input
+                          type="time"
+                          value={schedule.time}
+                          onchange={(event) => updateNotificationScheduleTime(schedule.id, event.currentTarget.value)}
+                          disabled={notificationScheduleSaving} />
+                      </label>
+                      <div>
+                        <span>最終送信判定</span>
+                        <strong>{schedule.lastStartedAt ? formatModifiedAt(schedule.lastStartedAt) : '未実行'}</strong>
+                      </div>
+                      <button
+                        type="button"
+                        class="icon-button database-schedule-delete"
+                        aria-label="通知時刻を削除"
+                        title="通知時刻を削除"
+                        onclick={() => removeNotificationSchedule(schedule.id)}
+                        disabled={notificationScheduleSaving}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+
+              <p class="pcloud-automation-note">
+                同じ時刻のCreator警告・アラートとサブスク予定は、送信先ごとに1通へまとめます。
+                送信直前にSQLiteDBを再読込し、現在の日付で警告状態と更新予定を再計算します。
+              </p>
+              <div class="pcloud-backup-actions">
+                <button class="primary-button" onclick={saveNotificationSchedules} disabled={notificationScheduleSaving}>
+                  {notificationScheduleSaving ? '保存中...' : 'スケジュールを保存'}
+                </button>
+              </div>
+              {#if notificationScheduleStatus}<p class="pcloud-backup-status" aria-live="polite">{notificationScheduleStatus}</p>{/if}
+            </section>
+
+            <section class="settings-panel discord-notification-settings-card">
+              <header class="discord-notification-settings-heading">
+                <span class="language-settings-icon"><BellRing size={20} /></span>
+                <div>
+                  <h2>Discord通知</h2>
+                  <p>Creatorの確認アラート、サブスク予定、定期フォルダ走査を自分用のDiscordへ通知します</p>
+                </div>
+                <span class:pcloud-connected={discordHasWebhookUrl} class="pcloud-connection-badge">
+                  {discordHasWebhookUrl ? 'Webhook登録済み' : '未登録'}
+                </span>
+              </header>
+
+              <div class="pcloud-feature-toggle-row discord-notification-master-toggle">
+                <div>
+                  <strong>Discord通知機能</strong>
+                  <span>OFFの場合、バックグラウンド判定とWebhook送信を行いません</span>
+                </div>
+                <button
+                  type="button"
+                  class="pcloud-enable-toggle"
+                  class:active={discordNotificationEnabled}
+                  aria-pressed={discordNotificationEnabled}
+                  disabled={discordNotificationBusy}
+                  onclick={() => discordNotificationEnabled = !discordNotificationEnabled}>
+                  <span></span>{discordNotificationEnabled ? 'ON' : 'OFF'}
+                </button>
+              </div>
+
+              <label class="discord-webhook-field">
+                <span>Discord Webhook URL</span>
+                <input
+                  type="password"
+                  bind:value={discordWebhookUrlDraft}
+                  placeholder={discordHasWebhookUrl ? '登録済み（空欄なら維持）' : 'https://discord.com/api/webhooks/...'}
+                  autocomplete="new-password"
+                  disabled={discordNotificationBusy} />
+                <small>Discordの自分用チャンネルで作成したWebhook URLです。Windows資格情報マネージャーへ保存し、設定ファイルやSQLiteDBには平文保存しません。</small>
+              </label>
+
+              <div class="discord-notification-event-settings" class:disabled={!discordNotificationEnabled}>
+                <div>
+                  <strong>通知するイベント</strong>
+                  <span>項目ごとにDiscord通知の有無を切り替えます</span>
+                </div>
+                <label>
+                  <input type="checkbox" bind:checked={discordNotifyCreatorFollowAlert} disabled={discordNotificationBusy || !discordNotificationEnabled} />
+                  <span><strong>Creatorの更新確認</strong><small>黄色の警告と赤色のアラートを通知時刻ごとに通知</small></span>
+                </label>
+                <label>
+                  <input type="checkbox" bind:checked={discordNotifySubscriptionEnding} disabled={discordNotificationBusy || !discordNotificationEnabled} />
+                  <span><strong>サブスクの解除予定</strong><small>終了予定がONで、更新予定日の前日になった時</small></span>
+                </label>
+                <label>
+                  <input type="checkbox" bind:checked={discordNotifySubscriptionReminder} disabled={discordNotificationBusy || !discordNotificationEnabled} />
+                  <span><strong>サブスクの更新アラート</strong><small>アラートがONで、更新予定日の前日になった時</small></span>
+                </label>
+                <label>
+                  <input type="checkbox" bind:checked={discordNotifyScheduledScanStarted} disabled={discordNotificationBusy || !discordNotificationEnabled} />
+                  <span><strong>定期フォルダ走査の開始</strong><small>対象区分と予想所要時間を通知</small></span>
+                </label>
+                <label>
+                  <input type="checkbox" bind:checked={discordNotifyScheduledScanCompleted} disabled={discordNotificationBusy || !discordNotificationEnabled} />
+                  <span><strong>定期フォルダ走査の完了</strong><small>処理時間、集計結果、失敗または中断を通知</small></span>
+                </label>
+              </div>
+
+              <div class="notification-event-test-panel">
+                <div>
+                  <strong>通知別テスト配信</strong>
+                  <span>本番に近いサンプル文面を選択した1種類だけ送信します</span>
+                </div>
+                <div class="notification-event-test-actions">
+                  {#each notificationTestEvents as event (event.value)}
+                    <button
+                      type="button"
+                      class="quiet-button"
+                      onclick={() => testDiscordNotificationEvent(event.value)}
+                      disabled={discordNotificationBusy || (!discordHasWebhookUrl && !discordWebhookUrlDraft.trim())}>
+                      {event.label}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+
+              <p class="pcloud-automation-note">Creator・サブスク通知は上の定時通知スケジュールで判定します。定期フォルダ走査の開始・終了は発生時に即時送信します。</p>
+
+              <div class="pcloud-backup-actions">
+                <button class="primary-button" onclick={saveDiscordNotificationSettings} disabled={discordNotificationBusy}>設定を保存</button>
+                <button class="quiet-button" onclick={testDiscordNotification} disabled={discordNotificationBusy || (!discordHasWebhookUrl && !discordWebhookUrlDraft.trim())}>テスト送信</button>
+                {#if discordHasWebhookUrl}
+                  <button class="danger-button" onclick={disconnectDiscordNotification} disabled={discordNotificationBusy}>Webhook削除</button>
+                {/if}
+              </div>
+              {#if discordNotificationStatus}<p class="pcloud-backup-status" aria-live="polite">{discordNotificationStatus}</p>{/if}
+            </section>
+
+            <section class="settings-panel discord-notification-settings-card line-notification-settings-card">
+              <header class="discord-notification-settings-heading">
+                <span class="language-settings-icon line-notification-icon"><MessageCircle size={20} /></span>
+                <div>
+                  <h2>LINE通知</h2>
+                  <p>同じ通知を自分用のLINE公式アカウントからLINEへ送信します</p>
+                </div>
+                <span class:pcloud-connected={lineHasChannelAccessToken && lineHasRecipientUserId} class="pcloud-connection-badge">
+                  {lineHasChannelAccessToken && lineHasRecipientUserId ? '資格情報登録済み' : '未登録'}
+                </span>
+              </header>
+
+              <div class="pcloud-feature-toggle-row discord-notification-master-toggle">
+                <div>
+                  <strong>LINE通知機能</strong>
+                  <span>Discordとは独立してON/OFFできます。両方ONの場合は双方へ送信します</span>
+                </div>
+                <button
+                  type="button"
+                  class="pcloud-enable-toggle"
+                  class:active={lineNotificationEnabled}
+                  aria-pressed={lineNotificationEnabled}
+                  disabled={lineNotificationBusy}
+                  onclick={() => lineNotificationEnabled = !lineNotificationEnabled}>
+                  <span></span>{lineNotificationEnabled ? 'ON' : 'OFF'}
+                </button>
+              </div>
+
+              <div class="line-notification-credentials">
+                <label class="discord-webhook-field">
+                  <span>チャネルアクセストークン</span>
+                  <input
+                    type="password"
+                    bind:value={lineChannelAccessTokenDraft}
+                    placeholder={lineHasChannelAccessToken ? '登録済み（空欄なら維持）' : 'LINE Developersで発行したアクセストークン'}
+                    autocomplete="new-password"
+                    disabled={lineNotificationBusy} />
+                  <small>Messaging APIチャネルの長期チャネルアクセストークンです。</small>
+                </label>
+
+                <label class="discord-webhook-field">
+                  <span>受信先User ID</span>
+                  <input
+                    type="password"
+                    bind:value={lineRecipientUserIdDraft}
+                    placeholder={lineHasRecipientUserId ? '登録済み（空欄なら維持）' : 'Uで始まる自分のUser ID'}
+                    autocomplete="new-password"
+                    disabled={lineNotificationBusy} />
+                  <small>LINE Developersのチャネル基本設定に表示される、自分のUから始まるUser IDです。</small>
+                </label>
+              </div>
+
+              <p class="line-notification-security-note">
+                アクセストークンとUser IDはWindows資格情報マネージャーへ保存し、設定ファイルやSQLiteDBには平文保存しません。
+                受信するLINEアカウントから公式アカウントを友だち追加してからテストしてください。
+              </p>
+
+              <div class="discord-notification-event-settings" class:disabled={!lineNotificationEnabled}>
+                <div>
+                  <strong>通知するイベント</strong>
+                  <span>項目ごとにLINE通知の有無を切り替えます</span>
+                </div>
+                <label>
+                  <input type="checkbox" bind:checked={lineNotifyCreatorFollowAlert} disabled={lineNotificationBusy || !lineNotificationEnabled} />
+                  <span><strong>Creatorの更新確認</strong><small>黄色の警告と赤色のアラートを通知時刻ごとに通知</small></span>
+                </label>
+                <label>
+                  <input type="checkbox" bind:checked={lineNotifySubscriptionEnding} disabled={lineNotificationBusy || !lineNotificationEnabled} />
+                  <span><strong>サブスクの解除予定</strong><small>終了予定がONで、更新予定日の前日になった時</small></span>
+                </label>
+                <label>
+                  <input type="checkbox" bind:checked={lineNotifySubscriptionReminder} disabled={lineNotificationBusy || !lineNotificationEnabled} />
+                  <span><strong>サブスクの更新アラート</strong><small>アラートがONで、更新予定日の前日になった時</small></span>
+                </label>
+                <label>
+                  <input type="checkbox" bind:checked={lineNotifyScheduledScanStarted} disabled={lineNotificationBusy || !lineNotificationEnabled} />
+                  <span><strong>定期フォルダ走査の開始</strong><small>対象区分と予想所要時間を通知</small></span>
+                </label>
+                <label>
+                  <input type="checkbox" bind:checked={lineNotifyScheduledScanCompleted} disabled={lineNotificationBusy || !lineNotificationEnabled} />
+                  <span><strong>定期フォルダ走査の完了</strong><small>処理時間、集計結果、失敗または中断を通知</small></span>
+                </label>
+              </div>
+
+              <div class="notification-event-test-panel">
+                <div>
+                  <strong>通知別テスト配信</strong>
+                  <span>本番に近いサンプル文面を選択した1種類だけ送信します</span>
+                </div>
+                <div class="notification-event-test-actions">
+                  {#each notificationTestEvents as event (event.value)}
+                    <button
+                      type="button"
+                      class="quiet-button"
+                      onclick={() => testLineNotificationEvent(event.value)}
+                      disabled={lineNotificationBusy || ((!lineHasChannelAccessToken && !lineChannelAccessTokenDraft.trim()) || (!lineHasRecipientUserId && !lineRecipientUserIdDraft.trim()))}>
+                      {event.label}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+
+              <div class="line-quota-panel">
+                <div>
+                  <strong>月間メッセージ使用量</strong>
+                  {#if lineQuotaConsumption !== null}
+                    <span>
+                      {lineQuotaConsumption.toLocaleString()}
+                      {#if lineQuotaType === 'limited' && lineQuotaLimit !== null}
+                        / {lineQuotaLimit.toLocaleString()} 通
+                      {:else}
+                        通（上限なし）
+                      {/if}
+                    </span>
+                  {:else}
+                    <span>未取得</span>
+                  {/if}
+                  {#if lineQuotaCheckedAt}<small>確認: {formatModifiedAt(lineQuotaCheckedAt)}</small>{/if}
+                </div>
+                <button
+                  type="button"
+                  class="quiet-button"
+                  onclick={refreshLineQuota}
+                  disabled={lineNotificationBusy || (!lineHasChannelAccessToken && !lineChannelAccessTokenDraft.trim())}>
+                  利用状況を更新
+                </button>
+              </div>
+
+              <p class="pcloud-automation-note">
+                無料枠を節約するため同時に検出した対象は1通へまとめ、送信前に月間使用量を確認します。
+                上限到達時はLINEだけを停止し、Discord通知は継続します。
+              </p>
+
+              <div class="pcloud-backup-actions">
+                <button class="primary-button" onclick={saveLineNotificationSettings} disabled={lineNotificationBusy}>設定を保存</button>
+                <button
+                  class="quiet-button"
+                  onclick={testLineNotification}
+                  disabled={lineNotificationBusy || ((!lineHasChannelAccessToken && !lineChannelAccessTokenDraft.trim()) || (!lineHasRecipientUserId && !lineRecipientUserIdDraft.trim()))}>
+                  テスト送信
+                </button>
+                {#if lineHasChannelAccessToken || lineHasRecipientUserId}
+                  <button class="danger-button" onclick={disconnectLineNotification} disabled={lineNotificationBusy}>資格情報を削除</button>
+                {/if}
+              </div>
+              {#if lineNotificationStatus}<p class="pcloud-backup-status" aria-live="polite">{lineNotificationStatus}</p>{/if}
             </section>
           </div>
         {:else if settingsSection === 'creatorTracking'}
@@ -15939,6 +17754,7 @@
                 <div class="keyboard-shortcut-settings-icon"><Keyboard size={19} /></div>
                 <div><strong>アプリ内ショートカット</strong><span>重複するキーの組み合わせは登録できません</span></div>
               </div>
+              <p class="settings-note">MX Masterなどで水平ホイールが反応しない場合は、Options+のサムホイール左右に「詳細一覧を左へスクロール」「詳細一覧を右へスクロール」のキーを割り当ててください。</p>
               <div class="keyboard-shortcut-list-header"><span>操作</span><span>対象</span><span>キー割り当て</span><span></span></div>
               <div class="keyboard-shortcut-list">
                 {#each keyboardShortcutDefinitions as definition}
@@ -16948,6 +18764,102 @@
             </section>
           {/if}
 
+          <section class="user-metrics-panel user-metrics-regression-panel">
+            <div class="user-metrics-panel-heading user-metrics-regression-heading">
+              <div class="user-metrics-section-title">
+                <span><BrainCircuit size={17} /></span>
+                <div><h2>LOGISTIC REGRESSION</h2><p>購入と評価値に関連する特徴を、保存済みデータから分析します</p></div>
+              </div>
+              <div class="user-metrics-regression-actions">
+                {#if userMetricsRegressionResult}<small>最終分析 {userMetricsRegressionResult.generatedAt}</small>{/if}
+                <button disabled={userMetricsRegressionIsLoading} onclick={runUserMetricsRegression}>
+                  {#if userMetricsRegressionIsLoading}<RefreshCw size={15} /> 分析中{:else}<Play size={15} /> 分析実行{/if}
+                </button>
+              </div>
+            </div>
+
+            {#if userMetricsRegressionIsLoading}
+              <div class="user-metrics-regression-empty loading"><RefreshCw size={21} /><span>保存済みの分析結果を確認しています...</span></div>
+            {:else if !userMetricsRegressionResult}
+              <div class="user-metrics-regression-empty">
+                <BrainCircuit size={25} />
+                <div><strong>分析結果はまだありません</strong><p>データが少ない段階でも実行できます。不足状況は保存され、データが蓄積した後に同じボタンから再分析できます。</p></div>
+              </div>
+            {:else}
+              <div class="user-metrics-regression-grid">
+                {#each [userMetricsRegressionResult.purchase, userMetricsRegressionResult.rating] as model}
+                  <article class="user-metrics-regression-model" class:user-metrics-regression-insufficient={model.status !== 'completed'}>
+                    <header>
+                      <div><small>{model.kind === 'purchase' ? 'PURCHASE CV' : 'RATING CV'}</small><h3>{model.label}</h3></div>
+                      <span class:completed={model.status === 'completed'}>{model.status === 'completed' ? '分析済み' : 'データ不足'}</span>
+                    </header>
+                    <div class="user-metrics-regression-stats">
+                      <span><small>対象</small><strong>{model.entityCount.toLocaleString('ja-JP')}</strong></span>
+                      <span><small>CV</small><strong>{formatUserMetricsRegressionCount(model.positiveObservationCount)}</strong></span>
+                      <span><small>非CV</small><strong>{formatUserMetricsRegressionCount(model.negativeObservationCount)}</strong></span>
+                      <span><small>説明変数</small><strong>{model.usedFeatureCount}<i> / {model.candidateFeatureCount}</i></strong></span>
+                      {#if model.status === 'completed'}
+                        <span><small>AUC（適合）</small><strong>{model.areaUnderCurve.toFixed(3)}</strong></span>
+                        <span><small>McFadden R²</small><strong>{model.pseudoRSquared.toFixed(3)}</strong></span>
+                        <span>
+                          <small>AIC（参考）</small>
+                          <strong>
+                            {Number.isFinite(model.akaikeInformationCriterion) ? model.akaikeInformationCriterion?.toFixed(2) : '—'}
+                            {#if Number.isFinite(model.nullAkaikeInformationCriterion)}<i> Null {model.nullAkaikeInformationCriterion?.toFixed(2)}</i>{/if}
+                          </strong>
+                        </span>
+                        <span>
+                          <small>ΔAIC</small>
+                          <strong>
+                            {Number.isFinite(model.deltaAkaikeInformationCriterion) ? model.deltaAkaikeInformationCriterion?.toFixed(2) : '—'}
+                            <i>{getUserMetricsRegressionAicAssessment(model)}</i>
+                          </strong>
+                        </span>
+                        <span>
+                          <small>最大VIF</small>
+                          <strong>
+                            {Number.isFinite(model.maximumVarianceInflationFactor) ? model.maximumVarianceInflationFactor?.toFixed(2) : '—'}
+                            <i>除外 {model.removedCollinearFeatureCount ?? 0}</i>
+                          </strong>
+                        </span>
+                      {/if}
+                    </div>
+
+                    {#if model.status !== 'completed'}
+                      <div class="user-metrics-regression-shortage"><TriangleAlert size={18} /><span>{model.message}</span></div>
+                    {:else}
+                      <div class="user-metrics-regression-factor-columns">
+                        <section class="positive">
+                          <h4>プラスに関連</h4>
+                          {#each getUserMetricsRegressionFactors(model, 'positive') as factor}
+                            <div class="user-metrics-regression-factor">
+                              <span><b>{factor.label}</b><small>{factor.group}・n={factor.supportCount}</small></span>
+                              <i style={`--factor-width:${getUserMetricsRegressionFactorWidth(model, factor, 'positive')}%`}></i>
+                              <strong><em>×{factor.oddsRatio.toFixed(2)}</em><small>p={formatUserMetricsRegressionPValue(factor.pValue)}</small></strong>
+                            </div>
+                          {/each}
+                        </section>
+                        <section class="negative">
+                          <h4>マイナスに関連</h4>
+                          {#each getUserMetricsRegressionFactors(model, 'negative') as factor}
+                            <div class="user-metrics-regression-factor">
+                              <span><b>{factor.label}</b><small>{factor.group}・n={factor.supportCount}</small></span>
+                              <i style={`--factor-width:${getUserMetricsRegressionFactorWidth(model, factor, 'negative')}%`}></i>
+                              <strong><em>×{factor.oddsRatio.toFixed(2)}</em><small>p={formatUserMetricsRegressionPValue(factor.pValue)}</small></strong>
+                            </div>
+                          {/each}
+                        </section>
+                      </div>
+                    {/if}
+                    <ul class="user-metrics-regression-notes">
+                      {#each model.notes as note}<li>{note}</li>{/each}
+                    </ul>
+                  </article>
+                {/each}
+              </div>
+            {/if}
+          </section>
+
           <section class="user-metrics-panel user-metrics-archive-panel">
             <div class="user-metrics-panel-heading">
               <div class="user-metrics-section-title"><span><Archive size={17} /></span><div><h2>ARCHIVE GROWTH</h2><p>総ファイル数と総画像枚数の累積推移・直近24か月</p></div></div>
@@ -17084,7 +18996,88 @@
       </section>
     {:else if activeView === 'creatorTracking'}
       <section class="creator-tracking-content">
-        {#if creatorTrackingIsLoading}
+        {#if creatorTrackingIndexActive}
+          <div class="creator-tracking-index-shell">
+            <header class="creator-tracking-index-heading">
+              <div class="creator-tracking-index-heading-copy">
+                <span><List size={24} /></span>
+                <div>
+                  <h1>CREATOR TRACKING INDEX</h1>
+                  <p>登録済みCreatorの最終チェックとフォローアップ状況を一覧します</p>
+                </div>
+              </div>
+              <div class="creator-tracking-index-kpis">
+                <div><span>登録Creator</span><strong>{creatorTrackingIndexItems.length.toLocaleString('ja-JP')}</strong></div>
+                <div class="warning"><span>Warning</span><strong>{creatorTrackingIndexItems.filter(item => item.followWarnFlg && !item.followAlertFlg).length.toLocaleString('ja-JP')}</strong></div>
+                <div class="alert"><span>Alert</span><strong>{creatorTrackingIndexItems.filter(item => item.followAlertFlg).length.toLocaleString('ja-JP')}</strong></div>
+              </div>
+            </header>
+
+            <section class="creator-tracking-index-controls">
+              <div class="creator-tracking-index-sections" role="group" aria-label="区分">
+                <button class:active={creatorTrackingIndexSection === 'all'} onclick={() => selectCreatorTrackingIndexSection('all')}>
+                  すべて <small>{getCreatorTrackingIndexSectionCount('all', creatorTrackingIndexItems)}</small>
+                </button>
+                {#each gallerySections as section (section.id)}
+                  <button class:active={creatorTrackingIndexSection === section.id} onclick={() => selectCreatorTrackingIndexSection(section.id)}>
+                    {section.label} <small>{getCreatorTrackingIndexSectionCount(section.id, creatorTrackingIndexItems)}</small>
+                  </button>
+                {/each}
+              </div>
+              <div class="creator-tracking-index-sorts" role="group" aria-label="並び替え">
+                <span>Sort</span>
+                <button class:active={creatorTrackingIndexSortKey === 'creator'} onclick={() => setCreatorTrackingIndexSort('creator')}>
+                  Creator名 {creatorTrackingIndexSortKey === 'creator' ? (creatorTrackingIndexSortDirection === 'asc' ? '↑' : '↓') : ''}
+                </button>
+                <button class:active={creatorTrackingIndexSortKey === 'lastChecked'} onclick={() => setCreatorTrackingIndexSort('lastChecked')}>
+                  最終チェック日 {creatorTrackingIndexSortKey === 'lastChecked' ? (creatorTrackingIndexSortDirection === 'asc' ? '↑' : '↓') : ''}
+                </button>
+                <button class:active={creatorTrackingIndexSortKey === 'alert'} onclick={() => setCreatorTrackingIndexSort('alert')}>
+                  アラート状況 {creatorTrackingIndexSortKey === 'alert' ? (creatorTrackingIndexSortDirection === 'asc' ? '↑' : '↓') : ''}
+                </button>
+                <button class="creator-tracking-index-refresh" title="Indexを更新" aria-label="Indexを更新" disabled={creatorTrackingIndexIsLoading} onclick={loadCreatorTrackingIndex}><RefreshCw size={16} /></button>
+              </div>
+            </section>
+
+            <section class="creator-tracking-index-list">
+              <header>
+                <span>Creator</span>
+                <span>区分</span>
+                <span>最終チェック日</span>
+                <span>経過</span>
+                <span>アラート状況</span>
+              </header>
+              {#if creatorTrackingIndexIsLoading}
+                <div class="creator-tracking-index-empty"><RefreshCw size={22} />Creator Tracking Indexを読み込んでいます...</div>
+              {:else if creatorTrackingIndexError}
+                <div class="creator-tracking-index-empty error"><TriangleAlert size={22} />{creatorTrackingIndexError}</div>
+              {:else if visibleCreatorTrackingIndexItems.length === 0}
+                <div class="creator-tracking-index-empty"><UsersRound size={24} />この区分に登録済みCreatorはありません</div>
+              {:else}
+                {#each visibleCreatorTrackingIndexItems as item (item.creator)}
+                  <article>
+                    <button class="creator-tracking-index-creator" title={`${formatCreatorTrackingIndexName(item)}を開く`} onclick={() => openCreatorTrackingFromIndex(item)}>
+                      <strong>{formatCreatorTrackingIndexName(item)}</strong>
+                      <ChevronRight size={16} />
+                    </button>
+                    <div class="creator-tracking-index-categories">
+                      {#if item.categories.length > 0}
+                        {#each item.categories as category}<span>{getGallerySectionLabel(category)}</span>{/each}
+                      {:else}<span class="muted">未分類</span>{/if}
+                    </div>
+                    <time>{item.lastCheckedOn || '-'}</time>
+                    <span class="creator-tracking-index-days">{item.sinceLastCheckDays >= 0 ? `${item.sinceLastCheckDays.toLocaleString('ja-JP')}日` : '-'}</span>
+                    <span class:alert={item.followAlertFlg} class:warning={item.followWarnFlg && !item.followAlertFlg} class:normal={!item.followWarnFlg}>
+                      {#if item.followAlertFlg}<OctagonAlert size={15} />Alert
+                      {:else if item.followWarnFlg}<TriangleAlert size={15} />Warning
+                      {:else}<Check size={15} />Normal{/if}
+                    </span>
+                  </article>
+                {/each}
+              {/if}
+            </section>
+          </div>
+        {:else if creatorTrackingIsLoading}
           <div class="empty">Creator Trackingを読み込んでいます...</div>
         {:else if creatorTrackingError}
           <div class="empty">{creatorTrackingError}</div>
@@ -17555,7 +19548,7 @@
                   {:else}
                     <div class="creator-tracking-history-table">
                       <div class="creator-tracking-history-head creator-tracking-subscription-grid">
-                        <span></span><span>課金プラットフォーム</span><span>対象プラン（任意）</span><span>通貨</span><span>支払い額</span><span>支払い頻度</span><span>開始日</span><span>更新予定日</span><span>Wishlist</span><span>有効</span><span>終了予定</span><span class="creator-tracking-alert-heading"><AlarmClock size={13} />アラート</span><span></span>
+                        <span></span><span>課金プラットフォーム</span><span>対象プラン（任意）</span><span>通貨</span><span>支払い額</span><span>支払い頻度</span><span>開始日</span><span>更新予定日</span><span>Wishlist</span><span>終了予定</span><span class="creator-tracking-alert-heading"><AlarmClock size={13} />アラート</span><span>終了</span><span>終了日</span><span></span>
                       </div>
                       {#each creatorTracking.subscriptionHistory as subscription, index (subscription.id)}
                         {@const platformIcon = getCreatorTrackingActivityIcon(subscription.platform)}
@@ -17587,9 +19580,10 @@
                           <input aria-label={`サブスク${index + 1}の開始日`} type="date" value={subscription.startedOn} disabled={subscription.wishlist} onchange={(event) => updateCreatorTrackingSubscriptionSchedule(index, 'startedOn', event.currentTarget.value)} />
                           <input aria-label={`サブスク${index + 1}の更新予定日`} type="date" value={subscription.renewalOn} disabled={subscription.wishlist} oninput={(event) => updateCreatorTrackingSubscription(index, { renewalOn: event.currentTarget.value })} />
                           <button class="creator-tracking-history-toggle" class:active={subscription.wishlist} aria-label={`サブスク${index + 1}のWishlist`} aria-pressed={subscription.wishlist} onclick={() => toggleCreatorTrackingSubscriptionWishlist(index)}><span></span>{subscription.wishlist ? 'ON' : 'OFF'}</button>
-                          <button class="creator-tracking-history-toggle" class:active={subscription.isActive} aria-label={`サブスク${index + 1}の有効状態`} aria-pressed={subscription.isActive} onclick={() => toggleCreatorTrackingSubscriptionActive(index)}><span></span>{subscription.isActive ? 'ON' : 'OFF'}</button>
                           <button class="creator-tracking-history-toggle" class:active={subscription.endingPlanned} aria-pressed={subscription.endingPlanned} disabled={subscription.wishlist} onclick={() => updateCreatorTrackingSubscription(index, { endingPlanned: !subscription.endingPlanned })}><span></span>{subscription.endingPlanned ? 'ON' : 'OFF'}</button>
                           <button class="creator-tracking-history-toggle" class:active={subscription.reminder} aria-label={`サブスク${index + 1}のアラート`} aria-pressed={subscription.reminder} disabled={subscription.wishlist} onclick={() => updateCreatorTrackingSubscription(index, { reminder: !subscription.reminder })}><span></span>{subscription.reminder ? 'ON' : 'OFF'}</button>
+                          <button class="creator-tracking-history-toggle" class:active={subscription.isEnded} aria-label={`サブスク${index + 1}の終了状態`} aria-pressed={subscription.isEnded} disabled={subscription.wishlist} onclick={() => toggleCreatorTrackingSubscriptionEnded(index)}><span></span>{subscription.isEnded ? 'ON' : 'OFF'}</button>
+                          <input aria-label={`サブスク${index + 1}の終了日`} type="date" value={subscription.endedOn} disabled={subscription.wishlist || !subscription.isEnded} oninput={(event) => updateCreatorTrackingSubscription(index, { endedOn: event.currentTarget.value })} />
                           <button class="creator-tracking-history-delete" title="サブスク歴を削除" onclick={() => removeCreatorTrackingSubscription(index)}><Trash2 size={15} /></button>
                         </div>
                       {/each}
@@ -17924,14 +19918,37 @@
             {/if}
           </div>
           {#if explorerSplit}
+            <button class="explorer-split-reset-button" title="分割幅を均等に戻す" onclick={resetExplorerSplitRatio}>
+              <RotateCcw size={14} /><span>Reset</span>
+            </button>
             <button class="explorer-tab-add" title="分割表示を終了" onclick={exitExplorerSplit}>
               <Columns2 size={17} />
             </button>
           {/if}
+          <button
+            class="explorer-tab-add explorer-detail-view-toggle"
+            class:active={explorerFocusedPaneDetailMode}
+            title={explorerSplit
+              ? explorerFocusedPaneDetailMode ? 'フォーカス中のペインをサムネイル表示' : 'フォーカス中のペインを詳細表示'
+              : explorerDetailOnly ? 'サムネイルと詳細一覧を表示' : '詳細一覧を全面表示'}
+            aria-label={explorerSplit
+              ? explorerFocusedPaneDetailMode ? 'フォーカス中のペインをサムネイル表示' : 'フォーカス中のペインを詳細表示'
+              : explorerDetailOnly ? 'サムネイルと詳細一覧を表示' : '詳細一覧を全面表示'}
+            aria-pressed={explorerFocusedPaneDetailMode}
+            onclick={() => toggleExplorerDetailOnly()}
+          >
+            {#if explorerFocusedPaneDetailMode}<LayoutGrid size={17} />{:else}<List size={17} />{/if}
+          </button>
         </div>
 
         {#if explorerSplit}
-          <div class="explorer-split-workspace" aria-label="分割表示">
+          <div
+            class:resizing={explorerSplitResizePointerId !== null}
+            class="explorer-split-workspace"
+            bind:this={explorerSplitWorkspaceElement}
+            aria-label="分割表示"
+            style={`--explorer-split-ratio: ${explorerSplitRatio}%;`}
+          >
             <section
               class:split-pane-active={splitFocusedPane === 'left'}
               class="split-pane-left explorer-split-pane"
@@ -17947,9 +19964,20 @@
               oncontextmenu={(event) => openExplorerBlankContextMenu(event, 'left')}
             >
               <header class="split-pane-heading">
-                <div>
+                <div class="split-pane-title">
                   <strong>{splitLeftTab?.label ?? explorerPath}</strong>
                   <span title={explorerPath}>{explorerPath}</span>
+                </div>
+                <div class="split-pane-actions">
+                  <button
+                    class:active={explorerSplit.leftViewMode === 'details'}
+                    title={explorerSplit.leftViewMode === 'details' ? 'サムネイル表示へ切り替え' : '詳細表示へ切り替え'}
+                    aria-label={explorerSplit.leftViewMode === 'details' ? 'サムネイル表示へ切り替え' : '詳細表示へ切り替え'}
+                    aria-pressed={explorerSplit.leftViewMode === 'details'}
+                    onclick={() => toggleExplorerDetailOnly('left')}
+                  >
+                    {#if explorerSplit.leftViewMode === 'details'}<LayoutGrid size={16} />{:else}<List size={16} />{/if}
+                  </button>
                 </div>
               </header>
               {#if explorerIsLoading}
@@ -17957,6 +19985,60 @@
               {:else if filteredExplorerEntries.length === 0}
                 <div class="split-pane-empty">このフォルダには表示する項目がありません。</div>
               {:else}
+                {#if explorerSplit.leftViewMode === 'details'}
+                <div
+                  class="split-grid-pane explorer-detail-pane split-detail-pane"
+                  bind:this={explorerSplitLeftPaneElement}
+                  role="listbox"
+                  tabindex="0"
+                  aria-label="左側の詳細一覧"
+                  onwheel={handleExplorerDetailHorizontalWheel}
+                  oncontextmenu={openExplorerColumnMenu}
+                  style={explorerDetailGridStyle}
+                >
+                  <div class="file-row file-header">
+                    {#each visibleExplorerDetailColumns as column}
+                      {#if column.sort}
+                        <button onclick={() => toggleExplorerSort(column.sort)}>
+                          {column.label} {#if explorerSort === column.sort}{#if explorerSortDirection === 'asc'}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}{/if}
+                        </button>
+                      {:else}
+                        <span role="columnheader">{column.label}</span>
+                      {/if}
+                    {/each}
+                  </div>
+                  {#each filteredExplorerEntries as entry}
+                    <button
+                      class="file-row"
+                      class:selected={selectedPaths.includes(entry.path)}
+                      class:drop-target={explorerDropTargetPath === entry.path}
+                      role="option"
+                      aria-selected={selectedPaths.includes(entry.path)}
+                      draggable="true"
+                      ondragstart={(event) => startExplorerEntryDrag(event, entry, 'left')}
+                      ondragend={() => { draggedExplorerEntries = null; clearExplorerDropTarget(); }}
+                      ondragover={(event) => updateExplorerDropTarget(event, entry)}
+                      ondragleave={clearExplorerDropTarget}
+                      ondrop={(event) => dropExplorerEntries(event, entry, 'left')}
+                      onclick={(event) => selectExplorerEntry(event, entry, 'list')}
+                      ondblclick={(event) => openExplorerEntry(entry, event.ctrlKey || event.metaKey)}
+                      oncontextmenu={(event) => openExplorerContextMenu(event, entry, 'left')}
+                      onkeydown={(event) => onExplorerKeydown(event, entry)}
+                      data-explorer-path={entry.path}
+                    >
+                      {#each visibleExplorerDetailColumns as column}
+                        {#if column.id === 'icon'}
+                          <span class="file-icon" title={entry.isDirectory ? 'フォルダ' : 'ファイル'}>{#if entry.isDirectory}<Folder size={18} />{:else}<File size={18} />{/if}</span>
+                        {:else if column.id === 'name'}
+                          <span class="file-name">{getEntryDisplayName(entry)}</span>
+                        {:else}
+                          <span class="detail-value">{getExplorerDetailValue(entry, column.id)}</span>
+                        {/if}
+                      {/each}
+                    </button>
+                  {/each}
+                </div>
+                {:else}
                 <div class="split-grid-pane" bind:this={explorerSplitLeftPaneElement}>
                   <div class="explorer-grid" style={explorerGridStyle} aria-label="左側のサムネイル一覧">
                     {#each filteredExplorerEntries as entry}
@@ -17993,8 +20075,28 @@
                     {/each}
                   </div>
                 </div>
+                {/if}
               {/if}
             </section>
+
+            <div
+              class="explorer-split-resizer"
+              class:active={explorerSplitResizePointerId !== null}
+              role="slider"
+              aria-label="左右ペインの幅を調整"
+              aria-orientation="horizontal"
+              aria-valuemin="20"
+              aria-valuemax="80"
+              aria-valuenow={Math.round(explorerSplitRatio)}
+              tabindex="0"
+              title="ドラッグして分割幅を調整 / ダブルクリックで均等に戻す"
+              onpointerdown={beginExplorerSplitResize}
+              onpointermove={updateExplorerSplitResize}
+              onpointerup={finishExplorerSplitResize}
+              onpointercancel={finishExplorerSplitResize}
+              ondblclick={resetExplorerSplitRatio}
+              onkeydown={handleExplorerSplitResizeKeydown}
+            ><span></span></div>
 
             <section
               class:split-pane-active={splitFocusedPane === 'right'}
@@ -18008,19 +20110,84 @@
               oncontextmenu={(event) => openExplorerBlankContextMenu(event, 'right')}
             >
               <header class="split-pane-heading">
-                <div>
+                <div class="split-pane-title">
                   <strong>{splitRightTab?.label ?? explorerSplit.rightPath}</strong>
                   <span title={explorerSplit.rightPath}>{explorerSplit.rightPath}</span>
                 </div>
-                <button title="親フォルダ" onclick={navigateSplitParent} disabled={!explorerSplit.rightParentPath}>
-                  <ArrowUp size={16} />
-                </button>
+                <div class="split-pane-actions">
+                  <button
+                    class:active={explorerSplit.rightViewMode === 'details'}
+                    title={explorerSplit.rightViewMode === 'details' ? 'サムネイル表示へ切り替え' : '詳細表示へ切り替え'}
+                    aria-label={explorerSplit.rightViewMode === 'details' ? 'サムネイル表示へ切り替え' : '詳細表示へ切り替え'}
+                    aria-pressed={explorerSplit.rightViewMode === 'details'}
+                    onclick={() => toggleExplorerDetailOnly('right')}
+                  >
+                    {#if explorerSplit.rightViewMode === 'details'}<LayoutGrid size={16} />{:else}<List size={16} />{/if}
+                  </button>
+                  <button title="親フォルダ" onclick={navigateSplitParent} disabled={!explorerSplit.rightParentPath}>
+                    <ArrowUp size={16} />
+                  </button>
+                </div>
               </header>
               {#if explorerSplit.rightIsLoading}
                 <div class="split-pane-empty">フォルダを読み込んでいます...</div>
               {:else if splitRightEntries.length === 0}
                 <div class="split-pane-empty">このフォルダには表示する項目がありません。</div>
               {:else}
+                {#if explorerSplit.rightViewMode === 'details'}
+                <div
+                  class="split-grid-pane explorer-detail-pane split-detail-pane"
+                  bind:this={explorerSplitRightPaneElement}
+                  role="listbox"
+                  tabindex="0"
+                  aria-label="右側の詳細一覧"
+                  onwheel={handleExplorerDetailHorizontalWheel}
+                  oncontextmenu={openExplorerColumnMenu}
+                  style={explorerDetailGridStyle}
+                >
+                  <div class="file-row file-header">
+                    {#each visibleExplorerDetailColumns as column}
+                      {#if column.sort}
+                        <button onclick={() => toggleExplorerSort(column.sort)}>
+                          {column.label} {#if explorerSort === column.sort}{#if explorerSortDirection === 'asc'}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}{/if}
+                        </button>
+                      {:else}
+                        <span role="columnheader">{column.label}</span>
+                      {/if}
+                    {/each}
+                  </div>
+                  {#each splitRightEntries as entry}
+                    <button
+                      class="file-row"
+                      class:selected={explorerSplit.rightSelectedPaths.includes(entry.path)}
+                      class:drop-target={explorerDropTargetPath === entry.path}
+                      role="option"
+                      aria-selected={explorerSplit.rightSelectedPaths.includes(entry.path)}
+                      draggable="true"
+                      ondragstart={(event) => startExplorerEntryDrag(event, entry, 'right')}
+                      ondragend={() => { draggedExplorerEntries = null; clearExplorerDropTarget(); }}
+                      ondragover={(event) => updateExplorerDropTarget(event, entry)}
+                      ondragleave={clearExplorerDropTarget}
+                      ondrop={(event) => dropExplorerEntries(event, entry, 'right')}
+                      onclick={(event) => selectSplitEntry(event, entry)}
+                      ondblclick={() => openSplitEntry(entry)}
+                      oncontextmenu={(event) => openExplorerContextMenu(event, entry, 'right')}
+                      onkeydown={(event) => onSplitExplorerKeydown(event, entry)}
+                      data-explorer-path={entry.path}
+                    >
+                      {#each visibleExplorerDetailColumns as column}
+                        {#if column.id === 'icon'}
+                          <span class="file-icon" title={entry.isDirectory ? 'フォルダ' : 'ファイル'}>{#if entry.isDirectory}<Folder size={18} />{:else}<File size={18} />{/if}</span>
+                        {:else if column.id === 'name'}
+                          <span class="file-name">{getEntryDisplayName(entry)}</span>
+                        {:else}
+                          <span class="detail-value">{getExplorerDetailValue(entry, column.id)}</span>
+                        {/if}
+                      {/each}
+                    </button>
+                  {/each}
+                </div>
+                {:else}
                 <div class="split-grid-pane" bind:this={explorerSplitRightPaneElement}>
                   <div class="explorer-grid" style={explorerGridStyle} aria-label="右側のサムネイル一覧">
                     {#each splitRightEntries as entry}
@@ -18056,6 +20223,7 @@
                     {/each}
                   </div>
                 </div>
+                {/if}
               {/if}
             </section>
           </div>
@@ -18081,6 +20249,7 @@
           </div>
         {:else}
           <div
+              class:explorer-detail-only={explorerDetailOnly}
               class="explorer-workspace"
               role="group"
               onwheel={handleExplorerCardZoom}
@@ -18090,6 +20259,7 @@
               onpointercancel={() => cancelExplorerGesture('left')}
               oncontextmenu={(event) => openExplorerBlankContextMenu(event, 'left')}
             >
+              {#if !explorerDetailOnly}
               <div class="explorer-grid-pane" bind:this={explorerGridPaneElement} onscroll={saveExplorerTabScroll}>
                 <div class="explorer-grid" style={explorerGridStyle} aria-label="サムネイル一覧">
                   {#each filteredExplorerEntries as entry}
@@ -18126,6 +20296,7 @@
                   {/each}
                 </div>
               </div>
+              {/if}
 
               <div
                 class="explorer-detail-pane"
@@ -18134,6 +20305,7 @@
                 tabindex="0"
                 aria-label="詳細一覧"
                 onscroll={saveExplorerTabScroll}
+                onwheel={handleExplorerDetailHorizontalWheel}
                 oncontextmenu={openExplorerColumnMenu}
                 style={explorerDetailGridStyle}
               >
@@ -18432,6 +20604,15 @@
               <button class="gallery-creator-summary-refresh" title="更新（未実装）" aria-label="Galleryを更新（未実装）">
                 <RefreshCw size={16} />
               </button>
+              <button
+                class:active={galleryRandomPickSummary !== null}
+                class="gallery-creator-summary-refresh gallery-random-pick-launch"
+                title="条件を指定して作品をランダムピック"
+                aria-label="Galleryのランダムピック"
+                onclick={openGalleryRandomPickDialog}
+              >
+                <Dices size={16} />
+              </button>
               <button class="gallery-creator-summary-refresh sticky-note-launch-button" title="Galleryに付箋を追加" aria-label="Galleryに付箋を追加" onclick={createStickyNoteFromToolbar}>
                 <StickyNote size={16} />
               </button>
@@ -18459,6 +20640,28 @@
             </div>
           </div>
         </header>
+
+        {#if galleryRandomPickSummary}
+          <div class="gallery-random-pick-result">
+            <div>
+              <Dices size={18} />
+              <span>
+                <strong>RANDOM PICK</strong>
+                母集団 {galleryRandomPickSummary.populationCount.toLocaleString('ja-JP')}件から
+                {galleryRandomPickSummary.selectedCount.toLocaleString('ja-JP')}件
+                {#if galleryRandomPickSummary.distinctTitleCount > 0}
+                  ・Title {galleryRandomPickSummary.distinctTitleCount.toLocaleString('ja-JP')}種類
+                {/if}
+              </span>
+            </div>
+            <div>
+              <button onclick={runGalleryRandomPick} disabled={galleryRandomPickIsLoading}>
+                <Dices size={15} />同じ条件で再抽出
+              </button>
+              <button class="secondary" onclick={leaveGalleryRandomPick}>通常表示に戻る</button>
+            </div>
+          </div>
+        {/if}
 
         {#if galleryIsLoading && galleryWorks.length === 0}
           <div class="empty">Galleryを読み込み中...</div>
@@ -18491,7 +20694,14 @@
                 >
                   <Star size={20} />
                 </button>
-                <button class="gallery-work-open" use:observeGalleryThumbnail={work} onclick={(event) => handleGalleryWorkCardClick(event, work)} ondblclick={(event) => handleGalleryWorkCardDoubleClick(event, work)}>
+                <button
+                  class="gallery-work-open"
+                  use:observeGalleryThumbnail={work}
+                  draggable="true"
+                  ondragstart={(event) => startGalleryWorkExternalDrag(event, work)}
+                  onclick={(event) => handleGalleryWorkCardClick(event, work)}
+                  ondblclick={(event) => handleGalleryWorkCardDoubleClick(event, work)}
+                >
                   <div class="gallery-work-thumb">
                     {#if galleryThumbnails[work.id]}
                       <img src={galleryThumbnails[work.id]} alt="" loading="lazy" />
@@ -18527,6 +20737,131 @@
     {/if}
   </section>
 </main>
+
+{#if galleryRandomPickDialogOpen}
+  <div
+    class="modal-backdrop gallery-random-pick-backdrop"
+    role="presentation"
+    onclick={(event) => {
+      if (event.target === event.currentTarget) closeGalleryRandomPickDialog();
+    }}
+  >
+    <form
+      class="modal gallery-random-pick-modal"
+      onsubmit={(event) => {
+        event.preventDefault();
+        runGalleryRandomPick();
+      }}
+    >
+      <div class="modal-heading gallery-random-pick-heading">
+        <div>
+          <span><Dices size={20} /></span>
+          <div><h2>ランダムピック</h2><p>閲覧の偏りを崩し、条件を満たす作品から毎回違う候補を選びます。</p></div>
+        </div>
+        <button type="button" aria-label="閉じる" disabled={galleryRandomPickIsLoading} onclick={closeGalleryRandomPickDialog}><X size={18} /></button>
+      </div>
+
+      <div class="gallery-random-pick-form-grid">
+        <label>
+          <span>表示する作品数</span>
+          <input type="number" min="1" max="50" step="1" bind:value={galleryRandomPickSettings.pickCount} oninput={scheduleGalleryRandomPickSettingsSave} />
+          <small>1～50件</small>
+        </label>
+        <label>
+          <span>最低評価</span>
+          <select bind:value={galleryRandomPickSettings.minimumRating} onchange={scheduleGalleryRandomPickSettingsSave}>
+            <option value={0}>指定なし</option>
+            <option value={1}>★1以上</option>
+            <option value={2}>★2以上</option>
+            <option value={3}>★3以上</option>
+            <option value={4}>★4以上</option>
+            <option value={5}>★5以上</option>
+            <option value={6}>★6以上</option>
+          </select>
+          <small>登録済み評価を基準にします</small>
+        </label>
+        <label>
+          <span>最低画像枚数</span>
+          <input type="number" min="0" max="1000000" step="1" bind:value={galleryRandomPickSettings.minimumImageCount} oninput={scheduleGalleryRandomPickSettingsSave} />
+          <small>0で制限なし</small>
+        </label>
+        <label>
+          <span>最終アクセスからの日数</span>
+          <input type="number" min="0" max="36500" step="1" bind:value={galleryRandomPickSettings.minimumDaysSinceAccess} oninput={scheduleGalleryRandomPickSettingsSave} />
+          <small>未アクセス作品は常に対象・0で制限なし</small>
+        </label>
+        <label>
+          <span>同一Titleの上限</span>
+          <select bind:value={galleryRandomPickSettings.maximumPerTitle} onchange={scheduleGalleryRandomPickSettingsSave}>
+            <option value={0}>制限なし</option>
+            <option value={1}>1件まで</option>
+            <option value={2}>2件まで</option>
+            <option value={3}>3件まで</option>
+            <option value={4}>4件まで</option>
+            <option value={5}>5件まで</option>
+            <option value={10}>10件まで</option>
+          </select>
+          <small>複数Title作品はすべてのTitleに上限を適用</small>
+        </label>
+        <label class="gallery-random-pick-current-filter">
+          <span>現在の属性フィルタ</span>
+          <button
+            type="button"
+            class:active={galleryRandomPickSettings.applyCurrentFilters}
+            role="switch"
+            aria-checked={galleryRandomPickSettings.applyCurrentFilters}
+            onclick={() => updateGalleryRandomPickSettings({
+              ...galleryRandomPickSettings,
+              applyCurrentFilters: !galleryRandomPickSettings.applyCurrentFilters
+            })}
+          >
+            {galleryRandomPickSettings.applyCurrentFilters ? '適用する' : '適用しない'}
+          </button>
+          <small>Rating・Creator・Title・Character・Tagの選択を引き継ぎます</small>
+        </label>
+      </div>
+
+      <section class="gallery-random-pick-tags">
+        <header>
+          <div><strong>母集団を絞るTag</strong><small>未選択ならTagで制限しません</small></div>
+          <div class="gallery-random-pick-tag-mode" role="group" aria-label="Tagの一致条件">
+            <button type="button" class:active={galleryRandomPickSettings.tagMatchMode === 'any'} onclick={() => updateGalleryRandomPickSettings({ ...galleryRandomPickSettings, tagMatchMode: 'any' })}>いずれか</button>
+            <button type="button" class:active={galleryRandomPickSettings.tagMatchMode === 'all'} onclick={() => updateGalleryRandomPickSettings({ ...galleryRandomPickSettings, tagMatchMode: 'all' })}>すべて</button>
+          </div>
+        </header>
+        <label class="gallery-random-pick-tag-search">
+          <Search size={15} />
+          <input bind:value={galleryRandomPickTagQuery} placeholder="Tagを検索" />
+        </label>
+        <div class="gallery-random-pick-tag-options">
+          {#if getGalleryRandomPickTagOptions().length === 0}
+            <span>選択できるTagがありません</span>
+          {:else}
+            {#each getGalleryRandomPickTagOptions() as option (option.value)}
+              <button
+                type="button"
+                class:active={galleryRandomPickSettings.requiredTags.includes(option.value)}
+                onclick={() => toggleGalleryRandomPickTag(option.value)}
+              >
+                {#if galleryRandomPickSettings.requiredTags.includes(option.value)}<Check size={13} />{/if}
+                {option.label ?? option.value}<small>{option.count}</small>
+              </button>
+            {/each}
+          {/if}
+        </div>
+      </section>
+
+      <div class="gallery-random-pick-actions">
+        <div>
+          <button type="button" class="secondary" disabled={galleryRandomPickIsLoading} onclick={closeGalleryRandomPickDialog}>キャンセル</button>
+          <button type="submit" class="primary" disabled={galleryRandomPickIsLoading}>
+            {#if galleryRandomPickIsLoading}<RefreshCw size={16} />抽出中...{:else}<Dices size={16} />ランダムピック{/if}
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+{/if}
 
 {#if globalSearchOpen}
   <div
@@ -19424,6 +21759,26 @@
       <Tags size={16} />
       <span>タグの登録と解除</span>
     </button>
+    {#each getGalleryContextAppRules(galleryContextMenu.work) as rule}
+      <button
+        role="menuitem"
+        onpointerdown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const work = galleryContextTargetWork ?? galleryContextMenu?.work ?? null;
+          if (!work) {
+            closeGalleryContextMenu();
+            showExplorerToast('起動対象の作品を特定できませんでした。', 'error');
+            return;
+          }
+          openGalleryWorkWithProgram(rule, work);
+        }}
+      >
+        <ExternalLink size={16} />
+        <span>{rule.name}</span>
+      </button>
+    {/each}
     <div class="gallery-context-submenu-root">
       <button class="context-danger" role="menuitem" aria-haspopup="menu">
         <Trash2 size={16} />

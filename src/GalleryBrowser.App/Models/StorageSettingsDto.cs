@@ -95,3 +95,33 @@ public sealed record GoogleCalendarSyncResult(
     int Deleted,
     int Unchanged,
     DateTimeOffset SyncedAt);
+
+public sealed record DiscordNotificationSettingsDto(
+    bool Enabled,
+    bool HasWebhookUrl,
+    bool NotifyCreatorFollowAlert,
+    bool NotifySubscriptionEnding,
+    bool NotifySubscriptionReminder,
+    bool NotifyScheduledScanStarted,
+    bool NotifyScheduledScanCompleted);
+
+public sealed record NotificationScheduleDto(
+    string Id,
+    string Time,
+    DateTimeOffset? LastStartedAt);
+
+public sealed record LineNotificationSettingsDto(
+    bool Enabled,
+    bool HasChannelAccessToken,
+    bool HasRecipientUserId,
+    bool NotifyCreatorFollowAlert,
+    bool NotifySubscriptionEnding,
+    bool NotifySubscriptionReminder,
+    bool NotifyScheduledScanStarted,
+    bool NotifyScheduledScanCompleted);
+
+public sealed record LineMessageQuotaDto(
+    string Type,
+    long? Limit,
+    long Consumption,
+    DateTimeOffset CheckedAt);

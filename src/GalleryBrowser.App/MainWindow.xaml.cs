@@ -53,6 +53,8 @@ public partial class MainWindow : Window
     private readonly GalleryDatabase _database;
     private readonly PCloudBackupService _pCloudBackupService;
     private readonly GoogleCalendarSyncService _googleCalendarSyncService;
+    private readonly DiscordNotificationService _discordNotificationService;
+    private readonly LineNotificationService _lineNotificationService;
     private readonly PCloudStartupRestoreResult? _pCloudStartupRestoreResult;
     private readonly FileBrowserService _fileBrowser;
     private readonly ThumbnailService _thumbnailService;
@@ -84,6 +86,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _pCloudAutoBackupCancellation;
     private CancellationTokenSource? _databaseScanSchedulerCancellation;
     private CancellationTokenSource? _googleCalendarSyncCancellation;
+    private CancellationTokenSource? _notificationSchedulerCancellation;
     private int _pCloudAutoBackupInProgress;
     private int _googleCalendarSyncInProgress;
     private bool _pCloudStartupRestoreReported;
@@ -97,6 +100,8 @@ public partial class MainWindow : Window
         _database = new GalleryDatabase(_dataDirectory, _storageSettingsStore);
         _pCloudBackupService = new PCloudBackupService(_database, _storageSettingsStore, _dataDirectory);
         _googleCalendarSyncService = new GoogleCalendarSyncService(_database, _storageSettingsStore);
+        _discordNotificationService = new DiscordNotificationService(_database, _storageSettingsStore);
+        _lineNotificationService = new LineNotificationService(_database, _storageSettingsStore);
         _fileBrowser = new FileBrowserService(_database);
         _winRarService = new WinRarService();
         _ffmpegService = new FfmpegService();
@@ -269,10 +274,16 @@ public partial class MainWindow : Window
             }
             StartPCloudAutoBackupScheduler();
             StartDatabaseScanScheduler();
+            StartNotificationScheduler();
             if (GoogleCalendarSyncFeatureEnabled)
             {
                 StartGoogleCalendarSyncScheduler();
             }
+        }
+        else if (type == "external.fileDrag.start")
+        {
+            var paths = ReadStringArray(root, "paths");
+            _ = Dispatcher.BeginInvoke(() => TryStartExternalFileDrag(paths));
         }
         else if (type == "gallery.list.request")
         {
@@ -336,6 +347,76 @@ public partial class MainWindow : Window
             catch (Exception ex)
             {
                 PostMessage(new { type = "gallery.works.error", requestId, category, message = ex.Message });
+            }
+        }
+        else if (type == "gallery.randomPick.run")
+        {
+            var category = ReadRequiredString(root, "category");
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            var ratings = ReadIntArray(root, "ratings");
+            var tags = ReadStringArray(root, "tags");
+            var creators = ReadStringArray(root, "creators");
+            var titles = ReadStringArray(root, "titles");
+            var characters = ReadStringArray(root, "characters");
+            var requiredTags = ReadStringArray(root, "requiredTags");
+            var applyCurrentFilters = root.TryGetProperty("applyCurrentFilters", out var applyCurrentFiltersProperty) &&
+                                      applyCurrentFiltersProperty.ValueKind == JsonValueKind.True;
+            var requireAllTags = root.TryGetProperty("requireAllTags", out var requireAllTagsProperty) &&
+                                 requireAllTagsProperty.ValueKind == JsonValueKind.True;
+            var pickCount = root.TryGetProperty("pickCount", out var pickCountProperty) &&
+                            pickCountProperty.TryGetInt32(out var parsedPickCount)
+                ? parsedPickCount
+                : 12;
+            var minimumRating = root.TryGetProperty("minimumRating", out var minimumRatingProperty) &&
+                                minimumRatingProperty.TryGetInt32(out var parsedMinimumRating)
+                ? parsedMinimumRating
+                : 1;
+            var minimumImageCount = root.TryGetProperty("minimumImageCount", out var minimumImageCountProperty) &&
+                                    minimumImageCountProperty.TryGetInt32(out var parsedMinimumImageCount)
+                ? parsedMinimumImageCount
+                : 0;
+            var minimumDaysSinceAccess = root.TryGetProperty("minimumDaysSinceAccess", out var minimumDaysSinceAccessProperty) &&
+                                         minimumDaysSinceAccessProperty.TryGetInt32(out var parsedMinimumDaysSinceAccess)
+                ? parsedMinimumDaysSinceAccess
+                : 30;
+            var maximumPerTitle = root.TryGetProperty("maximumPerTitle", out var maximumPerTitleProperty) &&
+                                  maximumPerTitleProperty.TryGetInt32(out var parsedMaximumPerTitle)
+                ? parsedMaximumPerTitle
+                : 1;
+            try
+            {
+                var result = await Task.Run(() => _database.PickRandomGalleryWorks(
+                    category,
+                    ratings,
+                    tags,
+                    creators,
+                    titles,
+                    characters,
+                    applyCurrentFilters,
+                    pickCount,
+                    minimumRating,
+                    minimumImageCount,
+                    minimumDaysSinceAccess,
+                    requiredTags,
+                    requireAllTags,
+                    maximumPerTitle));
+
+                lock (_galleryRatingBaselineLock)
+                {
+                    foreach (var work in result.Items)
+                    {
+                        _galleryRatingBaselines.TryAdd(work.Path, work.Rating);
+                    }
+                }
+
+                EnsureThumbnailCacheConfiguration();
+                var thumbnailUris = await Task.Run(() => GetCachedGalleryThumbnailUris(
+                    result.Items.Select(work => new GalleryThumbnailSource(work.Id, work.Path, work.Category))));
+                PostMessage(new { type = "gallery.randomPick.result", requestId, category, result, thumbnailUris });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "gallery.randomPick.error", requestId, category, message = ex.Message });
             }
         }
         else if (type == "gallery.works.filters")
@@ -451,6 +532,34 @@ public partial class MainWindow : Window
                 PostMessage(new { type = "user.metrics.error", requestId, message = ex.Message });
             }
         }
+        else if (type == "user.metrics.regression.get")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            var category = ReadOptionalString(root, "category") ?? _database.GetDefaultGallerySectionId();
+            try
+            {
+                var result = await Task.Run(() => _database.GetUserMetricsRegressionResult(category));
+                PostMessage(new { type = "user.metrics.regression.result", requestId, result });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "user.metrics.regression.error", requestId, message = ex.Message });
+            }
+        }
+        else if (type == "user.metrics.regression.run")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            var category = ReadOptionalString(root, "category") ?? _database.GetDefaultGallerySectionId();
+            try
+            {
+                var result = await Task.Run(() => _database.RunUserMetricsRegression(category));
+                PostMessage(new { type = "user.metrics.regression.result", requestId, result });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "user.metrics.regression.error", requestId, message = ex.Message });
+            }
+        }
         else if (type == "calendar.subscriptions.list")
         {
             var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
@@ -508,6 +617,29 @@ public partial class MainWindow : Window
         else if (type == "calendar.google.sync")
         {
             await RunGoogleCalendarSyncAsync(automatic: false, CancellationToken.None);
+        }
+        else if (type == "creator.tracking.index.list")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            try
+            {
+                var items = await Task.Run(_database.ListCreatorTrackingIndex);
+                PostMessage(new
+                {
+                    type = "creator.tracking.index.result",
+                    requestId,
+                    items
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new
+                {
+                    type = "creator.tracking.index.error",
+                    requestId,
+                    message = ex.Message
+                });
+            }
         }
         else if (type == "creator.tracking.get")
         {
@@ -2380,6 +2512,227 @@ public partial class MainWindow : Window
                 PostMessage(new { type = "settings.pcloud.operation.error", message = ex.Message });
             }
         }
+        else if (type == "settings.notifications.list")
+        {
+            PostNotificationSchedules();
+        }
+        else if (type == "settings.notifications.schedules.save")
+        {
+            try
+            {
+                var schedules = root.GetProperty("schedules")
+                    .Deserialize<NotificationScheduleDto[]>(JsonOptions) ?? [];
+                _storageSettingsStore.SaveNotificationSchedules(schedules);
+                PostNotificationSchedules();
+                PostMessage(new
+                {
+                    type = "settings.notifications.schedules.saved",
+                    message = "通知スケジュールを保存しました。"
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new
+                {
+                    type = "settings.notifications.schedules.error",
+                    message = ex.Message
+                });
+            }
+        }
+        else if (type == "settings.discord.list")
+        {
+            PostDiscordNotificationSettings();
+        }
+        else if (type == "settings.discord.save")
+        {
+            try
+            {
+                SaveDiscordNotificationSettingsFromMessage(root);
+                PostDiscordNotificationSettings();
+                PostMessage(new
+                {
+                    type = "settings.discord.operation.result",
+                    action = "save",
+                    message = "Discord通知設定を保存しました。"
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "settings.discord.operation.error", action = "save", message = ex.Message });
+            }
+        }
+        else if (type == "settings.discord.test")
+        {
+            try
+            {
+                SaveDiscordNotificationSettingsFromMessage(root);
+                await _discordNotificationService.SendTestAsync(
+                    ReadOptionalString(root, "webhookUrl"),
+                    CancellationToken.None);
+                PostDiscordNotificationSettings();
+                PostMessage(new
+                {
+                    type = "settings.discord.operation.result",
+                    action = "test",
+                    message = "Discordへテスト通知を送信しました。"
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "settings.discord.operation.error", action = "test", message = ex.Message });
+            }
+        }
+        else if (type == "settings.discord.event.test")
+        {
+            try
+            {
+                SaveDiscordNotificationSettingsFromMessage(root);
+                var eventType = ReadRequiredString(root, "eventType");
+                await _discordNotificationService.SendEventTestAsync(
+                    eventType,
+                    ReadOptionalString(root, "webhookUrl"),
+                    CancellationToken.None);
+                PostDiscordNotificationSettings();
+                PostMessage(new
+                {
+                    type = "settings.discord.operation.result",
+                    action = "eventTest",
+                    eventType,
+                    message = "Discordへ通知別テストを送信しました。"
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "settings.discord.operation.error", action = "eventTest", message = ex.Message });
+            }
+        }
+        else if (type == "settings.discord.disconnect")
+        {
+            try
+            {
+                _discordNotificationService.Disconnect();
+                PostDiscordNotificationSettings();
+                PostMessage(new
+                {
+                    type = "settings.discord.operation.result",
+                    action = "disconnect",
+                    message = "Discord Webhookの登録を解除しました。"
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "settings.discord.operation.error", action = "disconnect", message = ex.Message });
+            }
+        }
+        else if (type == "settings.line.list")
+        {
+            PostLineNotificationSettings();
+        }
+        else if (type == "settings.line.save")
+        {
+            try
+            {
+                SaveLineNotificationSettingsFromMessage(root);
+                PostLineNotificationSettings();
+                PostMessage(new
+                {
+                    type = "settings.line.operation.result",
+                    action = "save",
+                    message = "LINE通知設定を保存しました。"
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "settings.line.operation.error", action = "save", message = ex.Message });
+            }
+        }
+        else if (type == "settings.line.test")
+        {
+            try
+            {
+                SaveLineNotificationSettingsFromMessage(root);
+                var quota = await _lineNotificationService.SendTestAsync(
+                    ReadOptionalString(root, "channelAccessToken"),
+                    ReadOptionalString(root, "recipientUserId"),
+                    CancellationToken.None);
+                PostLineNotificationSettings();
+                PostMessage(new
+                {
+                    type = "settings.line.operation.result",
+                    action = "test",
+                    message = "LINEへテスト通知を送信しました。",
+                    quota
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "settings.line.operation.error", action = "test", message = ex.Message });
+            }
+        }
+        else if (type == "settings.line.event.test")
+        {
+            try
+            {
+                SaveLineNotificationSettingsFromMessage(root);
+                var eventType = ReadRequiredString(root, "eventType");
+                var quota = await _lineNotificationService.SendEventTestAsync(
+                    eventType,
+                    ReadOptionalString(root, "channelAccessToken"),
+                    ReadOptionalString(root, "recipientUserId"),
+                    CancellationToken.None);
+                PostLineNotificationSettings();
+                PostMessage(new
+                {
+                    type = "settings.line.operation.result",
+                    action = "eventTest",
+                    eventType,
+                    message = "LINEへ通知別テストを送信しました。",
+                    quota
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "settings.line.operation.error", action = "eventTest", message = ex.Message });
+            }
+        }
+        else if (type == "settings.line.quota")
+        {
+            try
+            {
+                var quota = await _lineNotificationService.GetQuotaAsync(
+                    ReadOptionalString(root, "channelAccessToken"),
+                    CancellationToken.None);
+                PostMessage(new
+                {
+                    type = "settings.line.operation.result",
+                    action = "quota",
+                    message = "LINE Messaging APIの利用状況を更新しました。",
+                    quota
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "settings.line.operation.error", action = "quota", message = ex.Message });
+            }
+        }
+        else if (type == "settings.line.disconnect")
+        {
+            try
+            {
+                _lineNotificationService.Disconnect();
+                PostLineNotificationSettings();
+                PostMessage(new
+                {
+                    type = "settings.line.operation.result",
+                    action = "disconnect",
+                    message = "LINE Messaging APIの登録を解除しました。"
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "settings.line.operation.error", action = "disconnect", message = ex.Message });
+            }
+        }
         else if (type == "settings.gallerySections.create")
         {
             try
@@ -2602,11 +2955,16 @@ public partial class MainWindow : Window
                 expandedProperty.ValueKind is JsonValueKind.True or JsonValueKind.False &&
                 expandedProperty.GetBoolean();
             var explorerDetailColumns = ReadOptionalString(root, "explorerDetailColumns") ?? string.Empty;
+            var explorerDetailOnly = root.TryGetProperty("explorerDetailOnly", out var detailOnlyProperty) &&
+                detailOnlyProperty.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                detailOnlyProperty.GetBoolean();
+            var explorerSplitState = ReadOptionalString(root, "explorerSplitState") ?? "{\"enabled\":false}";
             var mouseGestureSettings = ReadOptionalString(root, "mouseGestureSettings") ?? string.Empty;
             var keyboardShortcutSettings = ReadOptionalString(root, "keyboardShortcutSettings") ?? string.Empty;
             var galleryCardColumns = ReadOptionalString(root, "galleryCardColumns") ?? "{}";
             var galleryFilterSorts = ReadOptionalString(root, "galleryFilterSorts") ?? "[]";
             var galleryThumbnailSorts = ReadOptionalString(root, "galleryThumbnailSorts") ?? "[]";
+            var galleryRandomPickSettings = ReadOptionalString(root, "galleryRandomPickSettings") ?? "{}";
             var creatorTrackingTabs = ReadOptionalString(root, "creatorTrackingTabs") ?? "{\"tabs\":[],\"activeIndex\":0}";
             var explorerCardColumns = root.TryGetProperty("explorerCardColumns", out var explorerCardColumnsProperty) &&
                 explorerCardColumnsProperty.ValueKind == JsonValueKind.Number &&
@@ -2617,12 +2975,15 @@ public partial class MainWindow : Window
                 activeView,
                 explorerBookmarksExpanded,
                 explorerDetailColumns,
+                explorerDetailOnly,
+                explorerSplitState,
                 mouseGestureSettings,
                 galleryCardColumns,
                 explorerCardColumns,
                 keyboardShortcutSettings,
                 galleryFilterSorts,
                 galleryThumbnailSorts,
+                galleryRandomPickSettings,
                 creatorTrackingTabs);
         }
         else if (type == "view.bookmarks.list")
@@ -2836,6 +3197,12 @@ public partial class MainWindow : Window
             var clickExtensions = ReadOptionalString(root, "clickExtensions") ?? string.Empty;
             var doubleClickExtensions = ReadOptionalString(root, "doubleClickExtensions") ?? string.Empty;
             var contextMenuExtensions = ReadOptionalString(root, "contextMenuExtensions") ?? string.Empty;
+            var showInGalleryContextMenu = root.TryGetProperty("showInGalleryContextMenu", out var showInGalleryContextMenuProperty) &&
+                showInGalleryContextMenuProperty.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                showInGalleryContextMenuProperty.GetBoolean();
+            var showInExplorerContextMenu = !root.TryGetProperty("showInExplorerContextMenu", out var showInExplorerContextMenuProperty) ||
+                showInExplorerContextMenuProperty.ValueKind is not (JsonValueKind.True or JsonValueKind.False) ||
+                showInExplorerContextMenuProperty.GetBoolean();
 
             if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(executablePath))
             {
@@ -2847,7 +3214,9 @@ public partial class MainWindow : Window
                     allowMultiple,
                     clickExtensions,
                     doubleClickExtensions,
-                    contextMenuExtensions);
+                    contextMenuExtensions,
+                    showInGalleryContextMenu,
+                    showInExplorerContextMenu);
                 PostExternalAppRules();
             }
         }
@@ -2922,6 +3291,49 @@ public partial class MainWindow : Window
                     type = "explorer.thumbnail.result",
                     path,
                     thumbnailUri
+                });
+            }
+        }
+        else if (type == "gallery.externalApp.open")
+        {
+            try
+            {
+                if (!root.TryGetProperty("id", out var galleryRuleIdProperty) ||
+                    !galleryRuleIdProperty.TryGetInt64(out var galleryRuleId))
+                {
+                    throw new InvalidOperationException("起動プログラムの設定IDを取得できません。");
+                }
+
+                var path = ReadRequiredString(root, "path");
+                var rule = _database.FindExternalAppRule(galleryRuleId);
+                if (rule is null)
+                {
+                    throw new InvalidOperationException("選択した起動プログラムの設定が見つかりません。");
+                }
+
+                if (!File.Exists(path) && !Directory.Exists(path))
+                {
+                    throw new FileNotFoundException("起動対象の作品ファイルが見つかりません。", path);
+                }
+
+                if (!File.Exists(rule.ExecutablePath))
+                {
+                    throw new FileNotFoundException("起動プログラムの実行ファイルが見つかりません。", rule.ExecutablePath);
+                }
+
+                OpenExternal(path, rule);
+                PostMessage(new
+                {
+                    type = "gallery.externalApp.open.result",
+                    message = $"{rule.Name}で作品を開きました。"
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new
+                {
+                    type = "gallery.externalApp.open.error",
+                    message = $"外部アプリで作品を開けませんでした: {ex.Message}"
                 });
             }
         }
@@ -4452,6 +4864,42 @@ public partial class MainWindow : Window
         }
     }
 
+    private void TryStartExternalFileDrag(IReadOnlyList<string> paths)
+    {
+        try
+        {
+            var files = paths
+                .Where(path => !string.IsNullOrWhiteSpace(path) && (File.Exists(path) || Directory.Exists(path)))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (files.Length == 0)
+            {
+                PostMessage(new
+                {
+                    type = "external.fileDrag.error",
+                    message = "外部アプリへ渡せるローカルファイルまたはフォルダがありません。"
+                });
+                return;
+            }
+
+            var fileDropList = new StringCollection();
+            fileDropList.AddRange(files);
+
+            var data = new DataObject();
+            data.SetFileDropList(fileDropList);
+            data.SetData(PreferredDropEffectFormat, new MemoryStream(BitConverter.GetBytes(DropEffectCopy)));
+            DragDrop.DoDragDrop(Browser, data, DragDropEffects.Copy);
+        }
+        catch (Exception ex)
+        {
+            PostMessage(new
+            {
+                type = "external.fileDrag.error",
+                message = $"外部アプリへのドラッグを開始できませんでした: {ex.Message}"
+            });
+        }
+    }
+
     private async void OnClosing(object? sender, CancelEventArgs e)
     {
         if (_gidMigrationInProgress)
@@ -4497,6 +4945,7 @@ public partial class MainWindow : Window
         _databaseScanSchedulerCancellation?.Cancel();
         _pCloudAutoBackupCancellation?.Cancel();
         _googleCalendarSyncCancellation?.Cancel();
+        _notificationSchedulerCancellation?.Cancel();
         try
         {
             var bounds = WindowState == System.Windows.WindowState.Normal
@@ -5561,6 +6010,33 @@ public partial class MainWindow : Window
         });
     }
 
+    private void PostNotificationSchedules()
+    {
+        PostMessage(new
+        {
+            type = "settings.notifications.result",
+            schedules = _storageSettingsStore.GetNotificationSchedules()
+        });
+    }
+
+    private void PostDiscordNotificationSettings()
+    {
+        PostMessage(new
+        {
+            type = "settings.discord.result",
+            settings = _discordNotificationService.GetSettings()
+        });
+    }
+
+    private void PostLineNotificationSettings()
+    {
+        PostMessage(new
+        {
+            type = "settings.line.result",
+            settings = _lineNotificationService.GetSettings()
+        });
+    }
+
     private void PostCalendarSettings(bool updated = false)
     {
         PostMessage(new
@@ -5609,6 +6085,284 @@ public partial class MainWindow : Window
             ReadRequiredInt32(root, "maximumSnapshots"),
             ReadRequiredInt32(root, "idleThresholdMinutes"));
     }
+
+    private void SaveDiscordNotificationSettingsFromMessage(JsonElement root)
+    {
+        _discordNotificationService.SaveSettings(
+            ReadRequiredBoolean(root, "enabled"),
+            ReadOptionalString(root, "webhookUrl"),
+            ReadRequiredBoolean(root, "notifyCreatorFollowAlert"),
+            ReadRequiredBoolean(root, "notifySubscriptionEnding"),
+            ReadRequiredBoolean(root, "notifySubscriptionReminder"),
+            ReadRequiredBoolean(root, "notifyScheduledScanStarted"),
+            ReadRequiredBoolean(root, "notifyScheduledScanCompleted"));
+    }
+
+    private void SaveLineNotificationSettingsFromMessage(JsonElement root)
+    {
+        _lineNotificationService.SaveSettings(
+            ReadRequiredBoolean(root, "enabled"),
+            ReadOptionalString(root, "channelAccessToken"),
+            ReadOptionalString(root, "recipientUserId"),
+            ReadRequiredBoolean(root, "notifyCreatorFollowAlert"),
+            ReadRequiredBoolean(root, "notifySubscriptionEnding"),
+            ReadRequiredBoolean(root, "notifySubscriptionReminder"),
+            ReadRequiredBoolean(root, "notifyScheduledScanStarted"),
+            ReadRequiredBoolean(root, "notifyScheduledScanCompleted"));
+    }
+
+    private void StartNotificationScheduler()
+    {
+        if (_notificationSchedulerCancellation is not null)
+        {
+            return;
+        }
+
+        _notificationSchedulerCancellation = new CancellationTokenSource();
+        _ = RunNotificationSchedulerAsync(_notificationSchedulerCancellation.Token);
+    }
+
+    private async Task RunNotificationSchedulerAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(8), cancellationToken);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await TryRunDueNotificationSchedulesAsync(cancellationToken);
+                await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Normal application shutdown.
+        }
+    }
+
+    private async Task TryRunDueNotificationSchedulesAsync(CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.Now;
+        var dueSchedules = _storageSettingsStore.GetNotificationSchedules()
+            .Select(schedule => new
+            {
+                Schedule = schedule,
+                Target = TryGetNotificationScheduleTarget(schedule, now)
+            })
+            .Where(entry =>
+                entry.Target.HasValue &&
+                now >= entry.Target.Value &&
+                (!entry.Schedule.LastStartedAt.HasValue ||
+                 entry.Schedule.LastStartedAt.Value < entry.Target.Value))
+            .OrderBy(entry => entry.Target)
+            .ToArray();
+        if (dueSchedules.Length == 0)
+        {
+            return;
+        }
+
+        var occurrenceKey = string.Join(
+            "+",
+            dueSchedules.Select(entry =>
+                $"{entry.Schedule.Id}:{entry.Target!.Value:yyyyMMdd-HHmm}"));
+        ScheduledNotificationSnapshot snapshot;
+        try
+        {
+            // Requery the SQLiteDB immediately before delivery so Creator flags and
+            // subscription dates reflect the latest committed tracking data.
+            snapshot = await Task.Run(
+                () => ScheduledNotificationSnapshot.Load(_database, DateTimeOffset.Now),
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception exception)
+        {
+            PostMessageOnDispatcher(new
+            {
+                type = "settings.notifications.schedules.error",
+                message = $"定時通知用の最新データを取得できませんでした: {exception.Message}"
+            });
+            return;
+        }
+
+        _storageSettingsStore.MarkNotificationSchedulesStarted(
+            dueSchedules.Select(entry => entry.Schedule.Id),
+            now);
+        PostMessageOnDispatcher(new
+        {
+            type = "settings.notifications.schedules.executed",
+            schedules = _storageSettingsStore.GetNotificationSchedules()
+        });
+
+        await RunDiscordScheduledNotificationAsync(
+            snapshot,
+            occurrenceKey,
+            cancellationToken);
+        await RunLineScheduledNotificationAsync(
+            snapshot,
+            occurrenceKey,
+            cancellationToken);
+    }
+
+    private async Task<bool> RunDiscordScheduledNotificationAsync(
+        ScheduledNotificationSnapshot snapshot,
+        string occurrenceKey,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _discordNotificationService.ProcessDueNotificationsAsync(
+                snapshot,
+                occurrenceKey,
+                cancellationToken);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception exception)
+        {
+            PostMessageOnDispatcher(new
+            {
+                type = "settings.discord.operation.error",
+                action = "background",
+                message = $"Discord通知を送信できませんでした: {exception.Message}"
+            });
+            return false;
+        }
+    }
+
+    private async Task RunDiscordBackgroundNotificationAsync(Func<Task> sendAsync)
+    {
+        try
+        {
+            await sendAsync();
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            PostMessageOnDispatcher(new
+            {
+                type = "settings.discord.operation.error",
+                action = "background",
+                message = $"Discord通知を送信できませんでした: {exception.Message}"
+            });
+        }
+    }
+
+    private async Task<bool> RunLineScheduledNotificationAsync(
+        ScheduledNotificationSnapshot snapshot,
+        string occurrenceKey,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _lineNotificationService.ProcessDueNotificationsAsync(
+                snapshot,
+                occurrenceKey,
+                cancellationToken);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception exception)
+        {
+            PostMessageOnDispatcher(new
+            {
+                type = "settings.line.operation.error",
+                action = "background",
+                message = $"LINE通知を送信できませんでした: {exception.Message}"
+            });
+            return false;
+        }
+    }
+
+    private static DateTimeOffset? TryGetNotificationScheduleTarget(
+        NotificationScheduleDto schedule,
+        DateTimeOffset now)
+    {
+        if (!TimeOnly.TryParseExact(
+                schedule.Time,
+                "HH:mm",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var time))
+        {
+            return null;
+        }
+
+        return new DateTimeOffset(
+            now.Year,
+            now.Month,
+            now.Day,
+            time.Hour,
+            time.Minute,
+            0,
+            now.Offset);
+    }
+
+    private async Task RunLineBackgroundNotificationAsync(Func<Task> sendAsync)
+    {
+        try
+        {
+            await sendAsync();
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            PostMessageOnDispatcher(new
+            {
+                type = "settings.line.operation.error",
+                action = "background",
+                message = $"LINE通知を送信できませんでした: {exception.Message}"
+            });
+        }
+    }
+
+    private Task NotifyScheduledScanStartedToConfiguredChannelsAsync(
+        IReadOnlyList<string> categoryLabels,
+        DateTimeOffset startedAt,
+        TimeSpan? estimatedDuration) =>
+        Task.WhenAll(
+            RunDiscordBackgroundNotificationAsync(() =>
+                _discordNotificationService.NotifyScheduledScanStartedAsync(
+                    categoryLabels,
+                    startedAt,
+                    estimatedDuration,
+                    CancellationToken.None)),
+            RunLineBackgroundNotificationAsync(() =>
+                _lineNotificationService.NotifyScheduledScanStartedAsync(
+                    categoryLabels,
+                    startedAt,
+                    estimatedDuration,
+                    CancellationToken.None)));
+
+    private Task NotifyScheduledScanCompletedToConfiguredChannelsAsync(
+        IReadOnlyList<string> categoryLabels,
+        DateTimeOffset startedAt,
+        TimeSpan elapsed,
+        string resultSummary,
+        bool succeeded) =>
+        Task.WhenAll(
+            RunDiscordBackgroundNotificationAsync(() =>
+                _discordNotificationService.NotifyScheduledScanCompletedAsync(
+                    categoryLabels,
+                    startedAt,
+                    elapsed,
+                    resultSummary,
+                    succeeded,
+                    CancellationToken.None)),
+            RunLineBackgroundNotificationAsync(() =>
+                _lineNotificationService.NotifyScheduledScanCompletedAsync(
+                    categoryLabels,
+                    startedAt,
+                    elapsed,
+                    resultSummary,
+                    succeeded,
+                    CancellationToken.None)));
 
     private void StartDatabaseScanScheduler()
     {
@@ -5663,6 +6417,10 @@ public partial class MainWindow : Window
 
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(schedulerCancellationToken);
         _galleryDatabaseUpdateCancellation = cancellation;
+        string[] categoryLabels = [];
+        DateTimeOffset? scanStartedAt = null;
+        Stopwatch? scanStopwatch = null;
+        Task scanStartNotification = Task.CompletedTask;
         try
         {
             foreach (var schedule in dueSchedules)
@@ -5688,7 +6446,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var categoryLabels = _database.ListGallerySections()
+            categoryLabels = _database.ListGallerySections()
                 .Where(section => categories.Contains(section.Id, StringComparer.OrdinalIgnoreCase))
                 .Select(section => section.Label)
                 .ToArray();
@@ -5696,8 +6454,8 @@ public partial class MainWindow : Window
             var estimatedDurationSeconds = recentAverage.HasValue
                 ? Math.Max(1, (int)Math.Round(recentAverage.Value.TotalSeconds))
                 : (int?)null;
-            var scanStartedAt = DateTimeOffset.UtcNow;
-            var scanStopwatch = Stopwatch.StartNew();
+            scanStartedAt = DateTimeOffset.UtcNow;
+            scanStopwatch = Stopwatch.StartNew();
             PostMessageOnDispatcher(new
             {
                 type = "settings.sqliteDatabase.schedule.started",
@@ -5705,6 +6463,10 @@ public partial class MainWindow : Window
                 startedAt = scanStartedAt,
                 estimatedDurationSeconds
             });
+            scanStartNotification = NotifyScheduledScanStartedToConfiguredChannelsAsync(
+                categoryLabels,
+                scanStartedAt.Value,
+                recentAverage);
 
             var result = await Task.Run(() => _galleryDatabaseUpdateService.UpdateAsync(categories, progress =>
             {
@@ -5725,6 +6487,13 @@ public partial class MainWindow : Window
                 message = $"定期フォルダ走査を完了しました。{result.ScanSummary} / {result.ErrorSummary}",
                 elapsedSeconds = Math.Max(1, (int)Math.Round(scanStopwatch.Elapsed.TotalSeconds))
             });
+            await scanStartNotification;
+            _ = NotifyScheduledScanCompletedToConfiguredChannelsAsync(
+                categoryLabels,
+                scanStartedAt.Value,
+                scanStopwatch.Elapsed,
+                $"{result.ScanSummary} / {result.ErrorSummary}",
+                succeeded: true);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
@@ -5735,6 +6504,17 @@ public partial class MainWindow : Window
                     type = "settings.sqliteDatabase.operation.cancelled",
                     message = "定期フォルダ走査を中断しました。次回の予定時刻に再実行します。"
                 });
+                if (scanStartedAt.HasValue)
+                {
+                    scanStopwatch?.Stop();
+                    await scanStartNotification;
+                    _ = NotifyScheduledScanCompletedToConfiguredChannelsAsync(
+                        categoryLabels,
+                        scanStartedAt.Value,
+                        scanStopwatch?.Elapsed ?? TimeSpan.Zero,
+                        "処理は安全に中断されました。次回の予定時刻に再実行します。",
+                        succeeded: false);
+                }
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or SqliteException)
@@ -5744,6 +6524,17 @@ public partial class MainWindow : Window
                 type = "settings.sqliteDatabase.schedule.error",
                 message = $"定期フォルダ走査を完了できませんでした: {ex.Message}"
             });
+            if (scanStartedAt.HasValue)
+            {
+                scanStopwatch?.Stop();
+                await scanStartNotification;
+                _ = NotifyScheduledScanCompletedToConfiguredChannelsAsync(
+                    categoryLabels,
+                    scanStartedAt.Value,
+                    scanStopwatch?.Elapsed ?? TimeSpan.Zero,
+                    $"エラー: {ex.Message}",
+                    succeeded: false);
+            }
         }
         finally
         {

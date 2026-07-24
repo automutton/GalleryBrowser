@@ -91,6 +91,45 @@ if ($Mode -eq 'Personal') {
     }
 }
 
+if ($Mode -eq 'Public') {
+    $requiredFiles = @(
+        (Join-Path $packagePath 'GalleryBrowser.exe'),
+        (Join-Path $packagePath 'GalleryBrowser.portable'),
+        (Join-Path $packagePath 'webui\index.html')
+    )
+    $missingRequiredFiles = @($requiredFiles | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+    if ($missingRequiredFiles.Count -gt 0) {
+        throw "Public package is incomplete: $($missingRequiredFiles -join ', ')"
+    }
+
+    $unexpectedDataFiles = @(Get-ChildItem -LiteralPath $dataPath -Force)
+    if ($unexpectedDataFiles.Count -gt 0) {
+        throw "Public package data directory must be empty: $($unexpectedDataFiles.Name -join ', ')"
+    }
+
+    $portableTarget = [System.IO.File]::ReadAllText($portableMarkerPath).Trim()
+    if (-not [string]::Equals($portableTarget, '%LOCALAPPDATA%\GalleryBrowser', [System.StringComparison]::Ordinal)) {
+        throw "Public package has an unsafe portable target: $portableTarget"
+    }
+
+    $forbiddenNames = @(
+        'appsettings.json',
+        'ui-state.json',
+        'storage.json',
+        'creator-tracking-metrics.json'
+    )
+    $forbiddenFiles = @(
+        Get-ChildItem -LiteralPath $packagePath -Recurse -Force -File |
+            Where-Object {
+                $_.Name -in $forbiddenNames -or
+                $_.Extension -in '.sqlite', '.db', '.pdb', '.xml'
+            }
+    )
+    if ($forbiddenFiles.Count -gt 0) {
+        throw "Public package contains private or generated files: $($forbiddenFiles.FullName -join ', ')"
+    }
+}
+
 $files = Get-ChildItem -LiteralPath $packagePath -Recurse -File
 $totalBytes = ($files | Measure-Object -Property Length -Sum).Sum
 [pscustomobject]@{

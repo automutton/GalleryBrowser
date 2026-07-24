@@ -34,3 +34,8 @@ public sealed record GalleryWorkFiltersDto(
     IReadOnlyList<GalleryFilterOptionDto> Creators,
     IReadOnlyList<GalleryFilterOptionDto> Titles,
     IReadOnlyList<GalleryFilterOptionDto> Characters);
+
+public sealed record GalleryRandomPickResultDto(
+    IReadOnlyList<GalleryWorkDto> Items,
+    int PopulationCount,
+    int DistinctTitleCount);

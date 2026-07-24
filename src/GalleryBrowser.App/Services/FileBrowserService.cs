@@ -39,6 +39,10 @@ public sealed class FileBrowserService
     private static readonly Regex GidTagRegex = new(
         @"\{gid=(?<gid>[^{}]+)\}",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly HashSet<string> ArchiveImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".avif", ".heic", ".heif", ".jxl"
+    };
     private readonly Dictionary<string, (long Length, long ModifiedTicks, int? PageCount)> _archivePageCounts =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly GalleryDatabase _database;
@@ -142,7 +146,9 @@ public sealed class FileBrowserService
         try
         {
             using var archive = ZipFile.OpenRead(file.FullName);
-            pageCount = archive.Entries.Count(entry => !string.IsNullOrEmpty(entry.Name));
+            pageCount = archive.Entries.Count(entry =>
+                !string.IsNullOrEmpty(entry.Name) &&
+                ArchiveImageExtensions.Contains(Path.GetExtension(entry.FullName)));
         }
         catch (InvalidDataException)
         {

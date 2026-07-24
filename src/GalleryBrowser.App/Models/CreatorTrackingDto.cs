@@ -41,7 +41,9 @@ public sealed record CreatorTrackingSubscriptionDto(
 {
     public bool Wishlist { get; init; }
 
-    public bool IsActive { get; init; } = true;
+    public bool IsEnded { get; init; }
+
+    public string EndedOn { get; init; } = string.Empty;
 }
 
 public sealed record CreatorTrackingPurchaseDto(
