@@ -32,6 +32,7 @@ internal sealed class DiscordNotificationService
         bool notifyCreatorFollowAlert,
         bool notifySubscriptionEnding,
         bool notifySubscriptionReminder,
+        bool notifyCreatorTasks,
         bool notifyScheduledScanStarted,
         bool notifyScheduledScanCompleted)
     {
@@ -46,6 +47,7 @@ internal sealed class DiscordNotificationService
             notifyCreatorFollowAlert,
             notifySubscriptionEnding,
             notifySubscriptionReminder,
+            notifyCreatorTasks,
             notifyScheduledScanStarted,
             notifyScheduledScanCompleted);
     }
@@ -87,6 +89,7 @@ internal sealed class DiscordNotificationService
             settings.NotifyCreatorFollowAlert,
             settings.NotifySubscriptionEnding,
             settings.NotifySubscriptionReminder,
+            settings.NotifyCreatorTasks,
             markdown: true,
             MaximumMessageLength);
         if (digest is null ||

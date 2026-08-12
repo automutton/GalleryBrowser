@@ -14,10 +14,6 @@ internal sealed class GalleryFileScanner
     private static readonly Regex CreatorRegex = new(@"^【(.+)】$", RegexOptions.Compiled);
     private static readonly Regex ZpiRegex = new(@"\s*\{zpi\$([^}]*)\}", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex GidRegex = new(@"\s*\{gid=([A-Za-z0-9]+)\}", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"
-    };
     private static readonly HashSet<string> ArchiveExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".zip", ".rar", ".7z", ".cbz", ".cbr"
@@ -42,6 +38,8 @@ internal sealed class GalleryFileScanner
             .ToArray();
         var items = new ConcurrentBag<GalleryScannedItem>();
         var errors = new ConcurrentBag<string>();
+        var pathMetadataByDirectory =
+            new ConcurrentDictionary<string, (string Creator, string TopFolder)>(StringComparer.OrdinalIgnoreCase);
         var processed = 0;
         var options = new ParallelOptions
         {
@@ -54,7 +52,13 @@ internal sealed class GalleryFileScanner
             try
             {
                 token.ThrowIfCancellationRequested();
-                items.Add(ScanFile(path, plan.Category, categoryRoots));
+                var directoryPath = Path.GetDirectoryName(path) ?? path;
+                var pathMetadata = pathMetadataByDirectory.GetOrAdd(
+                    directoryPath,
+                    static (directory, roots) =>
+                        (InferCreatorFromPath(directory), InferTopFolder(directory, roots)),
+                    categoryRoots);
+                items.Add(ScanFile(path, plan.Category, pathMetadata.Creator, pathMetadata.TopFolder));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
             {
@@ -77,12 +81,13 @@ internal sealed class GalleryFileScanner
             files.Count);
     }
 
-    private static IReadOnlyList<string> EnumerateSupportedFiles(
+    private static IReadOnlyCollection<string> EnumerateSupportedFiles(
         IReadOnlyList<string> roots,
-        IReadOnlySet<string> extensions,
+        HashSet<string> extensions,
         CancellationToken cancellationToken)
     {
         var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var extensionLookup = extensions.GetAlternateLookup<ReadOnlySpan<char>>();
         var pending = new Stack<string>(roots
             .Where(Directory.Exists)
             .Select(Path.GetFullPath)
@@ -93,23 +98,23 @@ internal sealed class GalleryFileScanner
             var folder = pending.Pop();
             try
             {
-                foreach (var entry in Directory.EnumerateFileSystemEntries(folder))
+                foreach (var entry in new DirectoryInfo(folder).EnumerateFileSystemInfos())
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     try
                     {
-                        var attributes = File.GetAttributes(entry);
+                        var attributes = entry.Attributes;
                         if ((attributes & FileAttributes.Directory) != 0)
                         {
                             if ((attributes & FileAttributes.ReparsePoint) == 0 &&
-                                !Path.GetFileName(entry).Contains(ExcludedFolderNamePart, StringComparison.OrdinalIgnoreCase))
+                                !entry.Name.Contains(ExcludedFolderNamePart, StringComparison.OrdinalIgnoreCase))
                             {
-                                pending.Push(entry);
+                                pending.Push(entry.FullName);
                             }
                         }
-                        else if (extensions.Contains(Path.GetExtension(entry)))
+                        else if (extensionLookup.Contains(Path.GetExtension(entry.Name.AsSpan())))
                         {
-                            files.Add(Path.GetFullPath(entry));
+                            files.Add(entry.FullName);
                         }
                     }
                     catch (IOException)
@@ -131,13 +136,14 @@ internal sealed class GalleryFileScanner
                 // An inaccessible subtree is skipped, matching Explorer enumeration behavior.
             }
         }
-        return files.OrderBy(path => path, StringComparer.CurrentCultureIgnoreCase).ToArray();
+        return files;
     }
 
     private static GalleryScannedItem ScanFile(
         string path,
         string category,
-        IReadOnlyList<string> configuredCategoryRoots)
+        string inferredCreator,
+        string inferredTopFolder)
     {
         var file = new FileInfo(path);
         var zpi = ParseZpiFields(file.Name);
@@ -146,8 +152,8 @@ internal sealed class GalleryFileScanner
         {
             throw new InvalidDataException("正式な{gid=...}がファイル名にありません。");
         }
-        var creator = InferCreatorFromPath(path);
-        var topFolder = InferTopFolder(path, configuredCategoryRoots);
+        var creator = inferredCreator;
+        var topFolder = inferredTopFolder;
         var extension = file.Extension;
         var mediaType = ArchiveExtensions.Contains(extension) ? "archive" : "video";
         var rating = zpi.Rating;
@@ -159,19 +165,48 @@ internal sealed class GalleryFileScanner
         if (extension.Equals(".zip", StringComparison.OrdinalIgnoreCase))
         {
             using var archive = ZipFile.OpenRead(path);
-            var archiveMetadata = ReadArchiveMetadata(archive);
+            var entryCount = 0;
+            var imageEntryCount = 0;
+            long uncompressedSize = 0;
+            ZipArchiveEntry? metadataEntry = null;
+            foreach (var entry in archive.Entries)
+            {
+                if (entry.FullName.Equals(ArchiveMetadataEntry, StringComparison.OrdinalIgnoreCase))
+                {
+                    metadataEntry = entry;
+                    continue;
+                }
+                if (string.IsNullOrEmpty(entry.Name))
+                {
+                    continue;
+                }
+
+                entryCount++;
+                if (HasImageExtension(entry.FullName))
+                {
+                    imageEntryCount++;
+                }
+                uncompressedSize += entry.Length;
+            }
+            zipEntryCount = entryCount;
+            imageCount = imageEntryCount;
+            totalUncompressedSize = uncompressedSize;
+
+            var archiveMetadata = ReadArchiveMetadata(metadataEntry);
             rating = Math.Max(rating, archiveMetadata.Rating);
-            tags = tags.Concat(archiveMetadata.Tags).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (archiveMetadata.Tags.Count > 0)
+            {
+                var knownTags = new HashSet<string>(tags, StringComparer.OrdinalIgnoreCase);
+                foreach (var tag in archiveMetadata.Tags)
+                {
+                    if (knownTags.Add(tag))
+                    {
+                        tags.Add(tag);
+                    }
+                }
+            }
             creator = FirstNonEmpty(creator, archiveMetadata.Creator);
             topFolder = FirstNonEmpty(topFolder, archiveMetadata.TopFolder);
-
-            var entries = archive.Entries
-                .Where(entry => !string.IsNullOrEmpty(entry.Name) &&
-                                !entry.FullName.Equals(ArchiveMetadataEntry, StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-            zipEntryCount = entries.Length;
-            imageCount = entries.Count(entry => ImageExtensions.Contains(Path.GetExtension(entry.FullName)));
-            totalUncompressedSize = entries.Sum(entry => entry.Length);
         }
 
         return new GalleryScannedItem(
@@ -194,10 +229,19 @@ internal sealed class GalleryFileScanner
             file.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
     }
 
-    private static GalleryArchiveMetadata ReadArchiveMetadata(ZipArchive archive)
+    private static bool HasImageExtension(string path)
     {
-        var entry = archive.Entries.FirstOrDefault(candidate =>
-            candidate.FullName.Equals(ArchiveMetadataEntry, StringComparison.OrdinalIgnoreCase));
+        var extension = Path.GetExtension(path.AsSpan());
+        return extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".webp", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".bmp", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".gif", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static GalleryArchiveMetadata ReadArchiveMetadata(ZipArchiveEntry? entry)
+    {
         if (entry is null)
         {
             return GalleryArchiveMetadata.Empty;
@@ -226,15 +270,45 @@ internal sealed class GalleryFileScanner
 
     private static string InferCreatorFromPath(string path)
     {
-        foreach (var part in path.Split(
-                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-                     StringSplitOptions.RemoveEmptyEntries))
+        var creatorOverride = GalleryCreatorPathRules.ResolveCreatorOverride(path);
+        if (!string.IsNullOrWhiteSpace(creatorOverride))
         {
-            var clean = CleanDisplayName(part);
-            if (CreatorRegex.Match(clean) is { Success: true } creatorMatch)
+            return creatorOverride;
+        }
+
+        var pathSpan = path.AsSpan();
+        var start = 0;
+        while (start < pathSpan.Length)
+        {
+            while (start < pathSpan.Length && IsDirectorySeparator(pathSpan[start]))
             {
-                return creatorMatch.Groups[1].Value.Trim();
+                start++;
             }
+            if (start >= pathSpan.Length)
+            {
+                break;
+            }
+
+            var end = start;
+            while (end < pathSpan.Length && !IsDirectorySeparator(pathSpan[end]))
+            {
+                end++;
+            }
+
+            var part = pathSpan[start..end];
+            if (part.Length >= 2 && part[0] == '【' && part[^1] == '】')
+            {
+                return part[1..^1].Trim().ToString();
+            }
+            if (part.IndexOf('【') >= 0)
+            {
+                var clean = CleanDisplayName(part.ToString());
+                if (CreatorRegex.Match(clean) is { Success: true } creatorMatch)
+                {
+                    return creatorMatch.Groups[1].Value.Trim();
+                }
+            }
+            start = end + 1;
         }
         // Title and Character are DB-managed attributes and are intentionally not inferred from path tokens.
         return string.Empty;
@@ -248,14 +322,29 @@ internal sealed class GalleryFileScanner
             {
                 continue;
             }
-            var relative = Path.GetRelativePath(root, path);
-            return relative.Split(
-                    [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-                    StringSplitOptions.RemoveEmptyEntries)
-                .FirstOrDefault() ?? string.Empty;
+
+            var start = root.Length;
+            while (start < path.Length && IsDirectorySeparator(path[start]))
+            {
+                start++;
+            }
+            if (start >= path.Length)
+            {
+                return string.Empty;
+            }
+
+            var end = start;
+            while (end < path.Length && !IsDirectorySeparator(path[end]))
+            {
+                end++;
+            }
+            return path[start..end];
         }
         return string.Empty;
     }
+
+    private static bool IsDirectorySeparator(char value) =>
+        value == Path.DirectorySeparatorChar || value == Path.AltDirectorySeparatorChar;
 
     private static bool IsPathWithinRoot(string path, string root)
     {

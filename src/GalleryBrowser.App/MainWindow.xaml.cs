@@ -1,4 +1,5 @@
 using System.IO;
+using System.Collections.Concurrent;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -6,6 +7,7 @@ using System.Globalization;
 using System.Net.Http;
 using System.Reflection;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -26,6 +28,33 @@ public partial class MainWindow : Window
     private sealed record GalleryThumbnailSource(string Id, string Path, string Category);
     private sealed record ExplorerDatabaseSyncResult(string Message, bool HasWarnings);
     private sealed record FileDeletionCleanupResult(int DeletedDatabaseRecords, int DeletedThumbnailEntries);
+    private sealed class AiInferenceBatchToolArguments
+    {
+        public string Section { get; set; } = string.Empty;
+        public string Creator { get; set; } = string.Empty;
+        public string Cursor { get; set; } = string.Empty;
+        public int BatchSize { get; set; } = 8;
+        public bool IncludeImages { get; set; } = true;
+        public AiAttributeInferenceFilterDto Conditions { get; set; } = new();
+    }
+    private sealed class AiCharacterCandidateToolArguments
+    {
+        public string Section { get; set; } = string.Empty;
+        public List<AiAttributeCharacterRequestDto> Works { get; set; } = [];
+    }
+    private sealed class AiInferenceApplyToolArguments
+    {
+        public List<AiAttributeInferenceAssignmentDto> Assignments { get; set; } = [];
+    }
+    private sealed class AiInferenceReviewToolArguments
+    {
+        public string Section { get; set; } = string.Empty;
+        public List<AiAttributeInferenceReviewRequestDto> Works { get; set; } = [];
+    }
+    private sealed class AiFolderThumbnailToolArguments
+    {
+        public List<string> Sections { get; set; } = [];
+    }
     private sealed class CallbackProgress<T>(Action<T> callback) : IProgress<T>
     {
         public void Report(T value) => callback(value);
@@ -44,7 +73,13 @@ public partial class MainWindow : Window
 #else
     private static readonly bool GoogleCalendarSyncFeatureEnabled = true;
 #endif
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        // Messages are passed directly to WebView2 as JSON, not embedded into HTML.
+        // Keeping Japanese file names as UTF-8 avoids expanding every character to
+        // a six-byte \uXXXX escape in large Gallery and Explorer payloads.
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
     private static readonly HttpClient SiteIconHttpClient = CreateSiteIconHttpClient();
     private static readonly Regex HtmlLinkTagRegex = new("<link\\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex HtmlAttributeRegex = new("(?<name>[^\\s=/>]+)\\s*=\\s*(?<quote>[\\\"'])(?<value>.*?)\\k<quote>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -58,11 +93,17 @@ public partial class MainWindow : Window
     private readonly PCloudStartupRestoreResult? _pCloudStartupRestoreResult;
     private readonly FileBrowserService _fileBrowser;
     private readonly ThumbnailService _thumbnailService;
+    private readonly FolderThumbnailAssignmentService _folderThumbnailAssignmentService;
     private readonly WinRarService _winRarService;
     private readonly FfmpegService _ffmpegService;
     private readonly NConvertZipService _nConvertZipService;
     private readonly StandardNameSearchService _standardNameSearchService;
+    private readonly YahooFuriganaService _yahooFuriganaService;
     private readonly GalleryDatabaseUpdateService _galleryDatabaseUpdateService;
+    private readonly AiConciergeService _aiConciergeService;
+    private AiConciergeWindow? _aiConciergeWindow;
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<AiConciergeToolResult>>
+        _pendingAiConciergeActions = new();
     private readonly SemaphoreSlim _galleryDatabaseUpdateGate = new(1, 1);
     private CancellationTokenSource? _galleryDatabaseUpdateCancellation;
     private IReadOnlyDictionary<long, GalleryItemDto> _itemsById = new Dictionary<long, GalleryItemDto>();
@@ -87,6 +128,10 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _databaseScanSchedulerCancellation;
     private CancellationTokenSource? _googleCalendarSyncCancellation;
     private CancellationTokenSource? _notificationSchedulerCancellation;
+    private CancellationTokenSource? _explorerLeftDirectoryCancellation;
+    private CancellationTokenSource? _explorerRightDirectoryCancellation;
+    private int _explorerLeftDirectoryGeneration;
+    private int _explorerRightDirectoryGeneration;
     private int _pCloudAutoBackupInProgress;
     private int _googleCalendarSyncInProgress;
     private bool _pCloudStartupRestoreReported;
@@ -107,8 +152,15 @@ public partial class MainWindow : Window
         _ffmpegService = new FfmpegService();
         _nConvertZipService = new NConvertZipService();
         _standardNameSearchService = new StandardNameSearchService();
+        _yahooFuriganaService = new YahooFuriganaService(_database);
         _thumbnailService = new ThumbnailService(_database, _ffmpegService);
-        _galleryDatabaseUpdateService = new GalleryDatabaseUpdateService(_database, _fileBrowser);
+        _folderThumbnailAssignmentService = new FolderThumbnailAssignmentService(
+            _database,
+            _fileBrowser,
+            _thumbnailService);
+        _galleryDatabaseUpdateService = new GalleryDatabaseUpdateService(_database, _fileBrowser, _thumbnailService);
+        var aiConciergeSettings = _storageSettingsStore.GetAiConciergeSettings(_dataDirectory);
+        _aiConciergeService = new AiConciergeService(aiConciergeSettings.DataDirectory);
         InitializeComponent();
 #if DEBUG
         Title = CreateDebugWindowTitle();
@@ -171,6 +223,12 @@ public partial class MainWindow : Window
         {
             Browser.NavigateToString(CreateMissingUiHtml(uiEntry));
         }
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            _database.WarmGalleryCreatorSummaryCache();
+        });
     }
 
     private static string GetUiEntryPath()
@@ -245,9 +303,92 @@ public partial class MainWindow : Window
         }
 
         var type = typeProperty.GetString();
+        if (type == "ai.concierge.open")
+        {
+            var contextJson = root.TryGetProperty("context", out var context)
+                ? context.GetRawText()
+                : "{}";
+            var viewLabel = context.ValueKind == JsonValueKind.Object
+                ? ReadOptionalString(context, "viewLabel") ?? "GalleryBrowser"
+                : "GalleryBrowser";
+            ShowAiConciergeWindow(contextJson, viewLabel);
+            return;
+        }
+        if (type == "ai.concierge.action.result")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            if (root.TryGetProperty("context", out var actionContext) &&
+                actionContext.ValueKind == JsonValueKind.Object)
+            {
+                var actionContextJson = actionContext.GetRawText();
+                var actionViewLabel =
+                    ReadOptionalString(actionContext, "viewLabel") ?? "GalleryBrowser";
+                _aiConciergeWindow?.UpdateContext(actionContextJson, actionViewLabel);
+            }
+            if (_pendingAiConciergeActions.TryRemove(requestId, out var pendingAction))
+            {
+                var success = root.TryGetProperty("success", out var successElement) &&
+                              successElement.ValueKind is JsonValueKind.True;
+                var message = ReadOptionalString(root, "message")
+                    ?? (success ? "操作を実行しました。" : "操作を実行できませんでした。");
+                pendingAction.TrySetResult(new AiConciergeToolResult(success, message));
+            }
+            return;
+        }
         if (type == "app.userActivity")
         {
             Interlocked.Exchange(ref _lastUserActivityUtcTicks, DateTime.UtcNow.Ticks);
+            return;
+        }
+        if (type == "search.romanize.request")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            try
+            {
+                var settings = _database.GetSearchEngineSettings();
+                var romanizations = await _yahooFuriganaService.RomanizeAsync(
+                    settings.YahooClientId,
+                    ReadStringArray(root, "values"),
+                    CancellationToken.None);
+                PostMessage(new
+                {
+                    type = "search.romanize.result",
+                    requestId,
+                    items = romanizations.Select(entry => new
+                    {
+                        source = entry.Key,
+                        romanized = entry.Value
+                    })
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "search.romanize.error", requestId, message = ex.Message });
+            }
+            return;
+        }
+        if (type == "search.romanize.cache.request")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            try
+            {
+                var values = ReadStringArray(root, "values");
+                var romanizations = await Task.Run(() => _database.GetTextRomanizationCache(values));
+                PostMessage(new
+                {
+                    type = "search.romanize.cache.result",
+                    requestId,
+                    items = romanizations.Select(entry => new
+                    {
+                        source = entry.Key,
+                        romanized = entry.Value
+                    })
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "search.romanize.cache.error", requestId, message = ex.Message });
+            }
             return;
         }
         if (type == "app.ready")
@@ -319,6 +460,7 @@ public partial class MainWindow : Window
             var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
             try
             {
+                var itemsAlreadySent = false;
                 var page = await Task.Run(() => _database.ListGalleryWorks(
                     category,
                     ratings,
@@ -329,20 +471,56 @@ public partial class MainWindow : Window
                     sort,
                     filterSort,
                     offset,
-                    pageSize));
-
-                lock (_galleryRatingBaselineLock)
-                {
-                    foreach (var work in page.Items)
+                    pageSize,
+                    items =>
                     {
-                        _galleryRatingBaselines.TryAdd(work.Path, work.Rating);
+                        lock (_galleryRatingBaselineLock)
+                        {
+                            foreach (var work in items)
+                            {
+                                _galleryRatingBaselines.TryAdd(work.Path, work.Rating);
+                            }
+                        }
+                        itemsAlreadySent = true;
+                        PostMessageOnDispatcher(new
+                        {
+                            type = "gallery.works.items.result",
+                            requestId,
+                            category,
+                            offset,
+                            items
+                        });
+                    }));
+
+                if (!itemsAlreadySent)
+                {
+                    lock (_galleryRatingBaselineLock)
+                    {
+                        foreach (var work in page.Items)
+                        {
+                            _galleryRatingBaselines.TryAdd(work.Path, work.Rating);
+                        }
                     }
                 }
 
-                EnsureThumbnailCacheConfiguration();
-                var thumbnailUris = await Task.Run(() => GetCachedGalleryThumbnailUris(
-                    page.Items.Select(work => new GalleryThumbnailSource(work.Id, work.Path, work.Category))));
-                PostMessage(new { type = "gallery.works.result", requestId, category, offset, page, thumbnailUris });
+                // Return the work data as soon as the database query completes. Thumbnail
+                // cache checks are demand-driven by the viewport and must not delay cards.
+                if (itemsAlreadySent)
+                {
+                    PostMessage(new
+                    {
+                        type = "gallery.works.result",
+                        requestId,
+                        category,
+                        offset,
+                        total = page.Total,
+                        itemsAlreadySent = true
+                    });
+                }
+                else
+                {
+                    PostMessage(new { type = "gallery.works.result", requestId, category, offset, page, itemsAlreadySent = false });
+                }
             }
             catch (Exception ex)
             {
@@ -409,10 +587,7 @@ public partial class MainWindow : Window
                     }
                 }
 
-                EnsureThumbnailCacheConfiguration();
-                var thumbnailUris = await Task.Run(() => GetCachedGalleryThumbnailUris(
-                    result.Items.Select(work => new GalleryThumbnailSource(work.Id, work.Path, work.Category))));
-                PostMessage(new { type = "gallery.randomPick.result", requestId, category, result, thumbnailUris });
+                PostMessage(new { type = "gallery.randomPick.result", requestId, category, result });
             }
             catch (Exception ex)
             {
@@ -443,7 +618,15 @@ public partial class MainWindow : Window
                     characters,
                     filterSort,
                     filterParts));
-                PostMessage(new { type = "gallery.works.filters.result", requestId, category, filterParts, isSnapshot, filters });
+                await PostMessageSerializedAsync(new
+                {
+                    type = "gallery.works.filters.result",
+                    requestId,
+                    category,
+                    filterParts,
+                    isSnapshot,
+                    filters
+                });
             }
             catch (Exception ex)
             {
@@ -478,38 +661,24 @@ public partial class MainWindow : Window
                                forceRefreshProperty.ValueKind == JsonValueKind.True;
             try
             {
-                var snapshot = await Task.Run(() => _database.ListGalleryCreatorSummaries(forceRefresh));
-                const int batchSize = 150;
-                if (snapshot.Items.Count == 0)
+                if (!forceRefresh)
                 {
-                    PostMessage(new
+                    var cached = await Task.Run(_database.ReadGalleryCreatorSummaryCacheState);
+                    if (cached.Snapshot is not null)
                     {
-                        type = "gallery.creatorSummary.result",
-                        requestId,
-                        reset = true,
-                        isLast = true,
-                        items = Array.Empty<GalleryCreatorSummaryDto>()
-                    });
-                }
-                else
-                {
-                    for (var offset = 0; offset < snapshot.Items.Count; offset += batchSize)
-                    {
-                        var items = snapshot.Items.Skip(offset).Take(batchSize).ToArray();
-                        EnsureThumbnailCacheConfiguration();
-                        var thumbnailUris = await Task.Run(() => GetCachedGalleryThumbnailUris(
-                            items.Select(item => new GalleryThumbnailSource(item.Id, item.CreatorFolder, item.Category))));
-                        PostMessage(new
-                        {
-                            type = "gallery.creatorSummary.result",
+                        await PostGalleryCreatorSummarySnapshotAsync(
                             requestId,
-                            reset = offset == 0,
-                            isLast = offset + items.Length >= snapshot.Items.Count,
-                            items,
-                            thumbnailUris
-                        });
+                            cached.Snapshot,
+                            refreshPending: !cached.IsCurrent);
+                        if (cached.IsCurrent)
+                        {
+                            return;
+                        }
                     }
                 }
+
+                var snapshot = await Task.Run(() => _database.ListGalleryCreatorSummaries(forceRefresh: true));
+                await PostGalleryCreatorSummarySnapshotAsync(requestId, snapshot, refreshPending: false);
             }
             catch (Exception ex)
             {
@@ -588,11 +757,11 @@ public partial class MainWindow : Window
                 var events = await Task.Run(_database.ListCalendarSubscriptionEvents);
                 var dialog = new Microsoft.Win32.SaveFileDialog
                 {
-                    Title = "サブスク予定をiCalendar形式で保存",
+                    Title = "Creator Tracking予定をiCalendar形式で保存",
                     Filter = "iCalendar (*.ics)|*.ics",
                     DefaultExt = ".ics",
                     AddExtension = true,
-                    FileName = $"GalleryBrowser_subscriptions_{DateTime.Now:yyyyMMdd_HHmmss}.ics"
+                    FileName = $"GalleryBrowser_schedule_{DateTime.Now:yyyyMMdd_HHmmss}.ics"
                 };
                 if (dialog.ShowDialog(this) == true)
                 {
@@ -652,31 +821,41 @@ public partial class MainWindow : Window
                 var dashboardContext = ReadCreatorTrackingDashboardContext(root, creator);
                 var templateContext = ReadCreatorTrackingTemplateContext(root);
                 var loadResult = await Task.Run(() => _database.GetOrCreateCreatorTracking(creator, templateContext));
+                var tracking = string.IsNullOrWhiteSpace(dashboardContext.Category)
+                    ? loadResult.Tracking
+                    : await Task.Run(() => _database.EnsureCreatorTrackingCategoryProfile(
+                        creator,
+                        dashboardContext.Category));
                 var scanMessage = string.Empty;
                 GalleryCreatorSummaryDto? refreshedSummary = null;
                 if (forceRefresh)
                 {
-                    scanMessage = await RefreshCreatorTrackingGalleryFolderAsync(loadResult.Tracking);
-                    if (!string.IsNullOrWhiteSpace(dashboardContext.Category))
+                    scanMessage = await RefreshCreatorTrackingGalleryFolderAsync(tracking);
+                    var snapshot = await Task.Run(() => _database.ListGalleryCreatorSummaries(forceRefresh: true));
+                    (dashboardContext, refreshedSummary) = BuildRefreshedCreatorTrackingState(
+                        snapshot,
+                        dashboardContext,
+                        tracking);
+                    if (refreshedSummary is not null &&
+                        !tracking.CategoryProfiles.Any(profile => string.Equals(
+                            profile.Category,
+                            refreshedSummary.Category,
+                            StringComparison.OrdinalIgnoreCase)))
                     {
-                        var snapshot = await Task.Run(() => _database.ListGalleryCreatorSummaries(forceRefresh: true));
-                        dashboardContext = BuildCreatorTrackingDashboardContext(snapshot, dashboardContext, creator);
-                        refreshedSummary = FindCreatorTrackingSummary(
-                            snapshot,
-                            dashboardContext.Category,
+                        tracking = await Task.Run(() => _database.EnsureCreatorTrackingCategoryProfile(
                             creator,
-                            templateContext?.MainStoragePath);
+                            refreshedSummary.Category));
                     }
                 }
                 var dashboard = await _database.GetCreatorTrackingDashboardAsync(
-                    loadResult.Tracking,
+                    tracking,
                     dashboardContext,
                     forceRefresh: forceRefresh);
                 PostMessage(new
                 {
                     type = "creator.tracking.result",
                     requestId,
-                    tracking = loadResult.Tracking,
+                    tracking,
                     dashboard,
                     dashboardContext,
                     summary = refreshedSummary,
@@ -687,6 +866,34 @@ public partial class MainWindow : Window
             catch (Exception ex)
             {
                 PostMessage(new { type = "creator.tracking.error", requestId, message = ex.Message });
+            }
+        }
+        else if (type == "creator.tracking.dashboard.get")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            try
+            {
+                var creator = ReadRequiredString(root, "creator");
+                var dashboardContext = ReadCreatorTrackingDashboardContext(root, creator);
+                var tracking = root.TryGetProperty("tracking", out var trackingProperty)
+                    ? trackingProperty.Deserialize<CreatorTrackingDto>(JsonOptions)
+                    : null;
+                tracking ??= await Task.Run(() => _database.GetCreatorTracking(creator));
+                var dashboard = await _database.GetCreatorTrackingDashboardAsync(
+                    tracking,
+                    dashboardContext,
+                    forceRefresh: false);
+                PostMessage(new
+                {
+                    type = "creator.tracking.dashboard.result",
+                    requestId,
+                    dashboard,
+                    dashboardContext
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "creator.tracking.dashboard.error", requestId, message = ex.Message });
             }
         }
         else if (type == "creator.tracking.storage.get")
@@ -725,18 +932,20 @@ public partial class MainWindow : Window
                 if (forceRefresh)
                 {
                     scanMessage = await RefreshCreatorTrackingGalleryFolderAsync(savedTracking);
-                    if (!string.IsNullOrWhiteSpace(dashboardContext.Category))
+                    var snapshot = await Task.Run(() => _database.ListGalleryCreatorSummaries(forceRefresh: true));
+                    (dashboardContext, refreshedSummary) = BuildRefreshedCreatorTrackingState(
+                        snapshot,
+                        dashboardContext,
+                        savedTracking);
+                    if (refreshedSummary is not null &&
+                        !savedTracking.CategoryProfiles.Any(profile => string.Equals(
+                            profile.Category,
+                            refreshedSummary.Category,
+                            StringComparison.OrdinalIgnoreCase)))
                     {
-                        var snapshot = await Task.Run(() => _database.ListGalleryCreatorSummaries(forceRefresh: true));
-                        dashboardContext = BuildCreatorTrackingDashboardContext(
-                            snapshot,
-                            dashboardContext,
-                            savedTracking.Creator);
-                        refreshedSummary = FindCreatorTrackingSummary(
-                            snapshot,
-                            dashboardContext.Category,
+                        savedTracking = await Task.Run(() => _database.EnsureCreatorTrackingCategoryProfile(
                             savedTracking.Creator,
-                            savedTracking.MainStoragePath);
+                            refreshedSummary.Category));
                     }
                 }
                 var dashboard = await _database.GetCreatorTrackingDashboardAsync(savedTracking, dashboardContext, forceRefresh: true);
@@ -934,6 +1143,55 @@ public partial class MainWindow : Window
                 PostMessage(new { type = "calendar.google.operation.error", action = "disconnect", message = ex.Message });
             }
         }
+        else if (type == "settings.creatorBlacklist.list")
+        {
+            PostMessage(new
+            {
+                type = "settings.creatorBlacklist.result",
+                items = _database.ListCreatorBlacklist()
+            });
+        }
+        else if (type == "settings.creatorBlacklist.upsert")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            try
+            {
+                _database.UpsertCreatorBlacklist(
+                    ReadOptionalString(root, "originalCreator"),
+                    ReadRequiredString(root, "creator"),
+                    ReadOptionalString(root, "reason"));
+                PostMessage(new
+                {
+                    type = "settings.creatorBlacklist.result",
+                    requestId,
+                    items = _database.ListCreatorBlacklist(),
+                    updated = true
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "settings.creatorBlacklist.error", requestId, message = ex.Message });
+            }
+        }
+        else if (type == "settings.creatorBlacklist.delete")
+        {
+            var requestId = ReadOptionalString(root, "requestId") ?? string.Empty;
+            try
+            {
+                _database.DeleteCreatorBlacklist(ReadRequiredString(root, "creator"));
+                PostMessage(new
+                {
+                    type = "settings.creatorBlacklist.result",
+                    requestId,
+                    items = _database.ListCreatorBlacklist(),
+                    deleted = true
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "settings.creatorBlacklist.error", requestId, message = ex.Message });
+            }
+        }
         else if (type == "settings.creatorTracking.list")
         {
             PostMessage(new
@@ -942,7 +1200,9 @@ public partial class MainWindow : Window
                 activityPlaces = _database.GetCreatorTrackingActivityPlaces(),
                 compositionLabelLimit = _database.GetCreatorTrackingCompositionLabelLimit(),
                 followPolicyOptions = _database.GetCreatorTrackingFollowPolicyOptions(),
-                metrics = _database.GetCreatorTrackingMetricSettings()
+                taskCategories = _database.GetCreatorTrackingTaskCategories(),
+                metrics = _database.GetCreatorTrackingMetricSettings(),
+                metricSettingsByCategory = _database.GetCreatorTrackingMetricSettingsByCategory()
             });
         }
         else if (type == "settings.creatorTracking.save")
@@ -956,21 +1216,29 @@ public partial class MainWindow : Window
                     ? parsedLimit
                     : _database.GetCreatorTrackingCompositionLabelLimit();
                 var followPolicyOptions = ReadStringArray(root, "followPolicyOptions");
+                var taskCategories = ReadStringArray(root, "taskCategories");
                 var metricSettings = root.TryGetProperty("metrics", out var metricsProperty)
                     ? metricsProperty.Deserialize<CreatorTrackingMetricSettingDto[]>(JsonOptions) ?? []
                     : _database.GetCreatorTrackingMetricSettings();
+                var metricSettingsByCategory = root.TryGetProperty("metricSettingsByCategory", out var categoryMetricsProperty)
+                    ? categoryMetricsProperty.Deserialize<CreatorTrackingCategoryMetricSettingDto[]>(JsonOptions) ?? []
+                    : _database.GetCreatorTrackingMetricSettingsByCategory();
                 _database.SaveCreatorTrackingSettings(
                     activityPlaces,
                     compositionLabelLimit,
                     followPolicyOptions,
-                    metricSettings);
+                    taskCategories,
+                    metricSettings,
+                    metricSettingsByCategory);
                 PostMessage(new
                 {
                     type = "settings.creatorTracking.result",
                     activityPlaces = _database.GetCreatorTrackingActivityPlaces(),
                     compositionLabelLimit = _database.GetCreatorTrackingCompositionLabelLimit(),
                     followPolicyOptions = _database.GetCreatorTrackingFollowPolicyOptions(),
+                    taskCategories = _database.GetCreatorTrackingTaskCategories(),
                     metrics = _database.GetCreatorTrackingMetricSettings(),
+                    metricSettingsByCategory = _database.GetCreatorTrackingMetricSettingsByCategory(),
                     updated = true
                 });
             }
@@ -998,7 +1266,11 @@ public partial class MainWindow : Window
             var path = ReadRequiredString(root, "path");
             var id = ReadOptionalString(root, "id") ?? path;
             var category = ReadOptionalString(root, "category") ?? _database.GetDefaultGallerySectionId();
-            var thumbnailUri = await GetGalleryThumbnailUriAsync(path, category);
+            var priority = root.TryGetProperty("priority", out var priorityProperty) &&
+                           priorityProperty.TryGetInt32(out var parsedPriority)
+                ? parsedPriority
+                : 10;
+            var thumbnailUri = await GetGalleryThumbnailUriAsync(path, category, priority);
             PostMessage(new { type = "gallery.work.thumbnail.result", id, thumbnailUri });
         }
         else if (type == "gallery.work.thumbnail.batch")
@@ -1009,15 +1281,48 @@ public partial class MainWindow : Window
                     .Select(item => (
                         Id: ReadOptionalString(item, "id") ?? string.Empty,
                         Path: ReadOptionalString(item, "path") ?? string.Empty,
-                        Category: ReadOptionalString(item, "category") ?? _database.GetDefaultGallerySectionId()))
+                        Category: ReadOptionalString(item, "category") ?? _database.GetDefaultGallerySectionId(),
+                        Priority: item.TryGetProperty("priority", out var priorityProperty) &&
+                                  priorityProperty.TryGetInt32(out var parsedPriority)
+                            ? parsedPriority
+                            : 10))
                     .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Path))
                     .ToArray()
                 : [];
-            await Task.WhenAll(requests.Select(async request =>
+            EnsureThumbnailCacheConfiguration();
+            var cropAdjustments = requests
+                .Select(request => request.Category)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    category => category,
+                    GetThumbnailCropAdjustment,
+                    StringComparer.OrdinalIgnoreCase);
+            var pending = requests.Select(async request => new
             {
-                var thumbnailUri = await GetGalleryThumbnailUriAsync(request.Path, request.Category);
-                PostMessage(new { type = "gallery.work.thumbnail.result", id = request.Id, thumbnailUri });
-            }));
+                request.Id,
+                ThumbnailUri = await _thumbnailService.GetOrCreateThumbnailUriAsync(
+                    request.Path,
+                    request.Priority,
+                    cropAdjustment: cropAdjustments[request.Category])
+            }).ToList();
+            while (pending.Count > 0)
+            {
+                await Task.WhenAny(pending);
+                var completed = pending.Where(task => task.IsCompleted).ToArray();
+                var results = await Task.WhenAll(completed);
+                pending.RemoveAll(task => task.IsCompleted);
+                PostMessage(new
+                {
+                    type = "gallery.work.thumbnail.batch.result",
+                    thumbnailUris = results
+                        .Where(result => !string.IsNullOrWhiteSpace(result.ThumbnailUri))
+                        .ToDictionary(result => result.Id, result => result.ThumbnailUri!, StringComparer.Ordinal),
+                    unavailableIds = results
+                        .Where(result => string.IsNullOrWhiteSpace(result.ThumbnailUri))
+                        .Select(result => result.Id)
+                        .ToArray()
+                });
+            }
         }
         else if (type == "gallery.tagAssignment.options.request")
         {
@@ -1081,6 +1386,41 @@ public partial class MainWindow : Window
             catch (Exception ex)
             {
                 PostMessage(new { type = "gallery.tagAssignment.error", message = ex.Message });
+            }
+        }
+        else if (type == "ai.attributeReview.list")
+        {
+            try
+            {
+                PostMessage(new
+                {
+                    type = "ai.attributeReview.result",
+                    items = await Task.Run(_database.ListAiAttributeInferenceReviews)
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "ai.attributeReview.error", message = ex.Message });
+            }
+        }
+        else if (type == "ai.attributeReview.resolve")
+        {
+            try
+            {
+                var removedCount = await Task.Run(() =>
+                    _database.ResolveAiAttributeInferenceReviews(
+                        ReadStringArray(root, "paths")));
+                var items = await Task.Run(_database.ListAiAttributeInferenceReviews);
+                PostMessage(new
+                {
+                    type = "ai.attributeReview.resolved",
+                    removedCount,
+                    items
+                });
+            }
+            catch (Exception ex)
+            {
+                PostMessage(new { type = "ai.attributeReview.error", message = ex.Message });
             }
         }
         else if (type == "gallery.titleAssignment.options.request")
@@ -1789,14 +2129,30 @@ public partial class MainWindow : Window
         }
         else if (type == "gallery.work.open")
         {
-            var path = ReadRequiredString(root, "path");
-            var activation = string.Equals(ReadOptionalString(root, "activation"), "double", StringComparison.OrdinalIgnoreCase)
-                ? ExternalAppActivation.DoubleClick
-                : ExternalAppActivation.SingleClick;
-            var rule = _database.FindExternalAppRule(path, activation);
-            if (rule is not null)
+            try
             {
+                var path = ReadRequiredString(root, "path");
+                if (!File.Exists(path) && !Directory.Exists(path))
+                {
+                    throw new FileNotFoundException("作品ファイルが見つかりません。DB走査でファイルパスを更新してください。", path);
+                }
+
+                var activation = string.Equals(ReadOptionalString(root, "activation"), "double", StringComparison.OrdinalIgnoreCase)
+                    ? ExternalAppActivation.DoubleClick
+                    : ExternalAppActivation.SingleClick;
+                var rule = _database.FindExternalAppRule(path, activation);
+                if (rule is null)
+                {
+                    var activationLabel = activation == ExternalAppActivation.DoubleClick ? "ダブルクリック" : "クリック";
+                    throw new InvalidOperationException(
+                        $"{Path.GetExtension(path)}に対する{activationLabel}起動プログラムが設定されていません。Settings > Advanced > 起動プログラムを確認してください。");
+                }
+
                 OpenExternal(path, rule);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                PostMessage(new { type = "gallery.work.open.error", message = ex.Message });
             }
         }
         else if (type == "gallery.works.delete")
@@ -2162,12 +2518,86 @@ public partial class MainWindow : Window
                     ReadOptionalString(root, "provider") ?? "google",
                     ReadOptionalString(root, "googleSearchUrlTemplate") ?? string.Empty,
                     ReadOptionalString(root, "braveApiKey") ?? string.Empty,
-                    ReadOptionalString(root, "geminiApiKey") ?? string.Empty);
+                    ReadOptionalString(root, "geminiApiKey") ?? string.Empty,
+                    ReadOptionalString(root, "yahooClientId") ?? string.Empty);
                 PostSearchEngineSettings();
             }
             catch (Exception ex)
             {
                 PostMessage(new { type = "settings.searchEngine.error", message = ex.Message });
+            }
+        }
+        else if (type == "settings.aiConcierge.list")
+        {
+            PostAiConciergeSettings();
+        }
+        else if (type == "settings.aiConcierge.pickDirectory")
+        {
+            var dialog = new Microsoft.Win32.OpenFolderDialog
+            {
+                Title = Localize(
+                    "AIコンシェルジュのデータ保存先を選択",
+                    "Select the AI Concierge data folder",
+                    "选择AI礼宾数据文件夹",
+                    "選擇AI禮賓資料資料夾")
+            };
+            if (dialog.ShowDialog(this) == true)
+            {
+                PostMessage(new
+                {
+                    type = "settings.aiConcierge.pickDirectory.result",
+                    path = dialog.FolderName
+                });
+            }
+        }
+        else if (type == "settings.aiConcierge.save")
+        {
+            try
+            {
+                if (_aiConciergeService.IsBusy)
+                {
+                    throw new InvalidOperationException(
+                        "AIコンシェルジュが応答中です。完了後に保存先を変更してください。");
+                }
+
+                var configuredDirectory = ReadOptionalString(root, "dataDirectory") ?? string.Empty;
+                var destinationDirectory = string.IsNullOrWhiteSpace(configuredDirectory)
+                    ? Path.Combine(_dataDirectory, "ai-concierge")
+                    : Path.GetFullPath(
+                        Environment.ExpandEnvironmentVariables(configuredDirectory.Trim()));
+                var sourceDirectory = _aiConciergeService.DataDirectory;
+                var copiedExistingData = false;
+                if (!string.Equals(
+                        sourceDirectory,
+                        destinationDirectory,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    copiedExistingData = CopyAiConciergeDataWhenDestinationIsEmpty(
+                        sourceDirectory,
+                        destinationDirectory);
+                }
+
+                _storageSettingsStore.SaveAiConciergeDataDirectory(configuredDirectory);
+                PostAiConciergeSettings(
+                    message: copiedExistingData
+                        ? "保存先を更新し、現在の会話データをコピーしました。次回起動から切り替わります。"
+                        : "保存先を更新しました。次回起動から切り替わります。",
+                    restartRequired: !string.Equals(
+                        sourceDirectory,
+                        destinationDirectory,
+                        StringComparison.OrdinalIgnoreCase));
+            }
+            catch (Exception ex) when (ex is
+                       IOException or
+                       UnauthorizedAccessException or
+                       ArgumentException or
+                       InvalidOperationException)
+            {
+                PostMessage(new
+                {
+                    type = "settings.aiConcierge.operation.error",
+                    message = ex.Message
+                });
             }
         }
         else if (type == "settings.sqliteDatabase.list")
@@ -3266,7 +3696,6 @@ public partial class MainWindow : Window
         }
         else if (type == "explorer.thumbnail")
         {
-            EnsureThumbnailCacheConfiguration();
             var path = ReadRequiredString(root, "path");
             var priority = root.TryGetProperty("priority", out var priorityProperty) && priorityProperty.TryGetInt32(out var parsedPriority)
                 ? parsedPriority
@@ -3274,23 +3703,59 @@ public partial class MainWindow : Window
             var forceRefresh = root.TryGetProperty("forceRefresh", out var forceRefreshProperty) &&
                 forceRefreshProperty.ValueKind is JsonValueKind.True or JsonValueKind.False &&
                 forceRefreshProperty.GetBoolean();
-            if (File.Exists(path) || Directory.Exists(path))
+            var requestToken = root.TryGetProperty("requestToken", out var requestTokenProperty) &&
+                               requestTokenProperty.TryGetInt32(out var parsedRequestToken)
+                ? parsedRequestToken
+                : 0;
+            var thumbnailUri = await GetExplorerThumbnailUriAsync(path, priority, forceRefresh);
+            PostMessage(new
             {
-                var thumbnailItem = new GalleryItemDto(
-                    StringComparer.OrdinalIgnoreCase.GetHashCode(path),
-                    Path.GetFileName(path.TrimEnd('\\', '/')),
-                    Directory.Exists(path) ? "folder" : "archive",
-                    path,
-                    0,
-                    [],
-                    "#93c5fd",
-                    null);
-                var thumbnailUri = await _thumbnailService.GetOrCreateThumbnailUriAsync(thumbnailItem, priority, forceRefresh);
+                type = "explorer.thumbnail.result",
+                path,
+                thumbnailUri,
+                requestToken
+            });
+        }
+        else if (type == "explorer.thumbnail.batch")
+        {
+            var requests = root.TryGetProperty("items", out var itemsProperty) && itemsProperty.ValueKind == JsonValueKind.Array
+                ? itemsProperty.EnumerateArray()
+                    .Take(32)
+                    .Select(item => (
+                        Path: ReadOptionalString(item, "path") ?? string.Empty,
+                        Priority: item.TryGetProperty("priority", out var priorityProperty) &&
+                                  priorityProperty.TryGetInt32(out var parsedPriority)
+                            ? parsedPriority
+                            : 0,
+                        RequestToken: item.TryGetProperty("requestToken", out var requestTokenProperty) &&
+                                      requestTokenProperty.TryGetInt32(out var parsedRequestToken)
+                            ? parsedRequestToken
+                            : 0))
+                    .Where(item => !string.IsNullOrWhiteSpace(item.Path))
+                    .GroupBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.OrderByDescending(item => item.Priority).First())
+                    .ToArray()
+                : [];
+            EnsureThumbnailCacheConfiguration();
+            var pending = requests.Select(async request => new
+            {
+                path = request.Path,
+                thumbnailUri = await _thumbnailService.GetOrCreateThumbnailUriAsync(
+                    request.Path,
+                    request.Priority,
+                    forceRefresh: false),
+                requestToken = request.RequestToken
+            }).ToList();
+            while (pending.Count > 0)
+            {
+                await Task.WhenAny(pending);
+                var completed = pending.Where(task => task.IsCompleted).ToArray();
+                var results = await Task.WhenAll(completed);
+                pending.RemoveAll(task => task.IsCompleted);
                 PostMessage(new
                 {
-                    type = "explorer.thumbnail.result",
-                    path,
-                    thumbnailUri
+                    type = "explorer.thumbnail.batch.result",
+                    items = results
                 });
             }
         }
@@ -3497,6 +3962,7 @@ public partial class MainWindow : Window
                     }
 
                     var convertedFolders = new List<string>();
+                    var convertedCreatorFolders = new List<(string Path, string Creator)>();
                     var errors = new List<string>();
                     var renamedCount = 0;
                     var trackingCreatedCount = 0;
@@ -3527,6 +3993,9 @@ public partial class MainWindow : Window
                             }
 
                             convertedFolders.Add(converted.NewPath);
+                            convertedCreatorFolders.Add((
+                                converted.NewPath,
+                                converted.Creator));
                             try
                             {
                                 var tracking = await Task.Run(() => _database.GetOrCreateCreatorTracking(
@@ -3539,6 +4008,37 @@ public partial class MainWindow : Window
                                 else
                                 {
                                     trackingExistingCount++;
+                                }
+
+                                var galleryPathChanged = false;
+                                var storageLocations = tracking.Tracking.StorageLocations
+                                    .Select(location =>
+                                    {
+                                        if (!string.Equals(location.Usage, "Gallery", StringComparison.OrdinalIgnoreCase) ||
+                                            (!string.IsNullOrWhiteSpace(location.Path) &&
+                                             !string.Equals(location.Path, converted.OldPath, StringComparison.OrdinalIgnoreCase)))
+                                        {
+                                            return location;
+                                        }
+
+                                        galleryPathChanged = true;
+                                        return location with { Path = converted.NewPath };
+                                    })
+                                    .ToArray();
+                                var mainStoragePath = tracking.Tracking.MainStoragePath;
+                                if (string.IsNullOrWhiteSpace(mainStoragePath) ||
+                                    string.Equals(mainStoragePath, converted.OldPath, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    mainStoragePath = converted.NewPath;
+                                    galleryPathChanged = true;
+                                }
+                                if (galleryPathChanged)
+                                {
+                                    await Task.Run(() => _database.SaveCreatorTracking(tracking.Tracking with
+                                    {
+                                        MainStoragePath = mainStoragePath,
+                                        StorageLocations = storageLocations
+                                    }));
                                 }
                             }
                             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or SqliteException)
@@ -3559,7 +4059,51 @@ public partial class MainWindow : Window
 
                     PostExplorerDatabaseProgress("作者情報をDBへ登録し、サムネイルキャッシュを作成しています。");
                     var synchronization = await TrySynchronizeExplorerFoldersAsync(convertedFolders);
+                    var creatorItemCount = 0;
+                    var creatorUpdatedCount = 0;
+                    foreach (var converted in convertedCreatorFolders
+                                 .DistinctBy(
+                                     item => item.Path,
+                                     StringComparer.OrdinalIgnoreCase))
+                    {
+                        try
+                        {
+                            var result = await Task.Run(() =>
+                                _database.UpdateGalleryCreatorForFolder(
+                                    converted.Path,
+                                    converted.Creator));
+                            creatorItemCount += result.ItemCount;
+                            creatorUpdatedCount += result.UpdatedCount;
+                            var category = _database.FindGalleryCategoryForPath(converted.Path);
+                            if (!string.IsNullOrWhiteSpace(category))
+                            {
+                                await Task.Run(() => _database.EnsureCreatorTrackingCategoryProfile(
+                                    converted.Creator,
+                                    category));
+                                await GetGalleryThumbnailUriAsync(
+                                    converted.Path,
+                                    category,
+                                    priority: 100);
+                            }
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or SqliteException)
+                        {
+                            errors.Add(
+                                $"{converted.Path}: 配下作品のCreatorを「{converted.Creator}」へ統一できませんでした: {ex.Message}");
+                        }
+                    }
+                    await Task.Run(() => _database.ListGalleryCreatorSummaries(forceRefresh: true));
                     var message = $"{convertedFolders.Count}フォルダを作者フォルダとして処理しました（名称変更 {renamedCount}件）。";
+                    if (creatorItemCount > 0)
+                    {
+                        message +=
+                            $" 配下のDB登録作品{creatorItemCount:N0}件を作者フォルダ名のCreatorへ統一しました。";
+                    }
+                    if (creatorUpdatedCount > 0)
+                    {
+                        message +=
+                            $" 既存Creatorと異なる{creatorUpdatedCount:N0}件を上書きしました。";
+                    }
                     if (trackingCreatedCount > 0)
                     {
                         message += $" Creator Trackingを{trackingCreatedCount}件作成しました。";
@@ -3587,6 +4131,8 @@ public partial class MainWindow : Window
                         type = "explorer.creatorFolder.convert.result",
                         renamedCount,
                         trackingCreatedCount,
+                        creatorItemCount,
+                        creatorUpdatedCount,
                         errorCount = errors.Count,
                         message,
                         hasWarnings = errors.Count > 0 || synchronization.HasWarnings
@@ -4482,19 +5028,152 @@ public partial class MainWindow : Window
         string? pane = null,
         IReadOnlyList<string>? focusPaths = null)
     {
-        var result = _fileBrowser.ListDirectory(path);
-        PostMessage(new
-        {
-            type = "explorer.list.result",
-            path = result.Path,
-            parentPath = result.ParentPath,
-            roots = result.Roots,
-            entries = result.Entries,
-            isTruncated = result.IsTruncated,
+        var isRightPane = string.Equals(pane, "split-right", StringComparison.Ordinal);
+        var generation = isRightPane
+            ? Interlocked.Increment(ref _explorerRightDirectoryGeneration)
+            : Interlocked.Increment(ref _explorerLeftDirectoryGeneration);
+        var cancellation = new CancellationTokenSource();
+        var previous = isRightPane
+            ? Interlocked.Exchange(ref _explorerRightDirectoryCancellation, cancellation)
+            : Interlocked.Exchange(ref _explorerLeftDirectoryCancellation, cancellation);
+        previous?.Cancel();
+        previous?.Dispose();
+
+        _ = PostExplorerDirectoryAsync(
+            path,
             message,
             pane,
-            focusPaths
-        });
+            focusPaths,
+            isRightPane,
+            generation,
+            cancellation.Token);
+    }
+
+    private async Task PostExplorerDirectoryAsync(
+        string? path,
+        string? message,
+        string? pane,
+        IReadOnlyList<string>? focusPaths,
+        bool isRightPane,
+        int generation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var loaded = await Task.Run(() =>
+            {
+                var result = _fileBrowser.ListDirectory(path);
+                var json = JsonSerializer.Serialize(new
+                {
+                    type = "explorer.list.result",
+                    path = result.Path,
+                    parentPath = result.ParentPath,
+                    roots = result.Roots,
+                    entries = result.Entries,
+                    isTruncated = result.IsTruncated,
+                    message,
+                    pane,
+                    focusPaths
+                }, JsonOptions);
+                return (Result: result, Json: json);
+            }, cancellationToken);
+            if (!IsCurrentExplorerDirectoryRequest(isRightPane, generation) || cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            PostJsonMessage(loaded.Json);
+
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    _fileBrowser.StreamArchivePageCounts(
+                        loaded.Result.Entries,
+                        counts =>
+                        {
+                            if (!cancellationToken.IsCancellationRequested &&
+                                IsCurrentExplorerDirectoryRequest(isRightPane, generation))
+                            {
+                                PostMessageOnDispatcher(new
+                                {
+                                    type = "explorer.metadata.result",
+                                    path = loaded.Result.Path,
+                                    pane,
+                                    pageCounts = counts
+                                });
+                            }
+                        },
+                        cancellationToken);
+                    _fileBrowser.SaveSearchMetadata(loaded.Result.Entries);
+                }
+                catch (OperationCanceledException)
+                {
+                    // A newer navigation superseded this directory.
+                }
+            }, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer navigation superseded this directory.
+        }
+        catch (Exception ex)
+        {
+            if (IsCurrentExplorerDirectoryRequest(isRightPane, generation))
+            {
+                PostMessage(new { type = "explorer.list.error", pane, message = ex.Message });
+            }
+        }
+    }
+
+    private bool IsCurrentExplorerDirectoryRequest(bool isRightPane, int generation) =>
+        generation == (isRightPane
+            ? Volatile.Read(ref _explorerRightDirectoryGeneration)
+            : Volatile.Read(ref _explorerLeftDirectoryGeneration));
+
+    private async Task PostGalleryCreatorSummarySnapshotAsync(
+        string requestId,
+        GalleryCreatorSummarySnapshotDto snapshot,
+        bool refreshPending)
+    {
+        if (snapshot.Items.Count == 0)
+        {
+            var emptyJson = await Task.Run(() => JsonSerializer.Serialize(new
+            {
+                type = "gallery.creatorSummary.result",
+                requestId,
+                reset = true,
+                isLast = !refreshPending,
+                items = Array.Empty<GalleryCreatorSummaryDto>()
+            }, JsonOptions));
+            PostJsonMessage(emptyJson);
+            return;
+        }
+
+        const int firstBatchSize = 48;
+        const int followingBatchSize = 150;
+        for (var offset = 0; offset < snapshot.Items.Count;)
+        {
+            var batchSize = offset == 0 ? firstBatchSize : followingBatchSize;
+            var count = Math.Min(batchSize, snapshot.Items.Count - offset);
+            var items = new GalleryCreatorSummaryDto[count];
+            for (var index = 0; index < count; index++)
+            {
+                items[index] = snapshot.Items[offset + index];
+            }
+            var reset = offset == 0;
+            offset += count;
+            var isLast = !refreshPending && offset >= snapshot.Items.Count;
+            var json = await Task.Run(() => JsonSerializer.Serialize(new
+            {
+                type = "gallery.creatorSummary.result",
+                requestId,
+                reset,
+                isLast,
+                items
+            }, JsonOptions));
+            PostJsonMessage(json);
+        }
     }
 
     private void PostExplorerBookmarks()
@@ -4698,36 +5377,56 @@ public partial class MainWindow : Window
             1 + categoryItems.Count(item => item.TotalRating > current.TotalRating));
     }
 
-    private static GalleryCreatorSummaryDto? FindCreatorTrackingSummary(
+    private static (
+        CreatorTrackingDashboardContextDto Context,
+        GalleryCreatorSummaryDto? Summary) BuildRefreshedCreatorTrackingState(
         GalleryCreatorSummarySnapshotDto snapshot,
-        string category,
-        string creator,
-        string? creatorFolder)
+        CreatorTrackingDashboardContextDto fallback,
+        CreatorTrackingDto tracking)
     {
-        var matches = snapshot.Items
-            .Where(item =>
-                string.Equals(item.Category, category, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(item.Creator.Trim(), creator.Trim(), StringComparison.OrdinalIgnoreCase))
+        var creatorMatches = snapshot.Items
+            .Where(item => string.Equals(
+                item.Creator.Trim(),
+                tracking.Creator.Trim(),
+                StringComparison.OrdinalIgnoreCase))
             .ToArray();
-        if (matches.Length == 0)
+        if (creatorMatches.Length == 0)
         {
-            return null;
+            return (fallback, null);
         }
 
-        if (!string.IsNullOrWhiteSpace(creatorFolder))
-        {
-            var folderMatch = matches.FirstOrDefault(item =>
-                string.Equals(
-                    item.CreatorFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                    creatorFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                    StringComparison.OrdinalIgnoreCase));
-            if (folderMatch is not null)
-            {
-                return folderMatch;
-            }
-        }
-
-        return matches[0];
+        var galleryFolders = tracking.StorageLocations
+            .Where(location => string.Equals(location.Usage, "Gallery", StringComparison.OrdinalIgnoreCase))
+            .Select(location => location.Path?.Trim() ?? string.Empty)
+            .Append(tracking.MainStoragePath?.Trim() ?? string.Empty)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        GalleryCreatorSummaryDto[] categoryMatches = string.IsNullOrWhiteSpace(fallback.Category)
+            ? Array.Empty<GalleryCreatorSummaryDto>()
+            : creatorMatches
+                .Where(item => string.Equals(item.Category, fallback.Category, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+        var selected = categoryMatches.FirstOrDefault(item => galleryFolders.Any(folder =>
+                           string.Equals(
+                               item.CreatorFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                               folder,
+                               StringComparison.OrdinalIgnoreCase)))
+                       ?? categoryMatches.FirstOrDefault()
+                       ?? creatorMatches.FirstOrDefault(item => galleryFolders.Any(folder =>
+                           string.Equals(
+                               item.CreatorFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                               folder,
+                               StringComparison.OrdinalIgnoreCase)))
+                       ?? creatorMatches[0];
+        var categoryFallback = fallback with { Category = selected.Category };
+        return (
+            BuildCreatorTrackingDashboardContext(
+                snapshot,
+                categoryFallback,
+                tracking.Creator),
+            selected);
     }
 
     private static CreatorTrackingTemplateContextDto? ReadCreatorTrackingTemplateContext(JsonElement root)
@@ -4946,6 +5645,9 @@ public partial class MainWindow : Window
         _pCloudAutoBackupCancellation?.Cancel();
         _googleCalendarSyncCancellation?.Cancel();
         _notificationSchedulerCancellation?.Cancel();
+        _aiConciergeWindow?.Close();
+        _aiConciergeWindow = null;
+        _aiConciergeService.Dispose();
         try
         {
             var bounds = WindowState == System.Windows.WindowState.Normal
@@ -5046,29 +5748,35 @@ public partial class MainWindow : Window
         var builder = new StringBuilder();
         builder.AppendLine("BEGIN:VCALENDAR");
         builder.AppendLine("VERSION:2.0");
-        builder.AppendLine("PRODID:-//GalleryBrowser//Subscription Calendar//JA");
+        builder.AppendLine("PRODID:-//GalleryBrowser//Schedule Calendar//JA");
         builder.AppendLine("CALSCALE:GREGORIAN");
         builder.AppendLine("METHOD:PUBLISH");
-        builder.AppendLine("X-WR-CALNAME:GalleryBrowser Subscriptions");
-        builder.AppendLine("X-WR-CALDESC:Creator Tracking subscription renewal schedule");
+        builder.AppendLine("X-WR-CALNAME:GalleryBrowser Schedule");
+        builder.AppendLine("X-WR-CALDESC:Creator Tracking schedule");
         var timestamp = DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
         foreach (var entry in events)
         {
-            if (!DateOnly.TryParse(entry.RenewalOn, CultureInfo.InvariantCulture, DateTimeStyles.None, out var renewalDate))
+            if (!DateOnly.TryParse(entry.StartOn, CultureInfo.InvariantCulture, DateTimeStyles.None, out var startDate))
             {
                 continue;
             }
 
-            var endDate = renewalDate.AddDays(1);
-            var title = $"{entry.DisplayName} / {entry.Platform}";
-            if (!string.IsNullOrWhiteSpace(entry.Plan))
+            var endDate = DateOnly.TryParse(
+                entry.EndOn,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsedEndDate)
+                ? parsedEndDate
+                : startDate;
+            if (endDate < startDate)
             {
-                title += $" / {entry.Plan}";
+                endDate = startDate;
             }
-            if (entry.EndingPlanned)
-            {
-                title = $"[終了予定] {title}";
-            }
+            var title = string.Equals(entry.EventType, "task", StringComparison.OrdinalIgnoreCase)
+                ? $"{(string.IsNullOrWhiteSpace(entry.TaskCategory) ? string.Empty : $"[{entry.TaskCategory}] ")}{entry.Title} / {entry.DisplayName}"
+                : string.Equals(entry.EventType, "creator-check", StringComparison.OrdinalIgnoreCase)
+                    ? $"{entry.Title}: {entry.DisplayName}"
+                    : $"{(entry.EndingPlanned ? "[終了予定] " : string.Empty)}{entry.DisplayName} / {entry.Platform}{(string.IsNullOrWhiteSpace(entry.Plan) ? string.Empty : $" / {entry.Plan}")}";
 
             var description = new[]
                 {
@@ -5077,15 +5785,16 @@ public partial class MainWindow : Window
                     string.IsNullOrWhiteSpace(entry.Plan) ? string.Empty : $"Plan: {entry.Plan}",
                     entry.Amount > 0 ? $"Amount: {entry.Amount:0.##} {entry.Currency}" : string.Empty,
                     entry.EndingPlanned ? "Ending planned: ON" : string.Empty,
-                    entry.Reminder ? "Alert: ON" : string.Empty
+                    string.IsNullOrWhiteSpace(entry.TaskCategory) ? string.Empty : $"Category: {entry.TaskCategory}",
+                    string.IsNullOrWhiteSpace(entry.Detail) ? string.Empty : entry.Detail
                 }
                 .Where(line => !string.IsNullOrWhiteSpace(line));
 
             builder.AppendLine("BEGIN:VEVENT");
-            builder.AppendLine($"UID:{EscapeIcsText(entry.Id)}-{renewalDate:yyyyMMdd}@gallerybrowser.local");
+            builder.AppendLine($"UID:{EscapeIcsText(entry.Id)}-{startDate:yyyyMMdd}@gallerybrowser.local");
             builder.AppendLine($"DTSTAMP:{timestamp}");
-            builder.AppendLine($"DTSTART;VALUE=DATE:{renewalDate:yyyyMMdd}");
-            builder.AppendLine($"DTEND;VALUE=DATE:{endDate:yyyyMMdd}");
+            builder.AppendLine($"DTSTART;VALUE=DATE:{startDate:yyyyMMdd}");
+            builder.AppendLine($"DTEND;VALUE=DATE:{endDate.AddDays(1):yyyyMMdd}");
             builder.AppendLine($"SUMMARY:{EscapeIcsText(title)}");
             builder.AppendLine($"DESCRIPTION:{EscapeIcsText(string.Join("\\n", description))}");
             builder.AppendLine("END:VEVENT");
@@ -5984,6 +6693,67 @@ public partial class MainWindow : Window
         });
     }
 
+    private void PostAiConciergeSettings(
+        string message = "",
+        bool restartRequired = false)
+    {
+        var settings = _storageSettingsStore.GetAiConciergeSettings(_dataDirectory);
+        PostMessage(new
+        {
+            type = "settings.aiConcierge.result",
+            settings = new
+            {
+                dataDirectory = ApplicationPaths.ToEnvironmentVariablePath(settings.DataDirectory),
+                model = settings.Model,
+                reasoningEffort = settings.ReasoningEffort,
+                serviceTier = settings.ServiceTier,
+                currentRuntimeDataDirectory = ApplicationPaths.ToEnvironmentVariablePath(
+                    _aiConciergeService.DataDirectory),
+                learningDatabasePath = ApplicationPaths.ToEnvironmentVariablePath(
+                    _database.GetGalleryDatabasePath())
+            },
+            message,
+            restartRequired
+        });
+    }
+
+    private static bool CopyAiConciergeDataWhenDestinationIsEmpty(
+        string sourceDirectory,
+        string destinationDirectory)
+    {
+        sourceDirectory = Path.GetFullPath(sourceDirectory);
+        destinationDirectory = Path.GetFullPath(destinationDirectory);
+        if (IsFileSystemPathWithinRoot(destinationDirectory, sourceDirectory) &&
+            !string.Equals(
+                sourceDirectory,
+                destinationDirectory,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "AIコンシェルジュの保存先に現在の保存先の配下は指定できません。");
+        }
+
+        Directory.CreateDirectory(destinationDirectory);
+        if (Directory.EnumerateFileSystemEntries(destinationDirectory).Any() ||
+            !Directory.Exists(sourceDirectory))
+        {
+            return false;
+        }
+
+        foreach (var sourcePath in Directory.EnumerateFiles(
+                     sourceDirectory,
+                     "*",
+                     SearchOption.AllDirectories))
+        {
+            var relativePath = Path.GetRelativePath(sourceDirectory, sourcePath);
+            var destinationPath = Path.Combine(destinationDirectory, relativePath);
+            Directory.CreateDirectory(
+                Path.GetDirectoryName(destinationPath) ?? destinationDirectory);
+            File.Copy(sourcePath, destinationPath, overwrite: false);
+        }
+        return true;
+    }
+
     private void PostGalleryDatabaseSettings()
     {
         var settings = _database.GetGalleryDatabaseSettings();
@@ -6094,6 +6864,7 @@ public partial class MainWindow : Window
             ReadRequiredBoolean(root, "notifyCreatorFollowAlert"),
             ReadRequiredBoolean(root, "notifySubscriptionEnding"),
             ReadRequiredBoolean(root, "notifySubscriptionReminder"),
+            ReadRequiredBoolean(root, "notifyCreatorTasks"),
             ReadRequiredBoolean(root, "notifyScheduledScanStarted"),
             ReadRequiredBoolean(root, "notifyScheduledScanCompleted"));
     }
@@ -6107,6 +6878,7 @@ public partial class MainWindow : Window
             ReadRequiredBoolean(root, "notifyCreatorFollowAlert"),
             ReadRequiredBoolean(root, "notifySubscriptionEnding"),
             ReadRequiredBoolean(root, "notifySubscriptionReminder"),
+            ReadRequiredBoolean(root, "notifyCreatorTasks"),
             ReadRequiredBoolean(root, "notifyScheduledScanStarted"),
             ReadRequiredBoolean(root, "notifyScheduledScanCompleted"));
     }
@@ -6476,6 +7248,29 @@ public partial class MainWindow : Window
                     message = progress
                 });
             }, cancellation.Token), cancellation.Token);
+            PostMessageOnDispatcher(new
+            {
+                type = "settings.sqliteDatabase.update.progress",
+                message = "Creator Tracking未登録作者を確認しています。"
+            });
+            var creatorTrackingSync = await Task.Run(
+                () => _database.SynchronizeCreatorTrackingAfterScheduledScan(
+                    categories,
+                    cancellation.Token),
+                cancellation.Token);
+            var creatorTrackingSummary = creatorTrackingSync.CreatedCreators.Count > 0
+                ? $"Creator Trackingを{creatorTrackingSync.CreatedCreators.Count:N0}件新規作成しました。"
+                : "Creator Tracking未登録作者はありませんでした。";
+            if (creatorTrackingSync.Errors.Count > 0)
+            {
+                creatorTrackingSummary +=
+                    $" {creatorTrackingSync.Errors.Count:N0}件は作成できませんでした。";
+            }
+            PostMessageOnDispatcher(new
+            {
+                type = "settings.sqliteDatabase.update.progress",
+                message = creatorTrackingSummary
+            });
             scanStopwatch.Stop();
             _storageSettingsStore.RecordDatabaseScanDuration(
                 categories,
@@ -6484,8 +7279,11 @@ public partial class MainWindow : Window
             PostMessageOnDispatcher(new
             {
                 type = "settings.sqliteDatabase.schedule.finished",
-                message = $"定期フォルダ走査を完了しました。{result.ScanSummary} / {result.ErrorSummary}",
-                elapsedSeconds = Math.Max(1, (int)Math.Round(scanStopwatch.Elapsed.TotalSeconds))
+                message =
+                    $"定期フォルダ走査を完了しました。{result.ScanSummary} / " +
+                    $"{result.ErrorSummary} / {creatorTrackingSummary}",
+                elapsedSeconds = Math.Max(1, (int)Math.Round(scanStopwatch.Elapsed.TotalSeconds)),
+                newCreatorTrackingCount = creatorTrackingSync.CreatedCreators.Count
             });
             await scanStartNotification;
             _ = NotifyScheduledScanCompletedToConfiguredChannelsAsync(
@@ -6787,27 +7585,25 @@ public partial class MainWindow : Window
         Close();
     }
 
-    private async Task<string?> GetGalleryThumbnailUriAsync(string path, string category)
+    private Task<string?> GetGalleryThumbnailUriAsync(string path, string category, int priority = 10)
     {
-        if (!File.Exists(path) && !Directory.Exists(path))
-        {
-            return null;
-        }
-
         EnsureThumbnailCacheConfiguration();
-        var thumbnailItem = new GalleryItemDto(
-            StringComparer.OrdinalIgnoreCase.GetHashCode(path),
-            Path.GetFileName(path.TrimEnd('\\', '/')),
-            Directory.Exists(path) ? "folder" : "archive",
+        return _thumbnailService.GetOrCreateThumbnailUriAsync(
             path,
-            0,
-            [],
-            "#93c5fd",
-            null);
-        return await _thumbnailService.GetOrCreateThumbnailUriAsync(
-            thumbnailItem,
-            priority: 10,
+            priority,
             cropAdjustment: GetThumbnailCropAdjustment(category));
+    }
+
+    private Task<string?> GetExplorerThumbnailUriAsync(
+        string path,
+        int priority,
+        bool forceRefresh)
+    {
+        EnsureThumbnailCacheConfiguration();
+        return _thumbnailService.GetOrCreateThumbnailUriAsync(
+            path,
+            priority,
+            forceRefresh);
     }
 
     private async Task<ExplorerDatabaseSyncResult> SynchronizeExplorerFoldersAsync(
@@ -6862,6 +7658,12 @@ public partial class MainWindow : Window
 
         var hasScanErrors = !string.Equals(updateResult.ErrorSummary.Trim(), "Errors: 0", StringComparison.OrdinalIgnoreCase);
         var message = $"DBを{thumbnailSources.Length:N0}件同期し、サムネイルを{generatedCount:N0}件準備しました。";
+        if (updateResult.DeletedMissingRecords > 0)
+        {
+            message +=
+                $" 実体がない作品をDBから{updateResult.DeletedMissingRecords:N0}件、" +
+                $"サムネイルを{updateResult.DeletedThumbnailEntries:N0}件整理しました。";
+        }
         if (unmappedCount > 0)
         {
             message += $" Gallery走査対象外の{unmappedCount}フォルダはDB同期をスキップしました。";
@@ -6875,34 +7677,44 @@ public partial class MainWindow : Window
 
     private async Task<string> RefreshCreatorTrackingGalleryFolderAsync(CreatorTrackingDto tracking)
     {
-        var galleryPath = tracking.StorageLocations
-            .FirstOrDefault(location => string.Equals(location.Usage, "Gallery", StringComparison.OrdinalIgnoreCase))?
-            .Path?
-            .Trim();
-        if (string.IsNullOrWhiteSpace(galleryPath))
+        var galleryPaths = tracking.StorageLocations
+            .Where(location => string.Equals(location.Usage, "Gallery", StringComparison.OrdinalIgnoreCase))
+            .Select(location => location.Path?.Trim() ?? string.Empty)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (galleryPaths.Count == 0 && !string.IsNullOrWhiteSpace(tracking.MainStoragePath))
         {
-            galleryPath = tracking.MainStoragePath?.Trim();
+            galleryPaths.Add(tracking.MainStoragePath.Trim());
         }
 
         var creatorName = string.IsNullOrWhiteSpace(tracking.DisplayName)
             ? tracking.Creator
             : tracking.DisplayName;
-        if (string.IsNullOrWhiteSpace(galleryPath))
+        if (galleryPaths.Count == 0)
         {
             throw new InvalidOperationException($"{creatorName}のStorageに用途「Gallery」のフォルダが設定されていません。");
         }
-        if (!Directory.Exists(galleryPath))
+        var missingPaths = galleryPaths.Where(path => !Directory.Exists(path)).ToArray();
+        if (missingPaths.Length > 0)
         {
-            throw new DirectoryNotFoundException($"{creatorName}のGalleryフォルダが見つかりません: {galleryPath}");
+            throw new DirectoryNotFoundException(
+                $"{creatorName}のGalleryフォルダが見つかりません: {string.Join(", ", missingPaths)}");
         }
-        if (string.IsNullOrWhiteSpace(_database.FindGalleryCategoryForPath(galleryPath)))
+        var unmappedPaths = galleryPaths
+            .Where(path => string.IsNullOrWhiteSpace(_database.FindGalleryCategoryForPath(path)))
+            .ToArray();
+        if (unmappedPaths.Length > 0)
         {
             throw new InvalidOperationException(
-                $"{creatorName}のGalleryフォルダはSettings > Appearance > 区分別の設定の対象ディレクトリ配下にありません: {galleryPath}");
+                $"{creatorName}のGalleryフォルダはSettings > Appearance > 区分別の設定の対象ディレクトリ配下にありません: {string.Join(", ", unmappedPaths)}");
         }
 
-        PostExplorerDatabaseProgress($"{creatorName}のGalleryフォルダを走査しています...");
-        var result = await SynchronizeExplorerFoldersAsync([galleryPath]);
+        PostExplorerDatabaseProgress(
+            galleryPaths.Count == 1
+                ? $"{creatorName}のGalleryフォルダを走査しています..."
+                : $"{creatorName}のGalleryフォルダ{galleryPaths.Count}件を走査しています...");
+        var result = await SynchronizeExplorerFoldersAsync(galleryPaths);
         if (result.HasWarnings)
         {
             throw new InvalidOperationException(result.Message);
@@ -6938,13 +7750,23 @@ public partial class MainWindow : Window
 
     private void PostMessageOnDispatcher(object payload)
     {
+        string json;
+        try
+        {
+            json = JsonSerializer.Serialize(payload, JsonOptions);
+        }
+        catch (Exception) when (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
         void TryPost()
         {
             try
             {
                 if (Browser.CoreWebView2 is not null)
                 {
-                    PostMessage(payload);
+                    PostJsonMessage(json);
                 }
             }
             catch (ObjectDisposedException)
@@ -6972,35 +7794,397 @@ public partial class MainWindow : Window
         Dispatcher.BeginInvoke((Action)TryPost);
     }
 
-    private IReadOnlyDictionary<string, string> GetCachedGalleryThumbnailUris(
-        IEnumerable<GalleryThumbnailSource> sources)
+    private void ShowAiConciergeWindow(string contextJson, string viewLabel)
     {
-        var thumbnailUris = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var source in sources)
+        if (_aiConciergeWindow is null)
         {
-            if (!File.Exists(source.Path) && !Directory.Exists(source.Path))
+            var settings = _storageSettingsStore.GetAiConciergeSettings(_dataDirectory);
+            _aiConciergeWindow = new AiConciergeWindow(
+                _aiConciergeService,
+                contextJson,
+                viewLabel,
+                settings,
+                _storageSettingsStore.SaveAiConciergeRuntimeSettings,
+                ExecuteAiConciergeActionAsync)
             {
-                continue;
+                Owner = this
+            };
+            _aiConciergeWindow.Closed += (_, _) => _aiConciergeWindow = null;
+            _aiConciergeWindow.Show();
+        }
+        else
+        {
+            _aiConciergeWindow.UpdateContext(contextJson, viewLabel);
+            if (_aiConciergeWindow.WindowState == WindowState.Minimized)
+            {
+                _aiConciergeWindow.WindowState = WindowState.Normal;
+            }
+            _aiConciergeWindow.Activate();
+        }
+    }
+
+    private async Task<AiConciergeToolResult> ExecuteAiConciergeActionAsync(
+        AiConciergeToolRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.ToolName is
+            "gallerybrowser_get_attribute_inference_batch" or
+            "gallerybrowser_get_character_candidates_for_inference" or
+            "gallerybrowser_queue_attribute_inference_review" or
+            "gallerybrowser_apply_inferred_attributes")
+        {
+            return await ExecuteAiAttributeInferenceToolAsync(request, cancellationToken);
+        }
+
+        if (request.ToolName == "gallerybrowser_assign_missing_folder_thumbnails")
+        {
+            return await ExecuteAiFolderThumbnailAssignmentToolAsync(
+                request,
+                cancellationToken);
+        }
+
+        if (Browser.CoreWebView2 is null)
+        {
+            return new AiConciergeToolResult(false, "GalleryBrowserの画面を操作できる状態ではありません。");
+        }
+
+        var requestId = $"ai-action-{Guid.NewGuid():N}";
+        var completion = new TaskCompletionSource<AiConciergeToolResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_pendingAiConciergeActions.TryAdd(requestId, completion))
+        {
+            return new AiConciergeToolResult(false, "AI操作要求を開始できませんでした。");
+        }
+
+        try
+        {
+            JsonElement arguments;
+            try
+            {
+                arguments = JsonSerializer.Deserialize<JsonElement>(
+                    string.IsNullOrWhiteSpace(request.ArgumentsJson)
+                        ? "{}"
+                        : request.ArgumentsJson);
+            }
+            catch (JsonException ex)
+            {
+                return new AiConciergeToolResult(false, $"操作内容の形式が正しくありません: {ex.Message}");
             }
 
-            var thumbnailItem = new GalleryItemDto(
-                StringComparer.OrdinalIgnoreCase.GetHashCode(source.Path),
-                Path.GetFileName(source.Path.TrimEnd('\\', '/')),
-                Directory.Exists(source.Path) ? "folder" : "archive",
-                source.Path,
-                0,
-                [],
-                "#93c5fd",
-                null);
-            var thumbnailUri = _thumbnailService.TryGetCachedThumbnailUri(
-                thumbnailItem,
-                GetThumbnailCropAdjustment(source.Category));
-            if (!string.IsNullOrWhiteSpace(thumbnailUri))
+            PostMessageOnDispatcher(new
             {
-                thumbnailUris[source.Id] = thumbnailUri;
+                type = "ai.concierge.action.execute",
+                requestId,
+                tool = request.ToolName,
+                arguments
+            });
+
+            using var timeoutCancellation =
+                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCancellation.CancelAfter(TimeSpan.FromSeconds(45));
+            using var cancellationRegistration = timeoutCancellation.Token.Register(
+                () => completion.TrySetCanceled(timeoutCancellation.Token));
+            try
+            {
+                return await completion.Task;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return new AiConciergeToolResult(
+                    false,
+                    "GalleryBrowserの操作が45秒以内に完了しませんでした。");
             }
         }
-        return thumbnailUris;
+        finally
+        {
+            _pendingAiConciergeActions.TryRemove(requestId, out _);
+        }
+    }
+
+    private async Task<AiConciergeToolResult> ExecuteAiFolderThumbnailAssignmentToolAsync(
+        AiConciergeToolRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var arguments = JsonSerializer.Deserialize<AiFolderThumbnailToolArguments>(
+                request.ArgumentsJson,
+                JsonOptions) ?? new AiFolderThumbnailToolArguments();
+            var sections = arguments.Sections
+                .Where(section => !string.IsNullOrWhiteSpace(section))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (sections.Length == 0)
+            {
+                return new AiConciergeToolResult(false, "対象区分が指定されていません。");
+            }
+
+            EnsureThumbnailCacheConfiguration();
+            var result = await Task.Run(
+                () => _folderThumbnailAssignmentService.AssignMissingCovers(
+                    sections,
+                    cancellationToken),
+                cancellationToken);
+
+            if (Browser.CoreWebView2 is not null)
+            {
+                PostMessageOnDispatcher(new
+                {
+                    type = "explorer.folderThumbnails.assigned"
+                });
+            }
+
+            var message = new StringBuilder()
+                .Append("フォルダサムネイルの自動設定を完了しました。")
+                .AppendLine()
+                .Append("対象: ")
+                .Append(result.CreatorFolderCount.ToString("N0", CultureInfo.CurrentCulture))
+                .Append("作者 / 未設定 ")
+                .Append(result.MissingFolderCount.ToString("N0", CultureInfo.CurrentCulture))
+                .Append("フォルダ")
+                .AppendLine()
+                .Append("設定: ")
+                .Append(result.AssignedFolderCount.ToString("N0", CultureInfo.CurrentCulture))
+                .Append("件 / 既存維持: ")
+                .Append(result.ExistingFolderCount.ToString("N0", CultureInfo.CurrentCulture))
+                .Append("件 / 候補なし: ")
+                .Append(result.NoSourceFolderCount.ToString("N0", CultureInfo.CurrentCulture))
+                .Append("件");
+            if (result.Errors.Count > 0)
+            {
+                message.AppendLine()
+                    .Append("処理できなかった項目: ")
+                    .Append(result.Errors.Count.ToString("N0", CultureInfo.CurrentCulture))
+                    .Append("件")
+                    .AppendLine()
+                    .Append(string.Join(Environment.NewLine, result.Errors.Take(8)));
+            }
+
+            return new AiConciergeToolResult(
+                result.AssignedFolderCount > 0 || result.Errors.Count == 0,
+                message.ToString());
+        }
+        catch (OperationCanceledException)
+        {
+            return new AiConciergeToolResult(
+                false,
+                "フォルダサムネイルの自動設定を中断しました。");
+        }
+        catch (JsonException ex)
+        {
+            return new AiConciergeToolResult(
+                false,
+                $"フォルダサムネイル設定ツールの引数形式が正しくありません: {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            return new AiConciergeToolResult(
+                false,
+                $"フォルダサムネイルの自動設定に失敗しました: {ex.Message}");
+        }
+    }
+
+    private async Task<AiConciergeToolResult> ExecuteAiAttributeInferenceToolAsync(
+        AiConciergeToolRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (request.ToolName == "gallerybrowser_get_attribute_inference_batch")
+            {
+                var arguments = JsonSerializer.Deserialize<AiInferenceBatchToolArguments>(
+                    request.ArgumentsJson,
+                    JsonOptions) ?? new AiInferenceBatchToolArguments();
+                if (string.IsNullOrWhiteSpace(arguments.Section))
+                {
+                    return new AiConciergeToolResult(false, "対象区分が指定されていません。");
+                }
+
+                var batch = await Task.Run(
+                    () => _database.ListAiAttributeInferenceBatch(
+                        arguments.Section,
+                        arguments.Creator,
+                        arguments.Cursor,
+                        arguments.BatchSize,
+                        arguments.Conditions),
+                    cancellationToken);
+                var contentItems = new List<AiConciergeToolContentItem>
+                {
+                    new(
+                        "inputText",
+                        JsonSerializer.Serialize(
+                            new
+                            {
+                                instruction =
+                                    "各workのtitleCandidatesからTitleを1件以上選び、" +
+                                    "選んだTitleごとにCharacter候補ツールへpathとtitleIdを渡してください。" +
+                                    "候補のCreatorWorkCount、TotalWorkCount、Aliases、" +
+                                    "ファイル名、【作者名】配下から抽出したTitleHintFolders、フルパス、" +
+                                    "続くサムネイル、LearningExamplesを総合してください。" +
+                                    "TitleHintFoldersはTitleに関連する強い文字ヒントとして扱いますが、" +
+                                    "候補名・別名との整合も確認してください。" +
+                                    "次のバッチでも同じconditionsを維持してください。",
+                                conditions = arguments.Conditions,
+                                batch
+                            },
+                            JsonOptions))
+                };
+
+                if (arguments.IncludeImages)
+                {
+                    EnsureThumbnailCacheConfiguration();
+                    foreach (var work in batch.Works)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        try
+                        {
+                            var imageDataUri =
+                                await _thumbnailService.GetOrCreateThumbnailDataUriAsync(
+                                    work.Path,
+                                    priority: 2_000,
+                                    GetThumbnailCropAdjustment(work.Category));
+                            if (string.IsNullOrWhiteSpace(imageDataUri))
+                            {
+                                continue;
+                            }
+                            contentItems.Add(new AiConciergeToolContentItem(
+                                "inputText",
+                                $"次の画像はgid={work.Gid}、path={work.Path}のサムネイルです。"));
+                            contentItems.Add(new AiConciergeToolContentItem(
+                                "inputImage",
+                                ImageUrl: imageDataUri));
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            contentItems.Add(new AiConciergeToolContentItem(
+                                "inputText",
+                                $"gid={work.Gid}のサムネイルは取得できませんでした: {ex.Message}"));
+                        }
+                    }
+                }
+
+                return new AiConciergeToolResult(
+                    true,
+                    $"{batch.Works.Count:N0}件の未付与作品と推論候補を取得しました。" +
+                    $" 未付与総数: {batch.TotalUnassigned:N0}件",
+                    contentItems);
+            }
+
+            if (request.ToolName ==
+                "gallerybrowser_get_character_candidates_for_inference")
+            {
+                var arguments =
+                    JsonSerializer.Deserialize<AiCharacterCandidateToolArguments>(
+                        request.ArgumentsJson,
+                        JsonOptions) ?? new AiCharacterCandidateToolArguments();
+                if (string.IsNullOrWhiteSpace(arguments.Section))
+                {
+                    return new AiConciergeToolResult(false, "対象区分が指定されていません。");
+                }
+                var candidates = await Task.Run(
+                    () => _database.ListAiAttributeCharacterCandidates(
+                        arguments.Section,
+                        arguments.Works),
+                    cancellationToken);
+                var json = JsonSerializer.Serialize(
+                    new
+                    {
+                        instruction =
+                            "各作品について0件以上のCharacterを選べます。" +
+                            "画像や名前から確信できない場合は空配列にしてください。",
+                        works = candidates
+                    },
+                    JsonOptions);
+                return new AiConciergeToolResult(
+                    true,
+                    $"{candidates.Count:N0}件のCharacter候補を取得しました。",
+                    [new AiConciergeToolContentItem("inputText", json)]);
+            }
+
+            if (request.ToolName ==
+                "gallerybrowser_queue_attribute_inference_review")
+            {
+                var arguments =
+                    JsonSerializer.Deserialize<AiInferenceReviewToolArguments>(
+                        request.ArgumentsJson,
+                        JsonOptions) ?? new AiInferenceReviewToolArguments();
+                if (string.IsNullOrWhiteSpace(arguments.Section))
+                {
+                    return new AiConciergeToolResult(false, "対象区分が指定されていません。");
+                }
+                var queuedCount = await Task.Run(
+                    () => _database.QueueAiAttributeInferenceReviews(
+                        arguments.Section,
+                        arguments.Works),
+                    cancellationToken);
+                if (Browser.CoreWebView2 is not null)
+                {
+                    var items = await Task.Run(
+                        _database.ListAiAttributeInferenceReviews,
+                        cancellationToken);
+                    PostMessageOnDispatcher(new
+                    {
+                        type = "ai.attributeReview.result",
+                        items
+                    });
+                }
+                return new AiConciergeToolResult(
+                    true,
+                    $"{queuedCount:N0}件を属性推論の要確認リストへ追加しました。");
+            }
+
+            var applyArguments =
+                JsonSerializer.Deserialize<AiInferenceApplyToolArguments>(
+                    request.ArgumentsJson,
+                    JsonOptions) ?? new AiInferenceApplyToolArguments();
+            var result = await Task.Run(
+                () => _database.ApplyAiAttributeInferences(
+                    applyArguments.Assignments),
+                cancellationToken);
+            if (result.AppliedCount > 0 && Browser.CoreWebView2 is not null)
+            {
+                PostMessageOnDispatcher(new
+                {
+                    type = "ai.concierge.action.execute",
+                    requestId = $"ai-refresh-{Guid.NewGuid():N}",
+                    tool = "gallerybrowser_refresh",
+                    arguments = new { target = "gallery" }
+                });
+            }
+
+            var summary = new StringBuilder()
+                .Append(result.AppliedCount.ToString("N0", CultureInfo.CurrentCulture))
+                .Append("件へ推論属性を付与しました。")
+                .Append(" スキップ: ")
+                .Append(result.SkippedCount.ToString("N0", CultureInfo.CurrentCulture))
+                .Append("件");
+            if (result.Errors.Count > 0)
+            {
+                summary.Append(" エラー: ")
+                    .Append(result.Errors.Count.ToString("N0", CultureInfo.CurrentCulture))
+                    .AppendLine("件")
+                    .Append(string.Join(Environment.NewLine, result.Errors.Take(10)));
+            }
+            return new AiConciergeToolResult(
+                result.Errors.Count == 0 || result.AppliedCount > 0,
+                summary.ToString());
+        }
+        catch (OperationCanceledException)
+        {
+            return new AiConciergeToolResult(false, "属性推論処理はキャンセルされました。");
+        }
+        catch (JsonException ex)
+        {
+            return new AiConciergeToolResult(
+                false,
+                $"属性推論ツールの引数形式が正しくありません: {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            return new AiConciergeToolResult(
+                false,
+                $"属性推論処理に失敗しました: {ex.Message}");
+        }
     }
 
     private void EnsureThumbnailCacheConfiguration()
@@ -7052,8 +8236,17 @@ public partial class MainWindow : Window
     private void PostMessage(object payload)
     {
         var json = JsonSerializer.Serialize(payload, JsonOptions);
-        Browser.CoreWebView2.PostWebMessageAsJson(json);
+        PostJsonMessage(json);
     }
+
+    private async Task PostMessageSerializedAsync(object payload)
+    {
+        var json = await Task.Run(() => JsonSerializer.Serialize(payload, JsonOptions));
+        PostJsonMessage(json);
+    }
+
+    private void PostJsonMessage(string json) =>
+        Browser.CoreWebView2.PostWebMessageAsJson(json);
 
     private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {

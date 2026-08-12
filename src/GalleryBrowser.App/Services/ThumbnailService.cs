@@ -1,8 +1,11 @@
 using GalleryBrowser.Models;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats;
 using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Processing;
 using Image = SixLabors.ImageSharp.Image;
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.IO;
 using System.Security.Cryptography;
@@ -16,36 +19,36 @@ public sealed class ThumbnailService
     private const string ThumbnailCacheVersion = "v6";
     private const int MaximumArchiveEntriesToInspect = 10_000;
     private const int MaximumNestedArchiveDepth = 1;
-
-    private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    private const int MaximumKnownCacheUris = 12_000;
+    private static readonly TimeSpan SourceStampValidationInterval = TimeSpan.FromSeconds(30);
+    private static readonly DecoderOptions ThumbnailDecoderOptions = new()
     {
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".webp",
-        ".bmp",
-        ".gif"
+        TargetSize = new Size(1_200, 900),
+        SkipMetadata = true
     };
 
-    private static readonly HashSet<string> ArchiveExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".zip",
-        ".cbz",
-    };
-
-    private const int MaximumConcurrentGenerations = 2;
+    private static readonly int MaximumConcurrentGenerations =
+        Math.Clamp(Environment.ProcessorCount / 4, 2, 3);
     private readonly object _generationQueueLock = new();
     private readonly object _cacheEntryLock = new();
     private readonly object _inflightRequestLock = new();
     private readonly PriorityQueue<ThumbnailWork, (int Priority, long Sequence)> _generationQueue = new();
-    private readonly Dictionary<string, Task<string?>> _inflightRequests = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ThumbnailInflightRequest> _inflightRequests = new(StringComparer.OrdinalIgnoreCase);
     private readonly GalleryDatabase _database;
     private readonly FfmpegService _ffmpegService;
     private readonly string _defaultCacheRoot;
     private int _activeGenerationCount;
     private long _generationSequence;
-    private HashSet<string>? _trackedCachePaths;
-    private IReadOnlyList<string> _targetDirectories = [];
+    private readonly HashSet<string> _trackedCachePaths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _knownSourceStamps = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> _sourceStampValidationTimes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentQueue<(string SourcePath, string ExpectedStamp)> _pendingSourceStampValidations = new();
+    private readonly Dictionary<string, (string Uri, long Sequence)> _knownCacheUris = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Queue<(string Path, long Sequence)> _knownCacheUriOrder = new();
+    private long _knownCacheUriSequence;
+    private int _sourceStampValidationWorkerScheduled;
+    private Task? _trackedCachePathsLoadTask;
+    private IReadOnlyList<ThumbnailCacheTarget> _cacheTargets = [];
 
     public ThumbnailService(GalleryDatabase database, FfmpegService ffmpegService)
     {
@@ -69,10 +72,19 @@ public sealed class ThumbnailService
             CacheRoot = normalizedRoot;
             lock (_cacheEntryLock)
             {
-                _trackedCachePaths = null;
+                _trackedCachePaths.Clear();
+                _knownSourceStamps.Clear();
+                _sourceStampValidationTimes.Clear();
+                _knownCacheUris.Clear();
+                _knownCacheUriOrder.Clear();
+                _trackedCachePathsLoadTask = null;
             }
         }
         Directory.CreateDirectory(CacheRoot);
+        lock (_cacheEntryLock)
+        {
+            _trackedCachePathsLoadTask ??= LoadAndMergeTrackedCachePathsAsync();
+        }
     }
 
     public ThumbnailCacheMoveResult MoveCacheRoot(string cacheRoot)
@@ -111,25 +123,79 @@ public sealed class ThumbnailService
         CacheRoot = newRoot;
         lock (_cacheEntryLock)
         {
-            _trackedCachePaths = null;
+            _trackedCachePaths.Clear();
+            _knownSourceStamps.Clear();
+            _sourceStampValidationTimes.Clear();
+            _knownCacheUris.Clear();
+            _knownCacheUriOrder.Clear();
+            _trackedCachePathsLoadTask = LoadAndMergeTrackedCachePathsAsync();
         }
         return new ThumbnailCacheMoveResult(movedPaths.Count, failedCount, CacheRoot);
     }
 
     public void ConfigureTargetDirectories(IEnumerable<string> targetDirectories)
     {
-        _targetDirectories = targetDirectories
+        var candidates = targetDirectories
             .Where(path => !string.IsNullOrWhiteSpace(path))
             .Select(Path.GetFullPath)
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(CreateThumbnailCacheTarget)
+            .OrderBy(target => target.Path.Length)
+            .ThenBy(target => target.Path, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+
+        var cacheTargets = new List<ThumbnailCacheTarget>(candidates.Length);
+        foreach (var candidate in candidates)
+        {
+            var covered = false;
+            foreach (var existing in cacheTargets)
+            {
+                if (IsWithinCacheTarget(candidate.Path, existing))
+                {
+                    covered = true;
+                    break;
+                }
+            }
+
+            if (!covered)
+            {
+                cacheTargets.Add(candidate);
+            }
+        }
+
+        _cacheTargets = cacheTargets;
+    }
+
+    private static ThumbnailCacheTarget CreateThumbnailCacheTarget(string path)
+    {
+        var normalized = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var volumeRoot = Path.GetPathRoot(path);
+        if (!string.IsNullOrWhiteSpace(volumeRoot) &&
+            string.Equals(
+                normalized,
+                volumeRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = volumeRoot;
+        }
+
+        var prefixRoot = normalized.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return new ThumbnailCacheTarget(
+            normalized,
+            normalized.EndsWith(Path.DirectorySeparatorChar) ? normalized : prefixRoot + Path.DirectorySeparatorChar,
+            normalized.EndsWith(Path.AltDirectorySeparatorChar) ? normalized : prefixRoot + Path.AltDirectorySeparatorChar);
     }
 
     public void InvalidateCacheTracking()
     {
         lock (_cacheEntryLock)
         {
-            _trackedCachePaths = null;
+            _trackedCachePaths.Clear();
+            _knownSourceStamps.Clear();
+            _sourceStampValidationTimes.Clear();
+            _knownCacheUris.Clear();
+            _knownCacheUriOrder.Clear();
+            _trackedCachePathsLoadTask = LoadAndMergeTrackedCachePathsAsync();
         }
     }
 
@@ -155,42 +221,73 @@ public sealed class ThumbnailService
         _database.DeleteThumbnailCacheEntries(cachePaths);
         lock (_cacheEntryLock)
         {
-            _trackedCachePaths?.ExceptWith(cachePaths);
+            _trackedCachePaths.ExceptWith(cachePaths);
+            foreach (var cachePath in cachePaths)
+            {
+                _knownCacheUris.Remove(cachePath);
+            }
+            foreach (var sourcePath in entries.Select(entry => entry.SourcePath).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                _knownSourceStamps.Remove(sourcePath);
+                _sourceStampValidationTimes.Remove(sourcePath);
+            }
         }
         return entries.Length;
     }
 
-    public async Task<string?> GetOrCreateThumbnailUriAsync(
+    public Task<string?> GetOrCreateThumbnailUriAsync(
         GalleryItemDto item,
+        int priority = 0,
+        bool forceRefresh = false,
+        ThumbnailCropAdjustmentDto? cropAdjustment = null) =>
+        GetOrCreateThumbnailUriAsync(item.Path, priority, forceRefresh, cropAdjustment);
+
+    public async Task<string?> GetOrCreateThumbnailUriAsync(
+        string sourcePath,
         int priority = 0,
         bool forceRefresh = false,
         ThumbnailCropAdjustmentDto? cropAdjustment = null)
     {
-        var sourcePath = Path.GetFullPath(item.Path);
+        sourcePath = Path.GetFullPath(sourcePath);
         if (!IsCacheTarget(sourcePath))
         {
             return null;
         }
 
-        var sourceStamp = GetSourceStamp(sourcePath);
         var normalizedAdjustment = NormalizeCropAdjustment(cropAdjustment);
-        var cachePath = GetCachePath(sourcePath, sourceStamp, normalizedAdjustment.CacheKey);
-        if (!forceRefresh && File.Exists(cachePath))
+        if (!forceRefresh && TryGetKnownSourceStamp(sourcePath, out var knownSourceStamp))
         {
-            EnsureCacheEntryTracked(cachePath, sourcePath, sourceStamp);
-            return ToCacheUri(cachePath);
+            var knownCachePath = GetCachePath(sourcePath, knownSourceStamp, normalizedAdjustment.CacheKey);
+            if (TryGetCacheRevision(knownCachePath, out var knownCacheRevision))
+            {
+                QueueKnownSourceStampValidation(sourcePath, knownSourceStamp);
+                return ToCacheUri(knownCachePath, knownCacheRevision);
+            }
         }
 
-        Task<string?> request;
+        if (!TryGetSourceStamp(sourcePath, out var sourceStamp))
+        {
+            return null;
+        }
+        RememberSourceStamp(sourcePath, sourceStamp);
+        var cachePath = GetCachePath(sourcePath, sourceStamp, normalizedAdjustment.CacheKey);
+        if (!forceRefresh && TryGetCacheRevision(cachePath, out var cacheRevision))
+        {
+            EnsureCacheEntryTracked(cachePath, sourcePath, sourceStamp);
+            return ToCacheUri(cachePath, cacheRevision);
+        }
+
+        ThumbnailInflightRequest request;
         lock (_inflightRequestLock)
         {
             if (_inflightRequests.TryGetValue(cachePath, out var inflightRequest))
             {
                 request = inflightRequest;
+                RaiseThumbnailGenerationPriority(request.Work, priority);
             }
             else
             {
-                request = CreateAndTrackThumbnailAsync(
+                request = CreateAndTrackThumbnailRequest(
                     sourcePath,
                     sourceStamp,
                     cachePath,
@@ -203,7 +300,7 @@ public sealed class ThumbnailService
 
         try
         {
-            return await request;
+            return await request.Task;
         }
         finally
         {
@@ -215,6 +312,40 @@ public sealed class ThumbnailService
                 }
             }
         }
+    }
+
+    public async Task<string?> GetOrCreateThumbnailDataUriAsync(
+        string sourcePath,
+        int priority = 0,
+        ThumbnailCropAdjustmentDto? cropAdjustment = null)
+    {
+        var thumbnailUri = await GetOrCreateThumbnailUriAsync(
+            sourcePath,
+            priority,
+            forceRefresh: false,
+            cropAdjustment);
+        if (string.IsNullOrWhiteSpace(thumbnailUri))
+        {
+            return null;
+        }
+
+        sourcePath = Path.GetFullPath(sourcePath);
+        if (!TryGetSourceStamp(sourcePath, out var sourceStamp))
+        {
+            return null;
+        }
+
+        var normalizedAdjustment = NormalizeCropAdjustment(cropAdjustment);
+        var cachePath = GetCachePath(sourcePath, sourceStamp, normalizedAdjustment.CacheKey);
+        if (!File.Exists(cachePath))
+        {
+            return null;
+        }
+
+        // Dynamic tool image inputs are self-contained so the Codex child process
+        // never needs access to the WebView2-only virtual thumbnail host.
+        var bytes = await File.ReadAllBytesAsync(cachePath);
+        return "data:image/jpeg;base64," + Convert.ToBase64String(bytes);
     }
 
     public string? TryGetCachedThumbnailUri(
@@ -229,16 +360,19 @@ public sealed class ThumbnailService
                 return null;
             }
 
-            var sourceStamp = GetSourceStamp(sourcePath);
+            if (!TryGetSourceStamp(sourcePath, out var sourceStamp))
+            {
+                return null;
+            }
             var normalizedAdjustment = NormalizeCropAdjustment(cropAdjustment);
             var cachePath = GetCachePath(sourcePath, sourceStamp, normalizedAdjustment.CacheKey);
-            if (!File.Exists(cachePath))
+            if (!TryGetCacheRevision(cachePath, out var cacheRevision))
             {
                 return null;
             }
 
             EnsureCacheEntryTracked(cachePath, sourcePath, sourceStamp);
-            return ToCacheUri(cachePath);
+            return ToCacheUri(cachePath, cacheRevision);
         }
         catch
         {
@@ -246,7 +380,7 @@ public sealed class ThumbnailService
         }
     }
 
-    private async Task<string?> CreateAndTrackThumbnailAsync(
+    private ThumbnailInflightRequest CreateAndTrackThumbnailRequest(
         string sourcePath,
         string sourceStamp,
         string cachePath,
@@ -254,56 +388,77 @@ public sealed class ThumbnailService
         int priority,
         bool forceRefresh)
     {
-        try
-        {
-            if (forceRefresh && File.Exists(cachePath))
-            {
-                File.Delete(cachePath);
-            }
+        var work = new ThumbnailWork(() => CreateThumbnail(sourcePath, cachePath, cropAdjustment));
+        var task = CompleteAsync();
+        return new ThumbnailInflightRequest(work, task);
 
-            var created = await QueueThumbnailGeneration(() => CreateThumbnail(sourcePath, cachePath, cropAdjustment), priority);
-            if (created)
-            {
-                EnsureCacheEntryTracked(cachePath, sourcePath, sourceStamp);
-            }
-            return created ? ToCacheUri(cachePath) : null;
-        }
-        catch
+        async Task<string?> CompleteAsync()
         {
-            return null;
+            try
+            {
+                if (forceRefresh && File.Exists(cachePath))
+                {
+                    ForgetCacheUri(cachePath);
+                    File.Delete(cachePath);
+                }
+
+                QueueThumbnailGeneration(work, priority);
+                var created = await work.Completion.Task;
+                if (created)
+                {
+                    EnsureCacheEntryTracked(cachePath, sourcePath, sourceStamp);
+                }
+                return created ? ToCacheUri(cachePath) : null;
+            }
+            catch
+            {
+                return null;
+            }
         }
     }
 
     private void EnsureCacheEntryTracked(string cachePath, string sourcePath, string sourceStamp)
     {
+        RememberSourceStamp(sourcePath, sourceStamp);
+        var requiresUpsert = false;
         lock (_cacheEntryLock)
         {
-            _trackedCachePaths ??= _database.ListThumbnailCacheEntries()
-                .Select(entry => entry.CachePath)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (_trackedCachePaths.Contains(cachePath))
-            {
-                return;
-            }
+            requiresUpsert = _trackedCachePaths.Add(cachePath);
+        }
+        if (!requiresUpsert)
+        {
+            return;
+        }
 
+        try
+        {
             _database.UpsertThumbnailCacheEntry(cachePath, sourcePath, sourceStamp);
-            _trackedCachePaths.Add(cachePath);
+        }
+        catch
+        {
+            lock (_cacheEntryLock)
+            {
+                _trackedCachePaths.Remove(cachePath);
+                _knownCacheUris.Remove(cachePath);
+            }
+            throw;
         }
     }
 
     public ThumbnailCacheMaintenanceResult MaintainCache()
     {
         var staleEntries = new List<string>();
+        var staleSourcePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in _database.ListThumbnailCacheEntries())
         {
-            var sourceExists = File.Exists(entry.SourcePath) || Directory.Exists(entry.SourcePath);
-            var currentStamp = sourceExists ? GetSourceStamp(entry.SourcePath) : string.Empty;
+            var sourceExists = TryGetSourceStamp(entry.SourcePath, out var currentStamp);
             if (!sourceExists ||
                 !File.Exists(entry.CachePath) ||
                 !string.Equals(entry.SourceStamp, currentStamp, StringComparison.Ordinal))
             {
                 DeleteCacheFile(entry.CachePath);
                 staleEntries.Add(entry.CachePath);
+                staleSourcePaths.Add(entry.SourcePath);
             }
         }
 
@@ -312,7 +467,16 @@ public sealed class ThumbnailService
         {
             lock (_cacheEntryLock)
             {
-                _trackedCachePaths?.ExceptWith(staleEntries);
+                _trackedCachePaths.ExceptWith(staleEntries);
+                foreach (var cachePath in staleEntries)
+                {
+                    _knownCacheUris.Remove(cachePath);
+                }
+                foreach (var sourcePath in staleSourcePaths)
+                {
+                    _knownSourceStamps.Remove(sourcePath);
+                    _sourceStampValidationTimes.Remove(sourcePath);
+                }
             }
         }
         var trackedPaths = _database.ListThumbnailCacheEntries()
@@ -331,7 +495,7 @@ public sealed class ThumbnailService
 
     public async Task<ThumbnailCacheRebuildResult> RebuildAsync(Func<int, int, Task>? reportProgress = null)
     {
-        if (_targetDirectories.Count == 0)
+        if (_cacheTargets.Count == 0)
         {
             throw new InvalidOperationException("再構築するには、サムネイルキャッシュの対象ディレクトリを登録してください。");
         }
@@ -342,15 +506,7 @@ public sealed class ThumbnailService
         for (var index = 0; index < sources.Length; index++)
         {
             var sourcePath = sources[index];
-            var uri = await GetOrCreateThumbnailUriAsync(new GalleryItemDto(
-                StringComparer.OrdinalIgnoreCase.GetHashCode(sourcePath),
-                Path.GetFileName(sourcePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
-                Directory.Exists(sourcePath) ? "folder" : "archive",
-                sourcePath,
-                0,
-                [],
-                "#93c5fd",
-                null), priority: 1_000);
+            var uri = await GetOrCreateThumbnailUriAsync(sourcePath, priority: 1_000);
             if (uri is not null)
             {
                 generatedCount++;
@@ -376,15 +532,113 @@ public sealed class ThumbnailService
         _database.ClearThumbnailCacheEntries();
         lock (_cacheEntryLock)
         {
-            _trackedCachePaths = [];
+            _trackedCachePaths.Clear();
+            _knownSourceStamps.Clear();
+            _sourceStampValidationTimes.Clear();
+            _knownCacheUris.Clear();
+            _knownCacheUriOrder.Clear();
+            _trackedCachePathsLoadTask = Task.CompletedTask;
         }
         return files.Length;
     }
 
+    private async Task LoadAndMergeTrackedCachePathsAsync()
+    {
+        IReadOnlyList<ThumbnailCacheEntryDto> loadedEntries;
+        try
+        {
+            loadedEntries = await Task.Run(_database.ListThumbnailCacheEntries);
+        }
+        catch
+        {
+            return;
+        }
+
+        lock (_cacheEntryLock)
+        {
+            foreach (var entry in loadedEntries)
+            {
+                _trackedCachePaths.Add(entry.CachePath);
+                _knownSourceStamps[entry.SourcePath] = entry.SourceStamp;
+            }
+        }
+    }
+
+    private bool TryGetKnownSourceStamp(string sourcePath, out string sourceStamp)
+    {
+        lock (_cacheEntryLock)
+        {
+            return _knownSourceStamps.TryGetValue(sourcePath, out sourceStamp!);
+        }
+    }
+
+    private void RememberSourceStamp(string sourcePath, string sourceStamp)
+    {
+        lock (_cacheEntryLock)
+        {
+            _knownSourceStamps[sourcePath] = sourceStamp;
+        }
+    }
+
+    private void QueueKnownSourceStampValidation(string sourcePath, string expectedStamp)
+    {
+        var now = DateTime.UtcNow;
+        lock (_cacheEntryLock)
+        {
+            if (_sourceStampValidationTimes.TryGetValue(sourcePath, out var lastValidation) &&
+                now - lastValidation < SourceStampValidationInterval)
+            {
+                return;
+            }
+            _sourceStampValidationTimes[sourcePath] = now;
+        }
+
+        _pendingSourceStampValidations.Enqueue((sourcePath, expectedStamp));
+        if (Interlocked.CompareExchange(ref _sourceStampValidationWorkerScheduled, 1, 0) == 0)
+        {
+            _ = Task.Run(ProcessPendingSourceStampValidations);
+        }
+    }
+
+    private void ProcessPendingSourceStampValidations()
+    {
+        while (true)
+        {
+            while (_pendingSourceStampValidations.TryDequeue(out var validation))
+            {
+                try
+                {
+                    if (!TryGetSourceStamp(validation.SourcePath, out var currentStamp) ||
+                        !string.Equals(currentStamp, validation.ExpectedStamp, StringComparison.Ordinal))
+                    {
+                        InvalidateSourcesUnderPath(validation.SourcePath);
+                    }
+                }
+                catch
+                {
+                    // Validation is opportunistic. A later request retries after the interval.
+                }
+            }
+
+            Interlocked.Exchange(ref _sourceStampValidationWorkerScheduled, 0);
+            if (_pendingSourceStampValidations.IsEmpty ||
+                Interlocked.CompareExchange(ref _sourceStampValidationWorkerScheduled, 1, 0) != 0)
+            {
+                return;
+            }
+        }
+    }
+
     private IEnumerable<string> EnumerateRebuildSources()
     {
-        foreach (var targetPath in _targetDirectories.Where(Directory.Exists))
+        foreach (var target in _cacheTargets)
         {
+            var targetPath = target.Path;
+            if (!Directory.Exists(targetPath))
+            {
+                continue;
+            }
+
             var pendingDirectories = new Stack<string>();
             pendingDirectories.Push(targetPath);
             while (pendingDirectories.TryPop(out var directoryPath))
@@ -412,8 +666,8 @@ public sealed class ThumbnailService
                         pendingDirectories.Push(directory.FullName);
                     }
                     else if (entry is FileInfo file &&
-                              (ImageExtensions.Contains(file.Extension) ||
-                               ArchiveExtensions.Contains(file.Extension) ||
+                              (IsImagePath(file.Name) ||
+                               IsArchivePath(file.Name) ||
                                _ffmpegService.SupportsVideo(file.FullName)))
                     {
                         yield return file.FullName;
@@ -425,18 +679,27 @@ public sealed class ThumbnailService
 
     private bool IsCacheTarget(string sourcePath)
     {
-        if (_targetDirectories.Count == 0)
+        if (_cacheTargets.Count == 0)
         {
             return true;
         }
 
-        return _targetDirectories.Any(target =>
+        foreach (var target in _cacheTargets)
         {
-            var normalizedTarget = target.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            return string.Equals(sourcePath, normalizedTarget, StringComparison.OrdinalIgnoreCase) ||
-                sourcePath.StartsWith(normalizedTarget + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
-                sourcePath.StartsWith(normalizedTarget + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
-        });
+            if (IsWithinCacheTarget(sourcePath, target))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsWithinCacheTarget(string path, ThumbnailCacheTarget target)
+    {
+        return string.Equals(path, target.Path, StringComparison.OrdinalIgnoreCase) ||
+               path.StartsWith(target.PrimaryChildPrefix, StringComparison.OrdinalIgnoreCase) ||
+               path.StartsWith(target.AlternateChildPrefix, StringComparison.OrdinalIgnoreCase);
     }
 
     private IEnumerable<string> EnumerateCacheFiles()
@@ -479,23 +742,43 @@ public sealed class ThumbnailService
             ? _defaultCacheRoot
             : Path.GetFullPath(cacheRoot);
 
-    private Task<bool> QueueThumbnailGeneration(Func<bool> generation, int priority)
+    private void QueueThumbnailGeneration(ThumbnailWork work, int priority)
     {
-        var work = new ThumbnailWork(generation);
         lock (_generationQueueLock)
         {
             var normalizedPriority = Math.Clamp(priority, 0, 1_000_000);
+            work.TryRaisePriority(normalizedPriority);
             _generationQueue.Enqueue(work, (-normalizedPriority, _generationSequence++));
             StartQueuedGenerations();
         }
+    }
 
-        return work.Completion.Task;
+    private void RaiseThumbnailGenerationPriority(ThumbnailWork work, int priority)
+    {
+        var normalizedPriority = Math.Clamp(priority, 0, 1_000_000);
+        lock (_generationQueueLock)
+        {
+            if (work.HasStarted || !work.TryRaisePriority(normalizedPriority))
+            {
+                return;
+            }
+
+            // PriorityQueue has no in-place priority update. Re-enqueue the same work;
+            // the stale queue entry is ignored after TryStart succeeds once.
+            _generationQueue.Enqueue(work, (-normalizedPriority, _generationSequence++));
+            StartQueuedGenerations();
+        }
     }
 
     private void StartQueuedGenerations()
     {
         while (_activeGenerationCount < MaximumConcurrentGenerations && _generationQueue.TryDequeue(out var work, out _))
         {
+            if (!work.TryStart())
+            {
+                continue;
+            }
+
             _activeGenerationCount++;
             _ = Task.Run(() =>
             {
@@ -551,7 +834,25 @@ public sealed class ThumbnailService
         var parentPath = Path.GetDirectoryName(sourceForParent)
             ?? throw new InvalidOperationException("ルートフォルダには親フォルダのサムネイルを設定できません。");
 
-        var coverPath = Path.Combine(parentPath, ZipPlaCoverFileName);
+        SetFolderCover(parentPath, fullSourcePath);
+        return parentPath;
+    }
+
+    public string SetFolderCover(string folderPath, string sourcePath)
+    {
+        var fullFolderPath = Path.GetFullPath(folderPath);
+        if (!Directory.Exists(fullFolderPath))
+        {
+            throw new DirectoryNotFoundException("サムネイル設定先のフォルダが見つかりません。: " + fullFolderPath);
+        }
+
+        var fullSourcePath = Path.GetFullPath(sourcePath);
+        if (!File.Exists(fullSourcePath) && !Directory.Exists(fullSourcePath))
+        {
+            throw new FileNotFoundException("対象のファイルまたはフォルダが見つかりません。", fullSourcePath);
+        }
+
+        var coverPath = Path.Combine(fullFolderPath, ZipPlaCoverFileName);
         if (_ffmpegService.SupportsVideo(fullSourcePath))
         {
             if (!_ffmpegService.TryCreateThumbnail(fullSourcePath, coverPath))
@@ -559,13 +860,13 @@ public sealed class ThumbnailService
                 throw new InvalidOperationException("動画からサムネイルを生成できませんでした。FFmpeg設定を確認してください。");
             }
 
-            return parentPath;
+            return coverPath;
         }
 
         using var image = OpenRepresentativeImage(fullSourcePath)
             ?? throw new InvalidOperationException("サムネイルに利用できる画像が見つかりません。");
         SaveCoverImage(image, coverPath);
-        return parentPath;
+        return coverPath;
     }
 
     private bool CreateThumbnail(string sourcePath, string cachePath, ThumbnailCropAdjustment cropAdjustment)
@@ -647,26 +948,20 @@ public sealed class ThumbnailService
 
     private static Image? OpenRepresentativeImage(string sourcePath)
     {
+        if (IsImagePath(sourcePath) && File.Exists(sourcePath))
+        {
+            return Image.Load(ThumbnailDecoderOptions, sourcePath);
+        }
+
+        if (IsArchivePath(sourcePath) && File.Exists(sourcePath))
+        {
+            return OpenFirstImageInArchive(sourcePath);
+        }
+
         if (Directory.Exists(sourcePath))
         {
             var imagePath = FindFirstImageInFolder(sourcePath);
-            return imagePath is null ? null : Image.Load(imagePath);
-        }
-
-        if (!File.Exists(sourcePath))
-        {
-            return null;
-        }
-
-        var extension = Path.GetExtension(sourcePath);
-        if (ImageExtensions.Contains(extension))
-        {
-            return Image.Load(sourcePath);
-        }
-
-        if (ArchiveExtensions.Contains(extension))
-        {
-            return OpenFirstImageInArchive(sourcePath);
+            return imagePath is null ? null : Image.Load(ThumbnailDecoderOptions, imagePath);
         }
 
         return null;
@@ -682,11 +977,26 @@ public sealed class ThumbnailService
                 return coverPath;
             }
 
-            return Directory.EnumerateFiles(folderPath, "*.*", SearchOption.AllDirectories)
-                .Where(path => ImageExtensions.Contains(Path.GetExtension(path)) &&
-                               !string.Equals(Path.GetFileName(path), ZipPlaCoverFileName, StringComparison.OrdinalIgnoreCase))
-                .OrderBy(path => path, Comparer<string>.Create(CompareNaturally))
-                .FirstOrDefault();
+            string? firstImagePath = null;
+            var relativePathStart = folderPath
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Length + 1;
+            foreach (var path in Directory.EnumerateFiles(folderPath, "*.*", SearchOption.AllDirectories))
+            {
+                if (!IsImagePath(path) ||
+                    Path.GetFileName(path.AsSpan()).Equals(
+                        ZipPlaCoverFileName.AsSpan(),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (firstImagePath is null || CompareNaturally(path, firstImagePath, relativePathStart) < 0)
+                {
+                    firstImagePath = path;
+                }
+            }
+            return firstImagePath;
         }
         catch
         {
@@ -702,24 +1012,53 @@ public sealed class ThumbnailService
 
     private static Image? OpenRepresentativeImageInArchive(ZipArchive archive, int depth)
     {
-        var candidates = archive.Entries
-            .Where(entry => !string.IsNullOrEmpty(entry.Name))
-            .Take(MaximumArchiveEntriesToInspect)
-            .ToArray();
+        var entries = archive.Entries;
+        var inspectedEntryCount = Math.Min(entries.Count, MaximumArchiveEntriesToInspect);
+        ZipArchiveEntry? firstImageEntry = null;
+        for (var index = 0; index < inspectedEntryCount; index++)
+        {
+            var entry = entries[index];
+            if (string.IsNullOrEmpty(entry.Name) ||
+                !IsImagePath(entry.FullName))
+            {
+                continue;
+            }
 
-        foreach (var entry in candidates
-                     .Where(candidate => ImageExtensions.Contains(Path.GetExtension(candidate.FullName)))
-                     .OrderBy(candidate => GetRepresentativeImagePriority(candidate.Name))
-                     .ThenBy(candidate => candidate.FullName, Comparer<string>.Create(CompareNaturally)))
+            if (firstImageEntry is null || CompareRepresentativeEntries(entry, firstImageEntry) < 0)
+            {
+                firstImageEntry = entry;
+            }
+        }
+
+        if (firstImageEntry is not null)
         {
             try
             {
-                using var stream = entry.Open();
-                return Image.Load(stream);
+                using var stream = firstImageEntry.Open();
+                return Image.Load(ThumbnailDecoderOptions, stream);
             }
             catch
             {
-                // Broken or unsupported images do not prevent later pages from becoming the cover.
+                // Broken first images fall back to the remaining naturally ordered candidates.
+                foreach (var entry in archive.Entries
+                             .Take(MaximumArchiveEntriesToInspect)
+                             .Where(candidate =>
+                                 !ReferenceEquals(candidate, firstImageEntry) &&
+                                 !string.IsNullOrEmpty(candidate.Name) &&
+                                 IsImagePath(candidate.FullName))
+                             .OrderBy(candidate => GetRepresentativeImagePriority(candidate.Name))
+                             .ThenBy(candidate => candidate.FullName, Comparer<string>.Create(CompareNaturally)))
+                {
+                    try
+                    {
+                        using var stream = entry.Open();
+                        return Image.Load(ThumbnailDecoderOptions, stream);
+                    }
+                    catch
+                    {
+                        // Broken or unsupported images do not prevent later pages from becoming the cover.
+                    }
+                }
             }
         }
 
@@ -728,8 +1067,9 @@ public sealed class ThumbnailService
             return null;
         }
 
-        foreach (var entry in candidates
-                     .Where(candidate => ArchiveExtensions.Contains(Path.GetExtension(candidate.Name)))
+        foreach (var entry in archive.Entries
+                     .Take(MaximumArchiveEntriesToInspect)
+                     .Where(candidate => IsArchivePath(candidate.Name))
                      .OrderBy(candidate => candidate.FullName, Comparer<string>.Create(CompareNaturally)))
         {
             try
@@ -751,16 +1091,46 @@ public sealed class ThumbnailService
         return null;
     }
 
+    private static bool IsImagePath(string path)
+    {
+        var extension = Path.GetExtension(path.AsSpan());
+        return extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".webp", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".bmp", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".gif", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsArchivePath(string path)
+    {
+        var extension = Path.GetExtension(path.AsSpan());
+        return extension.Equals(".zip", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".cbz", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int CompareRepresentativeEntries(ZipArchiveEntry left, ZipArchiveEntry right)
+    {
+        var priorityComparison = GetRepresentativeImagePriority(left.Name)
+            .CompareTo(GetRepresentativeImagePriority(right.Name));
+        return priorityComparison != 0
+            ? priorityComparison
+            : CompareNaturally(left.FullName, right.FullName);
+    }
+
     private static int GetRepresentativeImagePriority(string name) =>
         string.Equals(name, ZipPlaCoverFileName, StringComparison.OrdinalIgnoreCase) ? 0 : 1;
 
-    private static int CompareNaturally(string? left, string? right)
+    private static int CompareNaturally(string? left, string? right) =>
+        CompareNaturally(left, right, 0);
+
+    private static int CompareNaturally(string? left, string? right, int startIndex)
     {
         left ??= string.Empty;
         right ??= string.Empty;
 
-        var leftIndex = 0;
-        var rightIndex = 0;
+        var leftIndex = Math.Min(Math.Max(startIndex, 0), left.Length);
+        var rightIndex = Math.Min(Math.Max(startIndex, 0), right.Length);
         while (leftIndex < left.Length && rightIndex < right.Length)
         {
             var leftIsDigit = char.IsDigit(left[leftIndex]);
@@ -791,14 +1161,44 @@ public sealed class ThumbnailService
         return left.Length.CompareTo(right.Length);
     }
 
-    private string GetCachePath(string sourcePath) =>
-        GetCachePath(sourcePath, GetSourceStamp(sourcePath), ThumbnailCropAdjustment.Default.CacheKey);
-
     private string GetCachePath(string sourcePath, string sourceStamp, string cropVariant)
     {
-        var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sourcePath + "|" + sourceStamp + "|" + ThumbnailCacheVersion + "|" + cropVariant)))
-            .ToLowerInvariant();
+        var key = ComputeCacheKey(sourcePath, sourceStamp, cropVariant);
         return Path.Combine(CacheRoot, key[..2], key + ".jpg");
+    }
+
+    private static string ComputeCacheKey(string sourcePath, string sourceStamp, string cropVariant)
+    {
+        var characterCount = sourcePath.Length +
+                             sourceStamp.Length +
+                             ThumbnailCacheVersion.Length +
+                             cropVariant.Length +
+                             3;
+        var maximumByteCount = Encoding.UTF8.GetMaxByteCount(characterCount);
+        byte[]? rentedBuffer = null;
+        Span<byte> utf8Buffer = maximumByteCount <= 1_024
+            ? stackalloc byte[maximumByteCount]
+            : (rentedBuffer = ArrayPool<byte>.Shared.Rent(maximumByteCount));
+        try
+        {
+            var bytesWritten = Encoding.UTF8.GetBytes(sourcePath.AsSpan(), utf8Buffer);
+            utf8Buffer[bytesWritten++] = (byte)'|';
+            bytesWritten += Encoding.UTF8.GetBytes(sourceStamp.AsSpan(), utf8Buffer[bytesWritten..]);
+            utf8Buffer[bytesWritten++] = (byte)'|';
+            bytesWritten += Encoding.UTF8.GetBytes(ThumbnailCacheVersion.AsSpan(), utf8Buffer[bytesWritten..]);
+            utf8Buffer[bytesWritten++] = (byte)'|';
+            bytesWritten += Encoding.UTF8.GetBytes(cropVariant.AsSpan(), utf8Buffer[bytesWritten..]);
+            Span<byte> hash = stackalloc byte[32];
+            SHA256.HashData(utf8Buffer[..bytesWritten], hash);
+            return Convert.ToHexStringLower(hash);
+        }
+        finally
+        {
+            if (rentedBuffer is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rentedBuffer);
+            }
+        }
     }
 
     private static ThumbnailCropAdjustment NormalizeCropAdjustment(ThumbnailCropAdjustmentDto? adjustment) =>
@@ -816,45 +1216,114 @@ public sealed class ThumbnailService
     {
         public static readonly ThumbnailCropAdjustment Default = new(0, 0, 100);
 
-        public string CacheKey => $"{HorizontalOffsetPercent:0.##}:{VerticalOffsetPercent:0.##}:{ScalePercent:0.##}";
+        public string CacheKey { get; } =
+            $"{HorizontalOffsetPercent:0.##}:{VerticalOffsetPercent:0.##}:{ScalePercent:0.##}";
     }
 
-    private static string GetSourceStamp(string sourcePath)
+    private static bool TryGetSourceStamp(string sourcePath, out string sourceStamp)
     {
         try
         {
-            if (File.Exists(sourcePath))
+            var fileInfo = new FileInfo(sourcePath);
+            if (fileInfo.Exists)
             {
-                var info = new FileInfo(sourcePath);
-                return $"{info.Length}:{info.LastWriteTimeUtc.Ticks}";
+                sourceStamp = $"{fileInfo.Length}:{fileInfo.LastWriteTimeUtc.Ticks}";
+                return true;
             }
 
-            if (Directory.Exists(sourcePath))
+            var directoryInfo = new DirectoryInfo(sourcePath);
+            if (directoryInfo.Exists)
             {
-                return Directory.GetLastWriteTimeUtc(sourcePath).Ticks.ToString();
+                sourceStamp = directoryInfo.LastWriteTimeUtc.Ticks.ToString();
+                return true;
             }
         }
         catch
         {
-            return "unknown";
+            sourceStamp = string.Empty;
+            return false;
         }
 
-        return "missing";
+        sourceStamp = string.Empty;
+        return false;
     }
 
-    private string ToCacheUri(string cachePath)
+    private static bool TryGetCacheRevision(string cachePath, out long revision)
     {
-        var relative = Path.GetRelativePath(CacheRoot, cachePath);
-        var segments = relative.Replace('\\', '/')
-            .Split('/', StringSplitOptions.RemoveEmptyEntries)
-            .Select(Uri.EscapeDataString);
+        try
+        {
+            var cacheFile = new FileInfo(cachePath);
+            if (cacheFile.Exists)
+            {
+                revision = cacheFile.LastWriteTimeUtc.Ticks;
+                return true;
+            }
+        }
+        catch
+        {
+            // Match File.Exists semantics for inaccessible or transient cache entries.
+        }
 
-        var revision = File.Exists(cachePath) ? File.GetLastWriteTimeUtc(cachePath).Ticks : 0;
-        return "https://gallerybrowser-cache.local/" + string.Join("/", segments) + "?v=" + revision;
+        revision = 0;
+        return false;
+    }
+
+    private string ToCacheUri(string cachePath, long? knownRevision = null)
+    {
+        lock (_cacheEntryLock)
+        {
+            if (_knownCacheUris.TryGetValue(cachePath, out var cached))
+            {
+                return cached.Uri;
+            }
+        }
+
+        var key = Path.GetFileNameWithoutExtension(cachePath);
+        var resourcePath = key.Length >= 2
+            ? key[..2] + "/" + key + ".jpg"
+            : Uri.EscapeDataString(Path.GetFileName(cachePath));
+        var revision = knownRevision ??
+                       (TryGetCacheRevision(cachePath, out var detectedRevision) ? detectedRevision : 0);
+        var uri = "https://gallerybrowser-cache.local/" + resourcePath + "?v=" + revision;
+        lock (_cacheEntryLock)
+        {
+            var sequence = ++_knownCacheUriSequence;
+            _knownCacheUris[cachePath] = (uri, sequence);
+            _knownCacheUriOrder.Enqueue((cachePath, sequence));
+            while (_knownCacheUris.Count > MaximumKnownCacheUris &&
+                   _knownCacheUriOrder.TryDequeue(out var oldest))
+            {
+                if (_knownCacheUris.TryGetValue(oldest.Path, out var current) &&
+                    current.Sequence == oldest.Sequence)
+                {
+                    _knownCacheUris.Remove(oldest.Path);
+                }
+            }
+            if (_knownCacheUriOrder.Count > MaximumKnownCacheUris * 2)
+            {
+                _knownCacheUriOrder.Clear();
+                foreach (var (path, entry) in _knownCacheUris)
+                {
+                    _knownCacheUriOrder.Enqueue((path, entry.Sequence));
+                }
+            }
+        }
+        return uri;
+    }
+
+    private void ForgetCacheUri(string cachePath)
+    {
+        lock (_cacheEntryLock)
+        {
+            _knownCacheUris.Remove(cachePath);
+        }
     }
 
     private sealed class ThumbnailWork
     {
+        private int _priority;
+        private int _started;
+
         public ThumbnailWork(Func<bool> generation)
         {
             Generation = generation;
@@ -863,7 +1332,32 @@ public sealed class ThumbnailService
 
         public Func<bool> Generation { get; }
         public TaskCompletionSource<bool> Completion { get; }
+        public bool HasStarted => Volatile.Read(ref _started) != 0;
+
+        public bool TryRaisePriority(int priority)
+        {
+            var current = Volatile.Read(ref _priority);
+            while (priority > current)
+            {
+                var previous = Interlocked.CompareExchange(ref _priority, priority, current);
+                if (previous == current)
+                {
+                    return true;
+                }
+                current = previous;
+            }
+            return false;
+        }
+
+        public bool TryStart() => Interlocked.CompareExchange(ref _started, 1, 0) == 0;
     }
+
+    private readonly record struct ThumbnailCacheTarget(
+        string Path,
+        string PrimaryChildPrefix,
+        string AlternateChildPrefix);
+
+    private sealed record ThumbnailInflightRequest(ThumbnailWork Work, Task<string?> Task);
 }
 
 public sealed record ThumbnailCacheMaintenanceResult(int StaleEntriesRemoved, int OrphanFilesRemoved);

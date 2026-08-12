@@ -325,19 +325,22 @@ internal sealed class GoogleCalendarSyncService
         HttpMethod method,
         CancellationToken cancellationToken)
     {
-        if (!DateOnly.TryParse(calendarEvent.RenewalOn, CultureInfo.InvariantCulture, DateTimeStyles.None, out var renewalDate))
+        if (!DateOnly.TryParse(calendarEvent.StartOn, CultureInfo.InvariantCulture, DateTimeStyles.None, out var startDate))
         {
-            throw new InvalidDataException($"サブスク更新日を解釈できません: {calendarEvent.RenewalOn}");
+            throw new InvalidDataException($"予定の開始日を解釈できません: {calendarEvent.StartOn}");
         }
-        var platformAndPlan = string.Join(" / ", new[] { calendarEvent.Platform, calendarEvent.Plan }
-            .Where(value => !string.IsNullOrWhiteSpace(value)));
-        var summary = string.IsNullOrWhiteSpace(platformAndPlan)
-            ? $"サブスク更新: {calendarEvent.DisplayName}"
-            : $"サブスク更新: {calendarEvent.DisplayName} / {platformAndPlan}";
-        if (calendarEvent.EndingPlanned)
+        var endDate = DateOnly.TryParse(
+            calendarEvent.EndOn,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out var parsedEndDate)
+            ? parsedEndDate
+            : startDate;
+        if (endDate < startDate)
         {
-            summary = $"[終了予定] {summary}";
+            endDate = startDate;
         }
+        var summary = CreateCalendarEventSummary(calendarEvent);
         var amount = calendarEvent.Amount > 0
             ? $"{calendarEvent.Amount:N0} {calendarEvent.Currency}".Trim()
             : "-";
@@ -351,15 +354,16 @@ internal sealed class GoogleCalendarSyncService
                 $"Plan: {calendarEvent.Plan}",
                 $"Amount: {amount}",
                 $"Ending planned: {(calendarEvent.EndingPlanned ? "Yes" : "No")}",
+                $"Type: {calendarEvent.EventType}",
+                $"Category: {calendarEvent.TaskCategory}",
+                $"Detail: {calendarEvent.Detail}",
                 "Managed by GalleryBrowser"
-            }),
-            start = new { date = renewalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) },
-            end = new { date = renewalDate.AddDays(1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) },
+            }.Where(value => !value.EndsWith(": ", StringComparison.Ordinal))),
+            start = new { date = startDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) },
+            end = new { date = endDate.AddDays(1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) },
             transparency = "transparent",
             visibility = "private",
-            reminders = calendarEvent.Reminder
-                ? new { useDefault = true }
-                : new { useDefault = false },
+            reminders = new { useDefault = false },
             extendedProperties = new
             {
                 @private = new Dictionary<string, string>
@@ -377,6 +381,28 @@ internal sealed class GoogleCalendarSyncService
         using var content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json");
         using var response = await SendAuthorizedAsync(accessToken, method, uri, content, cancellationToken);
         await EnsureSuccessAsync(response, eventId is null ? "Google Calendar予定の作成" : "Google Calendar予定の更新", cancellationToken);
+    }
+
+    private static string CreateCalendarEventSummary(CalendarSubscriptionEventDto calendarEvent)
+    {
+        if (string.Equals(calendarEvent.EventType, "task", StringComparison.OrdinalIgnoreCase))
+        {
+            var category = string.IsNullOrWhiteSpace(calendarEvent.TaskCategory)
+                ? string.Empty
+                : $"[{calendarEvent.TaskCategory}] ";
+            return $"{category}{calendarEvent.Title} / {calendarEvent.DisplayName}";
+        }
+        if (string.Equals(calendarEvent.EventType, "creator-check", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{calendarEvent.Title}: {calendarEvent.DisplayName}";
+        }
+
+        var platformAndPlan = string.Join(" / ", new[] { calendarEvent.Platform, calendarEvent.Plan }
+            .Where(value => !string.IsNullOrWhiteSpace(value)));
+        var summary = string.IsNullOrWhiteSpace(platformAndPlan)
+            ? $"サブスク更新: {calendarEvent.DisplayName}"
+            : $"サブスク更新: {calendarEvent.DisplayName} / {platformAndPlan}";
+        return calendarEvent.EndingPlanned ? $"[終了予定] {summary}" : summary;
     }
 
     private static async Task DeleteEventAsync(
@@ -473,7 +499,13 @@ internal sealed class GoogleCalendarSyncService
             calendarEvent.Amount.ToString("R", CultureInfo.InvariantCulture),
             calendarEvent.RenewalOn,
             calendarEvent.EndingPlanned ? "1" : "0",
-            calendarEvent.Reminder ? "1" : "0"
+            calendarEvent.EventType,
+            calendarEvent.Severity,
+            calendarEvent.StartOn,
+            calendarEvent.EndOn,
+            calendarEvent.Title,
+            calendarEvent.Detail,
+            calendarEvent.TaskCategory
         });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }

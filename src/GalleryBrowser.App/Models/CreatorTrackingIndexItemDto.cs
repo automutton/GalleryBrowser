@@ -8,4 +8,6 @@ public sealed record CreatorTrackingIndexItemDto(
     string LastCheckedOn,
     int SinceLastCheckDays,
     bool FollowWarnFlg,
-    bool FollowAlertFlg);
+    bool FollowAlertFlg,
+    bool IsNewAfterScheduledScan,
+    bool Wishlist);

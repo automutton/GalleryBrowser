@@ -5,7 +5,7 @@ namespace GalleryBrowser.Services;
 internal sealed record ScheduledNotificationSnapshot(
     DateTimeOffset RefreshedAt,
     IReadOnlyList<CreatorTrackingIndexItemDto> Creators,
-    IReadOnlyList<CalendarSubscriptionEventDto> Subscriptions)
+    IReadOnlyList<CalendarSubscriptionEventDto> Events)
 {
     public static ScheduledNotificationSnapshot Load(
         GalleryDatabase database,

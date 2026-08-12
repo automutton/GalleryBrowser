@@ -102,6 +102,7 @@ public sealed record DiscordNotificationSettingsDto(
     bool NotifyCreatorFollowAlert,
     bool NotifySubscriptionEnding,
     bool NotifySubscriptionReminder,
+    bool NotifyCreatorTasks,
     bool NotifyScheduledScanStarted,
     bool NotifyScheduledScanCompleted);
 
@@ -117,6 +118,7 @@ public sealed record LineNotificationSettingsDto(
     bool NotifyCreatorFollowAlert,
     bool NotifySubscriptionEnding,
     bool NotifySubscriptionReminder,
+    bool NotifyCreatorTasks,
     bool NotifyScheduledScanStarted,
     bool NotifyScheduledScanCompleted);
 

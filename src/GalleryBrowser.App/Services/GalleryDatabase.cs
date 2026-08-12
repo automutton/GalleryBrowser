@@ -1,6 +1,8 @@
 using GalleryBrowser.Models;
 using Microsoft.Data.Sqlite;
 using SQLitePCL;
+using System.Buffers;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -26,11 +28,12 @@ public sealed class GalleryDatabase
     private const string LegacyNoCharacterFilterValue = "No Character";
     private const string DefaultCreatorTrackingDisplayCurrency = "JPY";
     private const int DefaultCreatorTrackingCompositionLabelLimit = 5;
-    private const string CreatorSummaryCacheVersion = "v4";
-    private const string UserMetricsCacheVersion = "v3";
-    private const string CreatorTrackingDashboardCacheVersion = "v2";
+    private const string CreatorSummaryCacheVersion = "v5";
+    private const string UserMetricsCacheVersion = "v4";
+    private const string CreatorTrackingDashboardCacheVersion = "v3";
     private const string GalleryWorksCacheVersion = "v2";
     private const string GalleryFiltersCacheVersion = "v1";
+    private static readonly TimeSpan ExternalDataStampCacheDuration = TimeSpan.FromMilliseconds(250);
     private const string DefaultGidTargetExtensions = "zip;rar;7z;cbz;cbr";
     private const int DefaultGidDigitCount = 6;
     private const int MinimumGidDigitCount = 4;
@@ -44,8 +47,23 @@ public sealed class GalleryDatabase
     private static readonly string[] AvGalleryFilters = ["rating", "creator", "character", "tag", "core_tags"];
     private static readonly string[] CreatorTrackingMetricKeys =
         ["situation", "consistency", "continuity", "quality", "texture", "volume"];
+    private static readonly string[] DefaultCreatorTrackingSummaryCardIds =
+        ["totalFiles", "totalImages", "totalRating", "trackingDays", "totalSpend", "recentSpend"];
+    private static readonly HashSet<string> CreatorTrackingSummaryCardIdSet = new(
+        [
+            .. DefaultCreatorTrackingSummaryCardIds,
+            "videoFiles",
+            "totalDuration",
+            "averageDuration",
+            "averageImages",
+            "ratedFiles",
+            "maxRating",
+            "lastAdded"
+        ],
+        StringComparer.OrdinalIgnoreCase);
     private static readonly CreatorTrackingActivityPlaceSettingDto[] DefaultCreatorTrackingActivityPlaces = [];
     private static readonly string[] DefaultCreatorTrackingFollowPolicyOptions = [];
+    private static readonly string[] DefaultCreatorTrackingTaskCategories = [];
     private static readonly HttpClient CreatorTrackingExchangeRateHttpClient = CreateCreatorTrackingExchangeRateHttpClient();
     private sealed record CreatorTrackingCharge(DateOnly Date, double Amount, string Currency);
     private sealed record CreatorTrackingSpendSummary(double Total, double RecentThreeMonthTotal, bool HasMissingRates);
@@ -112,13 +130,25 @@ public sealed class GalleryDatabase
     private readonly object _gidReservationLock = new();
     private readonly object _creatorSummaryCacheLock = new();
     private readonly object _derivedDataCacheLock = new();
+    private readonly object _externalDataStampLock = new();
+    private readonly object _galleryConfigurationCacheLock = new();
     private string? _creatorSummaryMemorySignature;
     private GalleryCreatorSummarySnapshotDto? _creatorSummaryMemorySnapshot;
+    private string? _externalDataStampPath;
+    private string? _externalDataStamp;
+    private long _externalDataStampRefreshedAt;
+    private IReadOnlyList<GalleryScanTargetDto>? _galleryScanTargetsMemoryCache;
+    private IReadOnlyDictionary<string, IReadOnlyList<GalleryScanTargetDto>>? _galleryScanTargetsByCategoryMemoryCache;
+    private IReadOnlyList<GalleryScanSettingsDto>? _galleryScanSettingsMemoryCache;
+    private IReadOnlyDictionary<string, GalleryScanSettingsDto>? _galleryScanSettingsByCategoryMemoryCache;
+    private Dictionary<string, GalleryQueryScope>? _galleryQueryScopesByCategoryMemoryCache;
     private readonly Dictionary<string, DerivedDataMemoryCacheEntry> _derivedDataMemoryCache = new(StringComparer.Ordinal);
     private readonly MemoryLruCache<GalleryWorksPageDto> _galleryWorksCache = new(32);
+    private readonly MemoryLruCache<int> _galleryWorkCountCache = new(64);
     private readonly MemoryLruCache<GalleryWorkFiltersDto> _galleryFiltersCache = new(64);
 
     private sealed record DerivedDataMemoryCacheEntry(string SourceSignature, object Value);
+    private sealed record GalleryQueryScope(string[] TargetPaths, string[] SupportedExtensions);
 
     private sealed class MemoryLruCache<T>(int capacity)
     {
@@ -186,10 +216,37 @@ public sealed class GalleryDatabase
         public int FileCount { get; set; }
         public int ZipFileCount { get; set; }
         public int TotalImageCount { get; set; }
+        public int VideoFileCount { get; set; }
+        public long TotalDurationSeconds { get; set; }
         public int RatedFileCount { get; set; }
         public int MaxRating { get; set; }
         public string LastAccessTime { get; set; } = string.Empty;
         public string LastUpdatedTime { get; set; } = string.Empty;
+    }
+
+    private readonly record struct GalleryCreatorSummaryKey(
+        string Category,
+        string Creator,
+        string CreatorFolder);
+
+    private sealed class GalleryCreatorSummaryKeyComparer : IEqualityComparer<GalleryCreatorSummaryKey>
+    {
+        public static readonly GalleryCreatorSummaryKeyComparer Instance = new();
+
+        public bool Equals(GalleryCreatorSummaryKey left, GalleryCreatorSummaryKey right)
+        {
+            return StringComparer.OrdinalIgnoreCase.Equals(left.Category, right.Category) &&
+                   StringComparer.OrdinalIgnoreCase.Equals(left.Creator, right.Creator) &&
+                   StringComparer.OrdinalIgnoreCase.Equals(left.CreatorFolder, right.CreatorFolder);
+        }
+
+        public int GetHashCode(GalleryCreatorSummaryKey key)
+        {
+            return HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(key.Category),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(key.Creator),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(key.CreatorFolder));
+        }
     }
 
     private sealed class UserMetricsEntityAccumulator(string label)
@@ -292,6 +349,20 @@ public sealed class GalleryDatabase
 
             CREATE INDEX IF NOT EXISTS idx_file_metadata_romanized_name
                 ON file_metadata (romanized_name);
+
+            CREATE TABLE IF NOT EXISTS text_romanization_cache (
+                source_text TEXT PRIMARY KEY,
+                romanized_text TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS archive_page_counts (
+                path TEXT PRIMARY KEY COLLATE NOCASE,
+                file_length INTEGER NOT NULL,
+                modified_ticks INTEGER NOT NULL,
+                page_count INTEGER NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
 
             CREATE TABLE IF NOT EXISTS explorer_bookmarks (
                 path TEXT PRIMARY KEY,
@@ -469,6 +540,7 @@ public sealed class GalleryDatabase
                 google_search_url_template TEXT NOT NULL DEFAULT 'https://www.google.com/search?q={query}',
                 brave_api_key TEXT NOT NULL DEFAULT '',
                 gemini_api_key TEXT NOT NULL DEFAULT '',
+                yahoo_client_id TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -530,12 +602,16 @@ public sealed class GalleryDatabase
                 evaluation_memo TEXT NOT NULL DEFAULT '',
                 subscription_history_json TEXT NOT NULL DEFAULT '[]',
                 purchase_history_json TEXT NOT NULL DEFAULT '[]',
+                tasks_json TEXT NOT NULL DEFAULT '[]',
                 monthly_support_amount REAL NOT NULL DEFAULT 0,
                 lifetime_spend REAL NOT NULL DEFAULT 0,
                 currency TEXT NOT NULL DEFAULT 'JPY',
                 support_started_on TEXT NOT NULL DEFAULT '',
                 support_ended_on TEXT NOT NULL DEFAULT '',
                 support_memo TEXT NOT NULL DEFAULT '',
+                is_new_after_scheduled_scan INTEGER NOT NULL DEFAULT 0 CHECK (is_new_after_scheduled_scan IN (0, 1)),
+                new_after_scheduled_scan_at TEXT NOT NULL DEFAULT '',
+                wishlist_flg INTEGER NOT NULL DEFAULT 0 CHECK (wishlist_flg IN (0, 1)),
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -560,6 +636,18 @@ public sealed class GalleryDatabase
                 PRIMARY KEY (creator, category, snapshot_date)
             );
 
+            CREATE TABLE IF NOT EXISTS creator_tracking_category_profiles (
+                creator TEXT NOT NULL COLLATE NOCASE,
+                category TEXT NOT NULL COLLATE NOCASE,
+                evaluation_metrics_json TEXT NOT NULL DEFAULT '{}',
+                personal_rating REAL NOT NULL DEFAULT 0,
+                evaluation_memo TEXT NOT NULL DEFAULT '',
+                summary_card_ids_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (creator, category)
+            );
+
             CREATE TABLE IF NOT EXISTS user_metrics_regression_results (
                 category TEXT PRIMARY KEY COLLATE NOCASE,
                 generated_at TEXT NOT NULL,
@@ -571,13 +659,16 @@ public sealed class GalleryDatabase
                 activity_places_json TEXT NOT NULL DEFAULT '[]',
                 composition_label_limit INTEGER NOT NULL DEFAULT 5,
                 follow_policy_options_json TEXT NOT NULL DEFAULT '[]',
+                task_categories_json TEXT NOT NULL DEFAULT '[]',
                 metric_definitions_json TEXT NULL,
+                metric_definitions_by_category_json TEXT NOT NULL DEFAULT '[]',
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             """;
         command.ExecuteNonQuery();
         EnsureExternalAppRuleColumns(connection);
         MigrateExternalAppRulesToZipPlaStyle(connection);
+        EnsureSearchEngineSettingsColumns(connection);
         EnsureExplorerBookmarkColumns(connection);
         EnsureViewBookmarkColumns(connection);
         EnsureStickyNoteColumns(connection);
@@ -701,12 +792,16 @@ public sealed class GalleryDatabase
                     evaluation_memo TEXT NOT NULL DEFAULT '',
                     subscription_history_json TEXT NOT NULL DEFAULT '[]',
                     purchase_history_json TEXT NOT NULL DEFAULT '[]',
+                    tasks_json TEXT NOT NULL DEFAULT '[]',
                     monthly_support_amount REAL NOT NULL DEFAULT 0,
                     lifetime_spend REAL NOT NULL DEFAULT 0,
                     currency TEXT NOT NULL DEFAULT 'JPY',
                     support_started_on TEXT NOT NULL DEFAULT '',
                     support_ended_on TEXT NOT NULL DEFAULT '',
                     support_memo TEXT NOT NULL DEFAULT '',
+                    is_new_after_scheduled_scan INTEGER NOT NULL DEFAULT 0 CHECK (is_new_after_scheduled_scan IN (0, 1)),
+                    new_after_scheduled_scan_at TEXT NOT NULL DEFAULT '',
+                    wishlist_flg INTEGER NOT NULL DEFAULT 0 CHECK (wishlist_flg IN (0, 1)),
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -731,6 +826,18 @@ public sealed class GalleryDatabase
                     PRIMARY KEY (creator, category, snapshot_date)
                 );
 
+                CREATE TABLE IF NOT EXISTS creator_tracking_category_profiles (
+                    creator TEXT NOT NULL COLLATE NOCASE,
+                    category TEXT NOT NULL COLLATE NOCASE,
+                    evaluation_metrics_json TEXT NOT NULL DEFAULT '{}',
+                    personal_rating REAL NOT NULL DEFAULT 0,
+                    evaluation_memo TEXT NOT NULL DEFAULT '',
+                    summary_card_ids_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (creator, category)
+                );
+
                 CREATE TABLE IF NOT EXISTS gid_registry (
                     gid TEXT PRIMARY KEY,
                     source_path TEXT NOT NULL DEFAULT '',
@@ -746,6 +853,14 @@ public sealed class GalleryDatabase
                     attempted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     delivered_at TEXT NULL,
                     PRIMARY KEY (channel, event_key)
+                );
+
+                CREATE TABLE IF NOT EXISTS creator_blacklist (
+                    creator TEXT PRIMARY KEY COLLATE NOCASE,
+                    reason TEXT NOT NULL DEFAULT '',
+                    registered_on TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 """;
             command.ExecuteNonQuery();
@@ -1002,6 +1117,19 @@ public sealed class GalleryDatabase
         return OpenExternalReadWriteConnection(ExternalGalleryDatabasePath);
     }
 
+    private static void EnsureSearchEngineSettingsColumns(SqliteConnection connection)
+    {
+        var columns = ReadColumns(connection, "search_engine_settings")
+            .Select(column => column.NormalizedName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        EnsureTableColumn(
+            connection,
+            columns,
+            "yahooclientid",
+            "search_engine_settings",
+            "yahoo_client_id TEXT NOT NULL DEFAULT ''");
+    }
+
     private static void EnsureViewBookmarkColumns(SqliteConnection connection)
     {
         var columns = ReadColumns(connection, "view_bookmarks")
@@ -1091,10 +1219,38 @@ public sealed class GalleryDatabase
             addColumn.ExecuteNonQuery();
         }
 
+        if (!columns.Contains("tasksjson"))
+        {
+            using var addColumn = connection.CreateCommand();
+            addColumn.CommandText = "ALTER TABLE creator_tracking ADD COLUMN tasks_json TEXT NOT NULL DEFAULT '[]';";
+            addColumn.ExecuteNonQuery();
+        }
+
         if (!columns.Contains("storagelocationsjson"))
         {
             using var addColumn = connection.CreateCommand();
             addColumn.CommandText = "ALTER TABLE creator_tracking ADD COLUMN storage_locations_json TEXT NOT NULL DEFAULT '[]';";
+            addColumn.ExecuteNonQuery();
+        }
+
+        if (!columns.Contains("isnewafterscheduledscan"))
+        {
+            using var addColumn = connection.CreateCommand();
+            addColumn.CommandText = "ALTER TABLE creator_tracking ADD COLUMN is_new_after_scheduled_scan INTEGER NOT NULL DEFAULT 0;";
+            addColumn.ExecuteNonQuery();
+        }
+
+        if (!columns.Contains("newafterscheduledscanat"))
+        {
+            using var addColumn = connection.CreateCommand();
+            addColumn.CommandText = "ALTER TABLE creator_tracking ADD COLUMN new_after_scheduled_scan_at TEXT NOT NULL DEFAULT '';";
+            addColumn.ExecuteNonQuery();
+        }
+
+        if (!columns.Contains("wishlistflg"))
+        {
+            using var addColumn = connection.CreateCommand();
+            addColumn.CommandText = "ALTER TABLE creator_tracking ADD COLUMN wishlist_flg INTEGER NOT NULL DEFAULT 0;";
             addColumn.ExecuteNonQuery();
         }
 
@@ -1104,6 +1260,150 @@ public sealed class GalleryDatabase
         }
         RemoveCreatorTrackingPrioritySiteFlags(connection);
         MigrateCreatorTrackingStorageLocations(connection);
+        EnsureCreatorTrackingCategoryProfiles(connection);
+    }
+
+    private static void EnsureCreatorTrackingCategoryProfiles(SqliteConnection connection)
+    {
+        using (var create = connection.CreateCommand())
+        {
+            create.CommandText = """
+                CREATE TABLE IF NOT EXISTS creator_tracking_category_profiles (
+                    creator TEXT NOT NULL COLLATE NOCASE,
+                    category TEXT NOT NULL COLLATE NOCASE,
+                    evaluation_metrics_json TEXT NOT NULL DEFAULT '{}',
+                    personal_rating REAL NOT NULL DEFAULT 0,
+                    evaluation_memo TEXT NOT NULL DEFAULT '',
+                    summary_card_ids_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (creator, category)
+                );
+                CREATE INDEX IF NOT EXISTS idx_creator_tracking_category_profiles_category
+                    ON creator_tracking_category_profiles(category, creator);
+                """;
+            create.ExecuteNonQuery();
+        }
+
+        if (!DatabaseTableExists(connection, "main", "items"))
+        {
+            return;
+        }
+
+        var legacyRows = new List<(
+            string Creator,
+            string MetricsJson,
+            double PersonalRating,
+            string EvaluationMemo)>();
+        using (var selectLegacy = connection.CreateCommand())
+        {
+            selectLegacy.CommandText = """
+                SELECT creator, evaluation_metrics_json, personal_rating, evaluation_memo
+                FROM creator_tracking
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM creator_tracking_category_profiles AS profile
+                    WHERE profile.creator = creator_tracking.creator COLLATE NOCASE
+                );
+                """;
+            using var reader = selectLegacy.ExecuteReader();
+            while (reader.Read())
+            {
+                legacyRows.Add((
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetDouble(2),
+                    reader.GetString(3)));
+            }
+        }
+        if (legacyRows.Count == 0)
+        {
+            return;
+        }
+
+        var categoriesByCreator = new Dictionary<string, List<(string Category, int Count)>>(
+            StringComparer.OrdinalIgnoreCase);
+        using (var selectCategories = connection.CreateCommand())
+        {
+            selectCategories.CommandText = """
+                WITH category_counts AS (
+                    SELECT creator, category, COUNT(*) AS item_count
+                    FROM items
+                    WHERE COALESCE(archived_flg, 0) = 0
+                      AND TRIM(creator) <> ''
+                      AND TRIM(category) <> ''
+                    GROUP BY creator, category
+                    UNION ALL
+                    SELECT snapshot.creator, snapshot.category, 0
+                    FROM creator_tracking_archive_snapshots AS snapshot
+                    WHERE TRIM(snapshot.creator) <> ''
+                      AND TRIM(snapshot.category) <> ''
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM items AS item
+                          WHERE item.creator = snapshot.creator COLLATE NOCASE
+                            AND item.category = snapshot.category COLLATE NOCASE
+                            AND COALESCE(item.archived_flg, 0) = 0
+                      )
+                    GROUP BY snapshot.creator, snapshot.category
+                )
+                SELECT creator, category, SUM(item_count) AS item_count
+                FROM category_counts
+                GROUP BY creator, category
+                ORDER BY creator COLLATE NOCASE, item_count DESC, category COLLATE NOCASE;
+                """;
+            using var reader = selectCategories.ExecuteReader();
+            while (reader.Read())
+            {
+                var creator = reader.GetString(0).Trim();
+                var category = reader.GetString(1).Trim();
+                if (string.IsNullOrWhiteSpace(creator) || string.IsNullOrWhiteSpace(category))
+                {
+                    continue;
+                }
+                if (!categoriesByCreator.TryGetValue(creator, out var categories))
+                {
+                    categories = [];
+                    categoriesByCreator[creator] = categories;
+                }
+                categories.Add((category, reader.GetInt32(2)));
+            }
+        }
+
+        var defaultCardsJson = JsonSerializer.Serialize(DefaultCreatorTrackingSummaryCardIds, JsonOptions);
+        var defaultMetricsJson = JsonSerializer.Serialize(CreateDefaultCreatorTrackingMetrics(), JsonOptions);
+        using var transaction = connection.BeginTransaction();
+        foreach (var legacy in legacyRows)
+        {
+            if (!categoriesByCreator.TryGetValue(legacy.Creator, out var categories) || categories.Count == 0)
+            {
+                continue;
+            }
+
+            for (var index = 0; index < categories.Count; index++)
+            {
+                using var insert = connection.CreateCommand();
+                insert.Transaction = transaction;
+                insert.CommandText = """
+                    INSERT OR IGNORE INTO creator_tracking_category_profiles (
+                        creator,
+                        category,
+                        evaluation_metrics_json,
+                        personal_rating,
+                        evaluation_memo,
+                        summary_card_ids_json)
+                    VALUES ($creator, $category, $metrics, $rating, $memo, $cards);
+                    """;
+                insert.Parameters.AddWithValue("$creator", legacy.Creator);
+                insert.Parameters.AddWithValue("$category", categories[index].Category);
+                insert.Parameters.AddWithValue("$metrics", index == 0 ? legacy.MetricsJson : defaultMetricsJson);
+                insert.Parameters.AddWithValue("$rating", index == 0 ? legacy.PersonalRating : 1.25d);
+                insert.Parameters.AddWithValue("$memo", index == 0 ? legacy.EvaluationMemo : string.Empty);
+                insert.Parameters.AddWithValue("$cards", defaultCardsJson);
+                insert.ExecuteNonQuery();
+            }
+        }
+        transaction.Commit();
     }
 
     private static void MigrateCreatorTrackingStorageLocations(SqliteConnection connection)
@@ -1270,6 +1570,18 @@ public sealed class GalleryDatabase
         {
             using var addColumn = connection.CreateCommand();
             addColumn.CommandText = "ALTER TABLE creator_tracking_settings ADD COLUMN metric_definitions_json TEXT NULL;";
+            addColumn.ExecuteNonQuery();
+        }
+        if (!columns.Contains("taskcategoriesjson"))
+        {
+            using var addColumn = connection.CreateCommand();
+            addColumn.CommandText = "ALTER TABLE creator_tracking_settings ADD COLUMN task_categories_json TEXT NOT NULL DEFAULT '[]';";
+            addColumn.ExecuteNonQuery();
+        }
+        if (!columns.Contains("metricdefinitionsbycategoryjson"))
+        {
+            using var addColumn = connection.CreateCommand();
+            addColumn.CommandText = "ALTER TABLE creator_tracking_settings ADD COLUMN metric_definitions_by_category_json TEXT NOT NULL DEFAULT '[]';";
             addColumn.ExecuteNonQuery();
         }
     }
@@ -2051,6 +2363,22 @@ public sealed class GalleryDatabase
         }
 
         return entries;
+    }
+
+    public IReadOnlyList<string> ListThumbnailCachePaths()
+    {
+        EnsureCreated();
+
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT cache_path FROM thumbnail_cache_entries;";
+        using var reader = command.ExecuteReader();
+        var paths = new List<string>();
+        while (reader.Read())
+        {
+            paths.Add(reader.GetString(0));
+        }
+        return paths;
     }
 
     public void UpsertThumbnailCacheEntry(string cachePath, string sourcePath, string sourceStamp)
@@ -2920,8 +3248,46 @@ public sealed class GalleryDatabase
             return;
         }
 
-        EnsureCreated();
         using var connection = OpenConnection();
+        var existingEntries = new Dictionary<string, (string FileName, string RomanizedName)>(StringComparer.Ordinal);
+        const int lookupBatchSize = 400;
+        for (var offset = 0; offset < entries.Length; offset += lookupBatchSize)
+        {
+            var count = Math.Min(lookupBatchSize, entries.Length - offset);
+            using var lookup = connection.CreateCommand();
+            var placeholders = new string[count];
+            for (var index = 0; index < count; index++)
+            {
+                var parameterName = $"$path{index}";
+                placeholders[index] = parameterName;
+                lookup.Parameters.AddWithValue(parameterName, entries[offset + index].Path);
+            }
+
+            lookup.CommandText = $"""
+                SELECT path, file_name, romanized_name
+                FROM file_metadata
+                WHERE path IN ({string.Join(", ", placeholders)});
+                """;
+            using var reader = lookup.ExecuteReader();
+            while (reader.Read())
+            {
+                existingEntries[reader.GetString(0)] = (reader.GetString(1), reader.GetString(2));
+            }
+        }
+
+        IReadOnlyList<FileSearchMetadataDto> changedEntries = existingEntries.Count == 0
+            ? entries
+            : entries
+                .Where(entry =>
+                    !existingEntries.TryGetValue(entry.Path, out var existing) ||
+                    !string.Equals(existing.FileName, entry.FileName, StringComparison.Ordinal) ||
+                    !string.Equals(existing.RomanizedName, entry.RomanizedName, StringComparison.Ordinal))
+                .ToArray();
+        if (changedEntries.Count == 0)
+        {
+            return;
+        }
+
         using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -2931,7 +3297,9 @@ public sealed class GalleryDatabase
             ON CONFLICT(path) DO UPDATE SET
                 file_name = excluded.file_name,
                 romanized_name = excluded.romanized_name,
-                updated_at = CURRENT_TIMESTAMP;
+                updated_at = CURRENT_TIMESTAMP
+            WHERE file_metadata.file_name <> excluded.file_name
+               OR file_metadata.romanized_name <> excluded.romanized_name;
             """;
         var path = command.CreateParameter();
         path.ParameterName = "$path";
@@ -2943,7 +3311,7 @@ public sealed class GalleryDatabase
         romanizedName.ParameterName = "$romanizedName";
         command.Parameters.Add(romanizedName);
 
-        foreach (var entry in entries)
+        foreach (var entry in changedEntries)
         {
             path.Value = entry.Path;
             fileName.Value = entry.FileName;
@@ -2952,6 +3320,150 @@ public sealed class GalleryDatabase
         }
 
         transaction.Commit();
+    }
+
+    public IReadOnlyDictionary<string, ArchivePageCountCacheDto> ListArchivePageCountCacheByPaths(
+        IReadOnlyList<string> paths)
+    {
+        var normalizedPaths = paths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var cached = new Dictionary<string, ArchivePageCountCacheDto>(StringComparer.OrdinalIgnoreCase);
+        if (normalizedPaths.Length == 0)
+        {
+            return cached;
+        }
+
+        using var connection = OpenConnection();
+        const int batchSize = 400;
+        for (var offset = 0; offset < normalizedPaths.Length; offset += batchSize)
+        {
+            var count = Math.Min(batchSize, normalizedPaths.Length - offset);
+            using var command = connection.CreateCommand();
+            var placeholders = new string[count];
+            for (var index = 0; index < count; index++)
+            {
+                var parameterName = $"$path{index}";
+                placeholders[index] = parameterName;
+                command.Parameters.AddWithValue(parameterName, normalizedPaths[offset + index]);
+            }
+
+            command.CommandText = $"""
+                SELECT path, file_length, modified_ticks, page_count
+                FROM archive_page_counts
+                WHERE path IN ({string.Join(", ", placeholders)});
+                """;
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var path = reader.GetString(0);
+                cached[path] = new ArchivePageCountCacheDto(
+                    path,
+                    reader.GetInt64(1),
+                    reader.GetInt64(2),
+                    reader.IsDBNull(3) ? null : reader.GetInt32(3));
+            }
+        }
+
+        return cached;
+    }
+
+    public void SaveArchivePageCountCache(IReadOnlyCollection<ArchivePageCountCacheDto> entries)
+    {
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO archive_page_counts (path, file_length, modified_ticks, page_count)
+            VALUES ($path, $fileLength, $modifiedTicks, $pageCount)
+            ON CONFLICT(path) DO UPDATE SET
+                file_length = excluded.file_length,
+                modified_ticks = excluded.modified_ticks,
+                page_count = excluded.page_count,
+                updated_at = CURRENT_TIMESTAMP;
+            """;
+        var path = command.CreateParameter();
+        path.ParameterName = "$path";
+        command.Parameters.Add(path);
+        var fileLength = command.CreateParameter();
+        fileLength.ParameterName = "$fileLength";
+        command.Parameters.Add(fileLength);
+        var modifiedTicks = command.CreateParameter();
+        modifiedTicks.ParameterName = "$modifiedTicks";
+        command.Parameters.Add(modifiedTicks);
+        var pageCount = command.CreateParameter();
+        pageCount.ParameterName = "$pageCount";
+        command.Parameters.Add(pageCount);
+
+        foreach (var entry in entries)
+        {
+            path.Value = entry.Path;
+            fileLength.Value = entry.FileLength;
+            modifiedTicks.Value = entry.ModifiedTicks;
+            pageCount.Value = entry.PageCount is int value ? value : DBNull.Value;
+            command.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
+
+    public IReadOnlyDictionary<string, int> ListGalleryImageCountsByPaths(IReadOnlyList<string> paths)
+    {
+        var normalizedPaths = paths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (normalizedPaths.Length == 0 || !File.Exists(ExternalGalleryDatabasePath))
+        {
+            return counts;
+        }
+
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = ExternalGalleryDatabasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Cache = SqliteCacheMode.Shared,
+            Pooling = true
+        }.ConnectionString);
+        connection.Open();
+
+        const int batchSize = 400;
+        for (var offset = 0; offset < normalizedPaths.Length; offset += batchSize)
+        {
+            var batch = normalizedPaths
+                .Skip(offset)
+                .Take(batchSize)
+                .ToArray();
+            using var command = connection.CreateCommand();
+            var placeholders = new string[batch.Length];
+            for (var index = 0; index < batch.Length; index++)
+            {
+                placeholders[index] = $"$path{index}";
+                command.Parameters.AddWithValue(placeholders[index], batch[index]);
+            }
+
+            command.CommandText = $"""
+                SELECT current_path, COALESCE(image_count, 0)
+                FROM items
+                WHERE COALESCE(archived_flg, 0) = 0
+                  AND current_path COLLATE NOCASE IN ({string.Join(", ", placeholders)});
+                """;
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                counts[reader.GetString(0)] = reader.GetInt32(1);
+            }
+        }
+
+        return counts;
     }
 
     public UiNavigationStateDto GetUiNavigationState()
@@ -3049,15 +3561,16 @@ public sealed class GalleryDatabase
 
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT provider, google_search_url_template, brave_api_key, gemini_api_key FROM search_engine_settings WHERE id = 1;";
+        command.CommandText = "SELECT provider, google_search_url_template, brave_api_key, gemini_api_key, yahoo_client_id FROM search_engine_settings WHERE id = 1;";
         using var reader = command.ExecuteReader();
         return reader.Read()
             ? new SearchEngineSettingsDto(
                 NormalizeSearchEngineProvider(reader.GetString(0)),
                 NormalizeGoogleSearchUrlTemplate(reader.GetString(1)),
                 reader.GetString(2),
-                reader.GetString(3))
-            : new SearchEngineSettingsDto("google", "https://www.google.com/search?q={query}", string.Empty, string.Empty);
+                reader.GetString(3),
+                reader.GetString(4))
+            : new SearchEngineSettingsDto("google", "https://www.google.com/search?q={query}", string.Empty, string.Empty, string.Empty);
     }
 
     public ThemeSettingsDto GetThemeSettings()
@@ -3160,28 +3673,103 @@ public sealed class GalleryDatabase
     private static int NormalizeCalendarWeekStartDay(int value) =>
         value is >= 0 and <= 6 ? value : 0;
 
-    public void SaveSearchEngineSettings(string provider, string googleSearchUrlTemplate, string braveApiKey, string geminiApiKey)
+    public void SaveSearchEngineSettings(
+        string provider,
+        string googleSearchUrlTemplate,
+        string braveApiKey,
+        string geminiApiKey,
+        string yahooClientId)
     {
         EnsureCreated();
 
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO search_engine_settings (id, provider, google_search_url_template, brave_api_key, gemini_api_key)
-            VALUES (1, $provider, $googleTemplate, $braveApiKey, $geminiApiKey)
+            INSERT INTO search_engine_settings (id, provider, google_search_url_template, brave_api_key, gemini_api_key, yahoo_client_id)
+            VALUES (1, $provider, $googleTemplate, $braveApiKey, $geminiApiKey, $yahooClientId)
             ON CONFLICT(id) DO UPDATE SET
                 provider = excluded.provider,
                 google_search_url_template = excluded.google_search_url_template,
                 brave_api_key = excluded.brave_api_key,
                 gemini_api_key = excluded.gemini_api_key,
+                yahoo_client_id = excluded.yahoo_client_id,
                 updated_at = CURRENT_TIMESTAMP;
             """;
         command.Parameters.AddWithValue("$provider", NormalizeSearchEngineProvider(provider));
         command.Parameters.AddWithValue("$googleTemplate", NormalizeGoogleSearchUrlTemplate(googleSearchUrlTemplate));
         command.Parameters.AddWithValue("$braveApiKey", braveApiKey.Trim());
         command.Parameters.AddWithValue("$geminiApiKey", geminiApiKey.Trim());
+        command.Parameters.AddWithValue("$yahooClientId", yahooClientId.Trim());
         command.ExecuteNonQuery();
         PersistApplicationSettings();
+    }
+
+    public IReadOnlyDictionary<string, string> GetTextRomanizationCache(IReadOnlyList<string> values)
+    {
+        EnsureCreated();
+        var uniqueValues = values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (uniqueValues.Length == 0)
+        {
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        var parameters = new string[uniqueValues.Length];
+        for (var index = 0; index < uniqueValues.Length; index++)
+        {
+            parameters[index] = "$value" + index;
+            command.Parameters.AddWithValue(parameters[index], uniqueValues[index]);
+        }
+        command.CommandText = $"""
+            SELECT source_text, romanized_text
+            FROM text_romanization_cache
+            WHERE source_text IN ({string.Join(", ", parameters)});
+            """;
+        using var reader = command.ExecuteReader();
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        while (reader.Read())
+        {
+            result[reader.GetString(0)] = reader.GetString(1);
+        }
+        return result;
+    }
+
+    public void SaveTextRomanizationCache(IReadOnlyDictionary<string, string> values)
+    {
+        if (values.Count == 0)
+        {
+            return;
+        }
+
+        EnsureCreated();
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO text_romanization_cache (source_text, romanized_text, updated_at)
+            VALUES ($sourceText, $romanizedText, CURRENT_TIMESTAMP)
+            ON CONFLICT(source_text) DO UPDATE SET
+                romanized_text = excluded.romanized_text,
+                updated_at = CURRENT_TIMESTAMP;
+            """;
+        var sourceText = command.Parameters.Add("$sourceText", SqliteType.Text);
+        var romanizedText = command.Parameters.Add("$romanizedText", SqliteType.Text);
+        foreach (var entry in values)
+        {
+            if (string.IsNullOrWhiteSpace(entry.Key))
+            {
+                continue;
+            }
+            sourceText.Value = entry.Key;
+            romanizedText.Value = entry.Value;
+            command.ExecuteNonQuery();
+        }
+        transaction.Commit();
     }
 
     public GidSettingsDto GetGidSettings()
@@ -3869,6 +4457,7 @@ public sealed class GalleryDatabase
         {
             command.CommandText = """
                 DELETE FROM file_metadata;
+                DELETE FROM archive_page_counts;
                 DELETE FROM thumbnail_cache_entries;
                 DELETE FROM creator_summary_cache;
                 DELETE FROM derived_data_cache;
@@ -3885,6 +4474,7 @@ public sealed class GalleryDatabase
             _derivedDataMemoryCache.Clear();
         }
         _galleryWorksCache.Clear();
+        _galleryWorkCountCache.Clear();
         _galleryFiltersCache.Clear();
     }
 
@@ -4208,9 +4798,22 @@ public sealed class GalleryDatabase
     public IReadOnlyList<string> GetCreatorTrackingFollowPolicyOptions() =>
         GetCreatorTrackingStringOptions("follow_policy_options_json", DefaultCreatorTrackingFollowPolicyOptions);
 
-    public IReadOnlyList<CreatorTrackingMetricSettingDto> GetCreatorTrackingMetricSettings()
+    public IReadOnlyList<string> GetCreatorTrackingTaskCategories() =>
+        GetCreatorTrackingStringOptions("task_categories_json", DefaultCreatorTrackingTaskCategories);
+
+    public IReadOnlyList<CreatorTrackingMetricSettingDto> GetCreatorTrackingMetricSettings(string? category = null)
     {
         EnsureCreated();
+        if (!string.IsNullOrWhiteSpace(category))
+        {
+            var categorySettings = GetCreatorTrackingMetricSettingsByCategory()
+                .FirstOrDefault(item => item.Category.Equals(category.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (categorySettings is not null)
+            {
+                return categorySettings.Metrics;
+            }
+        }
+
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT metric_definitions_json FROM creator_tracking_settings WHERE id = 1;";
@@ -4262,32 +4865,48 @@ public sealed class GalleryDatabase
         IReadOnlyList<CreatorTrackingActivityPlaceSettingDto>? activityPlaces,
         int compositionLabelLimit,
         IReadOnlyList<string>? followPolicyOptions,
-        IReadOnlyList<CreatorTrackingMetricSettingDto>? metricSettings)
+        IReadOnlyList<string>? taskCategories,
+        IReadOnlyList<CreatorTrackingMetricSettingDto>? metricSettings,
+        IReadOnlyList<CreatorTrackingCategoryMetricSettingDto>? metricSettingsByCategory)
     {
         EnsureCreated();
 
         var normalized = NormalizeCreatorTrackingActivityPlaces(activityPlaces);
         var normalizedFollowPolicies = NormalizeCreatorTrackingStringOptions(followPolicyOptions, DefaultCreatorTrackingFollowPolicyOptions);
+        var normalizedTaskCategories = NormalizeCreatorTrackingStringOptions(taskCategories, DefaultCreatorTrackingTaskCategories);
         var normalizedMetricSettings = NormalizeCreatorTrackingMetricSettings(metricSettings);
+        var normalizedMetricSettingsByCategory = NormalizeCreatorTrackingMetricSettingsByCategory(metricSettingsByCategory);
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO creator_tracking_settings (
                 id, activity_places_json, composition_label_limit,
-                follow_policy_options_json, metric_definitions_json)
-            VALUES (1, $activityPlaces, $compositionLabelLimit, $followPolicies, $metricDefinitions)
+                follow_policy_options_json, task_categories_json, metric_definitions_json,
+                metric_definitions_by_category_json)
+            VALUES (1, $activityPlaces, $compositionLabelLimit, $followPolicies, $taskCategories, $metricDefinitions,
+                $metricDefinitionsByCategory)
             ON CONFLICT(id) DO UPDATE SET
                 activity_places_json = excluded.activity_places_json,
                 composition_label_limit = excluded.composition_label_limit,
                 follow_policy_options_json = excluded.follow_policy_options_json,
+                task_categories_json = excluded.task_categories_json,
                 metric_definitions_json = excluded.metric_definitions_json,
+                metric_definitions_by_category_json = excluded.metric_definitions_by_category_json,
                 updated_at = CURRENT_TIMESTAMP;
             """;
         command.Parameters.AddWithValue("$activityPlaces", JsonSerializer.Serialize(normalized, JsonOptions));
         command.Parameters.AddWithValue("$compositionLabelLimit", NormalizeCreatorTrackingCompositionLabelLimit(compositionLabelLimit));
         command.Parameters.AddWithValue("$followPolicies", JsonSerializer.Serialize(normalizedFollowPolicies, JsonOptions));
+        command.Parameters.AddWithValue("$taskCategories", JsonSerializer.Serialize(normalizedTaskCategories, JsonOptions));
         command.Parameters.AddWithValue("$metricDefinitions", JsonSerializer.Serialize(normalizedMetricSettings, JsonOptions));
+        command.Parameters.AddWithValue(
+            "$metricDefinitionsByCategory",
+            JsonSerializer.Serialize(normalizedMetricSettingsByCategory, JsonOptions));
         command.ExecuteNonQuery();
+        RecalculateCreatorTrackingCategoryRatings(
+            connection,
+            normalizedMetricSettings,
+            normalizedMetricSettingsByCategory);
         PersistApplicationSettings();
     }
 
@@ -4348,6 +4967,82 @@ public sealed class GalleryDatabase
         }).ToArray();
     }
 
+    private static IReadOnlyList<CreatorTrackingCategoryMetricSettingDto> NormalizeCreatorTrackingMetricSettingsByCategory(
+        IReadOnlyList<CreatorTrackingCategoryMetricSettingDto>? settings)
+    {
+        var categories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return (settings ?? [])
+            .Select(item => new CreatorTrackingCategoryMetricSettingDto(
+                item.Category?.Trim() ?? string.Empty,
+                NormalizeCreatorTrackingMetricSettings(item.Metrics)))
+            .Where(item => !string.IsNullOrWhiteSpace(item.Category) && categories.Add(item.Category))
+            .Take(100)
+            .ToArray();
+    }
+
+    private static void RecalculateCreatorTrackingCategoryRatings(
+        SqliteConnection connection,
+        IReadOnlyList<CreatorTrackingMetricSettingDto> defaultSettings,
+        IReadOnlyList<CreatorTrackingCategoryMetricSettingDto> categorySettings)
+    {
+        var settingsByCategory = categorySettings.ToDictionary(
+            item => item.Category,
+            item => item.Metrics,
+            StringComparer.OrdinalIgnoreCase);
+        var profiles = new List<(string Creator, string Category, IReadOnlyDictionary<string, int> Metrics)>();
+        using (var select = connection.CreateCommand())
+        {
+            select.CommandText = """
+                SELECT creator, category, evaluation_metrics_json, personal_rating
+                FROM creator_tracking_category_profiles;
+                """;
+            using var reader = select.ExecuteReader();
+            while (reader.Read())
+            {
+                IReadOnlyDictionary<string, int>? storedMetrics;
+                try
+                {
+                    storedMetrics = JsonSerializer.Deserialize<Dictionary<string, int>>(reader.GetString(2), JsonOptions);
+                }
+                catch (JsonException)
+                {
+                    storedMetrics = null;
+                }
+                profiles.Add((
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    NormalizeCreatorTrackingMetrics(storedMetrics, reader.GetDouble(3))));
+            }
+        }
+
+        using var transaction = connection.BeginTransaction();
+        foreach (var profile in profiles)
+        {
+            var settings = settingsByCategory.TryGetValue(profile.Category, out var configured)
+                ? configured
+                : defaultSettings;
+            var weightedRating = settings
+                .Where(metric => metric.WeightPercent is > 0)
+                .Sum(metric => profile.Metrics[metric.Key] * metric.WeightPercent!.Value / 100d);
+            var rating = Math.Floor((weightedRating * 1.25 + 1e-9) * 10) / 10;
+
+            using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = """
+                UPDATE creator_tracking_category_profiles
+                SET personal_rating = $rating,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE creator = $creator COLLATE NOCASE
+                  AND category = $category COLLATE NOCASE;
+                """;
+            update.Parameters.AddWithValue("$rating", rating);
+            update.Parameters.AddWithValue("$creator", profile.Creator);
+            update.Parameters.AddWithValue("$category", profile.Category);
+            update.ExecuteNonQuery();
+        }
+        transaction.Commit();
+    }
+
     private static int NormalizeCreatorTrackingCompositionLabelLimit(object? value) =>
         value is not null && int.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), out var parsed)
             ? Math.Clamp(parsed, 1, 8)
@@ -4369,6 +5064,116 @@ public sealed class GalleryDatabase
         return iconDataUri.Length <= 1_500_000 && iconDataUri.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase)
             ? iconDataUri
             : string.Empty;
+    }
+
+    public IReadOnlyList<CreatorBlacklistItemDto> ListCreatorBlacklist()
+    {
+        EnsureCreated();
+        using var connection = OpenApplicationDataConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT creator, reason, registered_on
+            FROM creator_blacklist
+            ORDER BY creator COLLATE NOCASE;
+            """;
+        using var reader = command.ExecuteReader();
+        var items = new List<CreatorBlacklistItemDto>();
+        while (reader.Read())
+        {
+            items.Add(new CreatorBlacklistItemDto(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2)));
+        }
+        return items;
+    }
+
+    public void UpsertCreatorBlacklist(string? originalCreator, string creator, string? reason)
+    {
+        EnsureCreated();
+        var normalizedCreator = creator.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedCreator))
+        {
+            throw new ArgumentException("作者名を入力してください。", nameof(creator));
+        }
+
+        var normalizedOriginal = originalCreator?.Trim() ?? string.Empty;
+        var registeredOn = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        using var connection = OpenApplicationDataConnection();
+        using var transaction = connection.BeginTransaction();
+        if (!string.IsNullOrWhiteSpace(normalizedOriginal))
+        {
+            using var lookup = connection.CreateCommand();
+            lookup.Transaction = transaction;
+            lookup.CommandText = "SELECT registered_on FROM creator_blacklist WHERE creator = $creator COLLATE NOCASE;";
+            lookup.Parameters.AddWithValue("$creator", normalizedOriginal);
+            registeredOn = Convert.ToString(lookup.ExecuteScalar(), CultureInfo.InvariantCulture)?.Trim() is { Length: > 0 } existingDate
+                ? existingDate
+                : registeredOn;
+
+            if (!string.Equals(normalizedOriginal, normalizedCreator, StringComparison.OrdinalIgnoreCase))
+            {
+                using var deleteOriginal = connection.CreateCommand();
+                deleteOriginal.Transaction = transaction;
+                deleteOriginal.CommandText = "DELETE FROM creator_blacklist WHERE creator = $creator COLLATE NOCASE;";
+                deleteOriginal.Parameters.AddWithValue("$creator", normalizedOriginal);
+                deleteOriginal.ExecuteNonQuery();
+            }
+        }
+
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO creator_blacklist (creator, reason, registered_on, updated_at)
+            VALUES ($creator, $reason, $registeredOn, CURRENT_TIMESTAMP)
+            ON CONFLICT(creator) DO UPDATE SET
+                reason = excluded.reason,
+                updated_at = CURRENT_TIMESTAMP;
+            """;
+        command.Parameters.AddWithValue("$creator", normalizedCreator);
+        command.Parameters.AddWithValue("$reason", reason?.Trim() ?? string.Empty);
+        command.Parameters.AddWithValue("$registeredOn", registeredOn);
+        command.ExecuteNonQuery();
+        transaction.Commit();
+    }
+
+    public void DeleteCreatorBlacklist(string creator)
+    {
+        EnsureCreated();
+        using var connection = OpenApplicationDataConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM creator_blacklist WHERE creator = $creator COLLATE NOCASE;";
+        command.Parameters.AddWithValue("$creator", creator.Trim());
+        command.ExecuteNonQuery();
+    }
+
+    private void ThrowIfCreatorBlacklisted(string creator, SqliteConnection? existingConnection = null)
+    {
+        var ownsConnection = existingConnection is null;
+        var connection = existingConnection ?? OpenApplicationDataConnection();
+        try
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT reason FROM creator_blacklist WHERE creator = $creator COLLATE NOCASE LIMIT 1;";
+            command.Parameters.AddWithValue("$creator", creator.Trim());
+            var result = command.ExecuteScalar();
+            if (result is null || result is DBNull)
+            {
+                return;
+            }
+
+            var reason = Convert.ToString(result, CultureInfo.InvariantCulture)?.Trim() ?? string.Empty;
+            var suffix = string.IsNullOrWhiteSpace(reason) ? string.Empty : $" 理由: {reason}";
+            throw new InvalidOperationException(
+                $"Creator「{creator}」はBlacklistに登録されているため、Creator Trackingページを作成できません。{suffix}");
+        }
+        finally
+        {
+            if (ownsConnection)
+            {
+                connection.Dispose();
+            }
+        }
     }
 
     public (CreatorTrackingDto Tracking, bool Created) GetOrCreateCreatorTracking(
@@ -4394,6 +5199,8 @@ public sealed class GalleryDatabase
             }
         }
 
+        ThrowIfCreatorBlacklisted(normalizedCreator);
+
         var today = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var template = CreateDefaultCreatorTracking(normalizedCreator);
         template = template with
@@ -4409,6 +5216,161 @@ public sealed class GalleryDatabase
         };
         SaveCreatorTracking(template);
         return (GetCreatorTracking(normalizedCreator), true);
+    }
+
+    public (
+        IReadOnlyList<string> CreatedCreators,
+        IReadOnlyList<string> Errors)
+        SynchronizeCreatorTrackingAfterScheduledScan(
+            IReadOnlyList<string> categories,
+            CancellationToken cancellationToken = default)
+    {
+        EnsureCreated();
+
+        var normalizedCategories = categories
+            .Select(category => category?.Trim() ?? string.Empty)
+            .Where(category => !string.IsNullOrWhiteSpace(category))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalizedCategories.Length == 0)
+        {
+            return ([], []);
+        }
+
+        var categoryParameters = normalizedCategories
+            .Select((_, index) => $"$category{index}")
+            .ToArray();
+        var candidates = new Dictionary<
+            string,
+            (string FirstPath, HashSet<string> Categories)>(
+            StringComparer.OrdinalIgnoreCase);
+        using (var connection = OpenApplicationDataConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = $"""
+                SELECT i.creator, i.category, MIN(i.current_path)
+                FROM items AS i
+                LEFT JOIN creator_tracking AS tracking
+                  ON tracking.creator = i.creator COLLATE NOCASE
+                LEFT JOIN creator_blacklist AS blacklist
+                  ON blacklist.creator = i.creator COLLATE NOCASE
+                WHERE COALESCE(i.archived_flg, 0) = 0
+                  AND TRIM(i.creator) <> ''
+                  AND tracking.creator IS NULL
+                  AND blacklist.creator IS NULL
+                  AND i.category COLLATE NOCASE IN ({string.Join(", ", categoryParameters)})
+                GROUP BY i.creator, i.category
+                ORDER BY i.creator COLLATE NOCASE, i.category COLLATE NOCASE;
+                """;
+            for (var index = 0; index < normalizedCategories.Length; index++)
+            {
+                command.Parameters.AddWithValue(categoryParameters[index], normalizedCategories[index]);
+            }
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var creator = reader.GetString(0).Trim();
+                var category = reader.GetString(1).Trim();
+                var path = reader.IsDBNull(2) ? string.Empty : reader.GetString(2).Trim();
+                if (string.IsNullOrWhiteSpace(creator))
+                {
+                    continue;
+                }
+
+                if (!candidates.TryGetValue(creator, out var candidate))
+                {
+                    candidate = (
+                        path,
+                        new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                }
+                if (!string.IsNullOrWhiteSpace(category))
+                {
+                    candidate.Categories.Add(category);
+                }
+                if (string.IsNullOrWhiteSpace(candidate.FirstPath) &&
+                    !string.IsNullOrWhiteSpace(path))
+                {
+                    candidate.FirstPath = path;
+                }
+                candidates[creator] = candidate;
+            }
+        }
+
+        var createdCreators = new List<string>();
+        var errors = new List<string>();
+        var creatorFoldersByDirectory = new Dictionary<string, string>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var creatorFolder = FindGalleryCreatorFolder(
+                    entry.Value.FirstPath,
+                    entry.Key,
+                    creatorFoldersByDirectory);
+                var result = GetOrCreateCreatorTracking(
+                    entry.Key,
+                    new CreatorTrackingTemplateContextDto(
+                        entry.Key,
+                        creatorFolder));
+                if (!result.Created)
+                {
+                    continue;
+                }
+
+                createdCreators.Add(entry.Key);
+                foreach (var category in entry.Value.Categories)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    EnsureCreatorTrackingCategoryProfile(entry.Key, category);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or
+                                       UnauthorizedAccessException or
+                                       InvalidOperationException or
+                                       ArgumentException or
+                                       SqliteException)
+            {
+                errors.Add($"{entry.Key}: {ex.Message}");
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        using (var connection = OpenApplicationDataConnection())
+        using (var transaction = connection.BeginTransaction())
+        {
+            using (var clear = connection.CreateCommand())
+            {
+                clear.Transaction = transaction;
+                clear.CommandText = """
+                    UPDATE creator_tracking
+                    SET is_new_after_scheduled_scan = 0,
+                        new_after_scheduled_scan_at = ''
+                    WHERE is_new_after_scheduled_scan <> 0;
+                    """;
+                clear.ExecuteNonQuery();
+            }
+
+            foreach (var creator in createdCreators)
+            {
+                using var mark = connection.CreateCommand();
+                mark.Transaction = transaction;
+                mark.CommandText = """
+                    UPDATE creator_tracking
+                    SET is_new_after_scheduled_scan = 1,
+                        new_after_scheduled_scan_at = CURRENT_TIMESTAMP
+                    WHERE creator = $creator COLLATE NOCASE;
+                    """;
+                mark.Parameters.AddWithValue("$creator", creator);
+                mark.ExecuteNonQuery();
+            }
+            transaction.Commit();
+        }
+
+        return (createdCreators, errors);
     }
 
     public CreatorTrackingDto GetCreatorTracking(string creator)
@@ -4450,7 +5412,9 @@ public sealed class GalleryDatabase
                 support_ended_on,
                 support_memo,
                 updated_at,
-                storage_locations_json
+                storage_locations_json,
+                tasks_json,
+                wishlist_flg
             FROM creator_tracking
             WHERE creator = $creator COLLATE NOCASE;
             """;
@@ -4502,7 +5466,7 @@ public sealed class GalleryDatabase
             ];
         }
 
-        return new CreatorTrackingDto(
+        var tracking = new CreatorTrackingDto(
             reader.GetString(0),
             displayName,
             alternateName,
@@ -4533,8 +5497,69 @@ public sealed class GalleryDatabase
                 reader.GetString(25),
                 reader.GetString(10),
                 reader.GetString(11),
-                reader.GetString(12))
+                reader.GetString(12)),
+            Tasks = DeserializeCreatorTrackingTasks(reader.GetString(26)),
+            Wishlist = reader.GetInt32(27) != 0
         };
+        reader.Close();
+        return tracking with
+        {
+            CategoryProfiles = ListCreatorTrackingCategoryProfiles(connection, normalizedCreator)
+        };
+    }
+
+    public CreatorTrackingDto EnsureCreatorTrackingCategoryProfile(string creator, string category)
+    {
+        EnsureCreated();
+
+        var normalizedCreator = creator.Trim();
+        var normalizedCategory = category.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedCreator) || string.IsNullOrWhiteSpace(normalizedCategory))
+        {
+            return GetCreatorTracking(normalizedCreator);
+        }
+
+        using (var connection = OpenApplicationDataConnection())
+        {
+            using var exists = connection.CreateCommand();
+            exists.CommandText = """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM creator_tracking_category_profiles
+                    WHERE creator = $creator COLLATE NOCASE
+                      AND category = $category COLLATE NOCASE
+                );
+                """;
+            exists.Parameters.AddWithValue("$creator", normalizedCreator);
+            exists.Parameters.AddWithValue("$category", normalizedCategory);
+            if (Convert.ToInt32(exists.ExecuteScalar(), CultureInfo.InvariantCulture) == 0)
+            {
+                var existingProfileCount = 0;
+                using (var count = connection.CreateCommand())
+                {
+                    count.CommandText = """
+                        SELECT COUNT(*)
+                        FROM creator_tracking_category_profiles
+                        WHERE creator = $creator COLLATE NOCASE;
+                        """;
+                    count.Parameters.AddWithValue("$creator", normalizedCreator);
+                    existingProfileCount = Convert.ToInt32(count.ExecuteScalar(), CultureInfo.InvariantCulture);
+                }
+
+                var tracking = GetCreatorTracking(normalizedCreator);
+                var profile = new CreatorTrackingCategoryProfileDto(
+                    normalizedCategory,
+                    existingProfileCount == 0
+                        ? tracking.EvaluationMetrics
+                        : CreateDefaultCreatorTrackingMetrics(),
+                    existingProfileCount == 0 ? tracking.PersonalRating : 1.25d,
+                    existingProfileCount == 0 ? tracking.EvaluationMemo : string.Empty,
+                    DefaultCreatorTrackingSummaryCardIds);
+                SaveCreatorTrackingCategoryProfiles(connection, normalizedCreator, [profile]);
+            }
+        }
+
+        return GetCreatorTracking(normalizedCreator);
     }
 
     public IReadOnlyList<CreatorTrackingIndexItemDto> ListCreatorTrackingIndex()
@@ -4555,6 +5580,12 @@ public sealed class GalleryDatabase
                 UNION
                 SELECT creator, category
                 FROM creator_tracking_archive_snapshots
+                WHERE TRIM(creator) <> ''
+                  AND TRIM(category) <> ''
+                GROUP BY creator, category
+                UNION
+                SELECT creator, category
+                FROM creator_tracking_category_profiles
                 WHERE TRIM(creator) <> ''
                   AND TRIM(category) <> ''
                 GROUP BY creator, category;
@@ -4582,7 +5613,14 @@ public sealed class GalleryDatabase
         var items = new List<CreatorTrackingIndexItemDto>();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT creator, display_name, alternate_name, last_activity_on, activity_links_json
+            SELECT creator, display_name, alternate_name, last_activity_on, activity_links_json,
+                   CASE
+                       WHEN is_new_after_scheduled_scan <> 0
+                        AND datetime(new_after_scheduled_scan_at) >= datetime('now', '-1 day')
+                       THEN 1
+                       ELSE 0
+                   END,
+                   wishlist_flg
             FROM creator_tracking
             ORDER BY creator COLLATE NOCASE;
             """;
@@ -4616,7 +5654,9 @@ public sealed class GalleryDatabase
                 lastCheckedOn,
                 followStatus.SinceLastCheckDays,
                 followStatus.FollowWarnFlg,
-                followStatus.FollowAlertFlg));
+                followStatus.FollowAlertFlg,
+                reader.GetInt32(5) != 0,
+                reader.GetInt32(6) != 0));
         }
 
         return items;
@@ -4627,6 +5667,7 @@ public sealed class GalleryDatabase
         EnsureCreated();
 
         var events = new List<CalendarSubscriptionEventDto>();
+        var today = DateOnly.FromDateTime(DateTime.Today);
         using var connection = OpenApplicationDataConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -4638,7 +5679,10 @@ public sealed class GalleryDatabase
                 monthly_support_amount,
                 currency,
                 support_started_on,
-                support_ended_on
+                support_ended_on,
+                activity_links_json,
+                last_activity_on,
+                tasks_json
             FROM creator_tracking
             ORDER BY creator COLLATE NOCASE;
             """;
@@ -4683,10 +5727,15 @@ public sealed class GalleryDatabase
                 if (subscription.Wishlist ||
                     subscription.IsEnded ||
                     string.IsNullOrWhiteSpace(subscription.RenewalOn) ||
-                    !TryParseCreatorTrackingDate(subscription.RenewalOn, out _))
+                    !TryParseCreatorTrackingDate(subscription.RenewalOn, out var renewalOn))
                 {
                     continue;
                 }
+
+                var calendarOn = subscription.EndingPlanned
+                    ? renewalOn.AddDays(-1)
+                    : renewalOn;
+                var calendarDate = calendarOn.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
                 events.Add(new CalendarSubscriptionEventDto(
                     string.IsNullOrWhiteSpace(subscription.Id)
@@ -4700,14 +5749,133 @@ public sealed class GalleryDatabase
                     subscription.Amount,
                     subscription.RenewalOn,
                     subscription.EndingPlanned,
-                    subscription.Reminder));
+                    false)
+                {
+                    EventType = "subscription",
+                    Severity = subscription.EndingPlanned ? "alert" : "normal",
+                    StartOn = calendarDate,
+                    EndOn = calendarDate,
+                    Title = subscription.EndingPlanned ? "サブスク終了予定" : "サブスク更新予定",
+                    Detail = string.Join(" / ", new[]
+                    {
+                        subscription.Platform,
+                        subscription.Plan,
+                        subscription.EndingPlanned ? $"更新予定日 {subscription.RenewalOn}" : string.Empty
+                    }.Where(value => !string.IsNullOrWhiteSpace(value)))
+                });
+            }
+
+            var activityLinks = DeserializeCreatorTrackingActivityLinks(reader.GetString(8));
+            var followUpDays = activityLinks
+                .Where(link => link.FollowUpEnabled)
+                .Select(link => Math.Clamp(link.FollowUpDays, 1, 99))
+                .DefaultIfEmpty(0)
+                .Min();
+            if (followUpDays > 0 &&
+                TryParseCreatorTrackingDate(reader.GetString(9), out var lastActivityOn))
+            {
+                var warningOn = lastActivityOn.AddDays(followUpDays);
+                var alertOn = lastActivityOn.AddDays((int)Math.Ceiling(followUpDays * 1.5d));
+                var warningDate = warningOn.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                var alertDate = alertOn.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                events.Add(new CalendarSubscriptionEventDto(
+                    $"creator-check-warning|{creator}|{warningDate}",
+                    creator,
+                    string.IsNullOrWhiteSpace(displayName) ? creator : displayName,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    0,
+                    warningDate,
+                    false,
+                    false)
+                {
+                    EventType = "creator-check",
+                    Severity = "warning",
+                    StartOn = warningDate,
+                    EndOn = warningDate,
+                    Title = "Creatorチェック警告",
+                    Detail = $"最終確認から{followUpDays:N0}日"
+                });
+                if (today > warningOn)
+                {
+                    events.Add(new CalendarSubscriptionEventDto(
+                        $"creator-check-alert|{creator}|{alertDate}",
+                        creator,
+                        string.IsNullOrWhiteSpace(displayName) ? creator : displayName,
+                        string.Empty,
+                        string.Empty,
+                        string.Empty,
+                        0,
+                        alertDate,
+                        false,
+                        false)
+                    {
+                        EventType = "creator-check",
+                        Severity = "alert",
+                        StartOn = alertDate,
+                        EndOn = alertDate,
+                        Title = "Creatorチェックアラート",
+                        Detail = $"最終確認から{(int)Math.Ceiling(followUpDays * 1.5d):N0}日"
+                    });
+                }
+            }
+
+            foreach (var task in DeserializeCreatorTrackingTasks(reader.GetString(10)))
+            {
+                var startOn = TryParseCreatorTrackingDate(task.StartedOn, out var parsedStart)
+                    ? parsedStart
+                    : default;
+                var endOn = TryParseCreatorTrackingDate(task.EndedOn, out var parsedEnd)
+                    ? parsedEnd
+                    : default;
+                if (startOn == default && endOn == default)
+                {
+                    continue;
+                }
+                if (startOn == default)
+                {
+                    startOn = endOn;
+                }
+                if (endOn == default)
+                {
+                    endOn = startOn;
+                }
+                if (endOn < startOn)
+                {
+                    (startOn, endOn) = (endOn, startOn);
+                }
+
+                var startDate = startOn.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                var endDate = endOn.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                events.Add(new CalendarSubscriptionEventDto(
+                    $"creator-task|{creator}|{task.Id}",
+                    creator,
+                    string.IsNullOrWhiteSpace(displayName) ? creator : displayName,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    0,
+                    startDate,
+                    false,
+                    false)
+                {
+                    EventType = "task",
+                    Severity = "normal",
+                    StartOn = startDate,
+                    EndOn = endDate,
+                    Title = string.IsNullOrWhiteSpace(task.Name) ? "Creatorタスク" : task.Name,
+                    Detail = task.Category,
+                    TaskCategory = task.Category,
+                    AlertFrequency = task.AlertFrequency
+                });
             }
         }
 
         return events
-            .OrderBy(entry => entry.RenewalOn, StringComparer.Ordinal)
+            .OrderBy(entry => entry.StartOn, StringComparer.Ordinal)
             .ThenBy(entry => entry.DisplayName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(entry => entry.Platform, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => entry.Title, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
 
@@ -5000,6 +6168,24 @@ public sealed class GalleryDatabase
         using (var command = connection.CreateCommand())
         {
             command.CommandText = """
+                SELECT creator, category, evaluation_metrics_json, personal_rating,
+                       evaluation_memo, summary_card_ids_json, updated_at
+                FROM creator_tracking_category_profiles
+                ORDER BY creator COLLATE NOCASE, category COLLATE NOCASE;
+                """;
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                for (var index = 0; index < reader.FieldCount; index++)
+                {
+                    Append(Convert.ToString(reader.GetValue(index), CultureInfo.InvariantCulture) ?? string.Empty);
+                }
+            }
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
                 SELECT rate_date, base_currency, quote_currency, rate
                 FROM creator_tracking_exchange_rates
                 ORDER BY rate_date, base_currency, quote_currency;
@@ -5055,11 +6241,28 @@ public sealed class GalleryDatabase
             throw new ArgumentException("Creatorが指定されていません。", nameof(tracking));
         }
 
+        using (var existenceConnection = OpenApplicationDataConnection())
+        using (var existenceCommand = existenceConnection.CreateCommand())
+        {
+            existenceCommand.CommandText = "SELECT EXISTS(SELECT 1 FROM creator_tracking WHERE creator = $creator COLLATE NOCASE);";
+            existenceCommand.Parameters.AddWithValue("$creator", creator);
+            if (Convert.ToInt32(existenceCommand.ExecuteScalar(), CultureInfo.InvariantCulture) == 0)
+            {
+                ThrowIfCreatorBlacklisted(creator, existenceConnection);
+            }
+        }
+
         using var connection = OpenApplicationDataConnection();
-        var evaluationMetrics = NormalizeCreatorTrackingMetrics(tracking.EvaluationMetrics, tracking.PersonalRating);
-        var personalRating = CalculateCreatorTrackingRating(evaluationMetrics);
+        var categoryProfiles = NormalizeCreatorTrackingCategoryProfiles(tracking.CategoryProfiles);
+        var legacyProfile = categoryProfiles.FirstOrDefault();
+        var evaluationMetrics = legacyProfile?.EvaluationMetrics
+            ?? NormalizeCreatorTrackingMetrics(tracking.EvaluationMetrics, tracking.PersonalRating);
+        var personalRating = legacyProfile?.PersonalRating
+            ?? CalculateCreatorTrackingRating(evaluationMetrics);
+        var evaluationMemo = legacyProfile?.EvaluationMemo ?? tracking.EvaluationMemo.Trim();
         var subscriptionHistory = NormalizeCreatorTrackingSubscriptions(tracking.SubscriptionHistory);
         var purchaseHistory = NormalizeCreatorTrackingPurchases(tracking.PurchaseHistory);
+        var tasks = NormalizeCreatorTrackingTasks(tracking.Tasks);
         var storageLocations = NormalizeCreatorTrackingStorageLocations(
             tracking.StorageLocations,
             tracking.MainStoragePath,
@@ -5068,7 +6271,9 @@ public sealed class GalleryDatabase
         var mainStoragePath = storageLocations.FirstOrDefault(location => location.Usage == "Gallery")?.Path ?? string.Empty;
         var workStoragePath = storageLocations.FirstOrDefault(location => location.Usage == "Stockroom")?.Path ?? string.Empty;
         var primarySubscription = subscriptionHistory.FirstOrDefault(subscription => !subscription.Wishlist);
+        using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO creator_tracking (
                 creator,
@@ -5090,12 +6295,14 @@ public sealed class GalleryDatabase
                 evaluation_memo,
                 subscription_history_json,
                 purchase_history_json,
+                tasks_json,
                 monthly_support_amount,
                 lifetime_spend,
                 currency,
                 support_started_on,
                 support_ended_on,
-                support_memo)
+                support_memo,
+                wishlist_flg)
             VALUES (
                 $creator,
                 $displayName,
@@ -5116,12 +6323,14 @@ public sealed class GalleryDatabase
                 $evaluationMemo,
                 $subscriptionHistoryJson,
                 $purchaseHistoryJson,
+                $tasksJson,
                 $monthlySupportAmount,
                 $lifetimeSpend,
                 $currency,
                 $supportStartedOn,
                 $supportEndedOn,
-                $supportMemo)
+                $supportMemo,
+                $wishlistFlg)
             ON CONFLICT(creator) DO UPDATE SET
                 display_name = excluded.display_name,
                 alternate_name = excluded.alternate_name,
@@ -5141,12 +6350,14 @@ public sealed class GalleryDatabase
                 evaluation_memo = excluded.evaluation_memo,
                 subscription_history_json = excluded.subscription_history_json,
                 purchase_history_json = excluded.purchase_history_json,
+                tasks_json = excluded.tasks_json,
                 monthly_support_amount = excluded.monthly_support_amount,
                 lifetime_spend = excluded.lifetime_spend,
                 currency = excluded.currency,
                 support_started_on = excluded.support_started_on,
                 support_ended_on = excluded.support_ended_on,
                 support_memo = excluded.support_memo,
+                wishlist_flg = excluded.wishlist_flg,
                 updated_at = CURRENT_TIMESTAMP;
             """;
         command.Parameters.AddWithValue("$creator", creator);
@@ -5167,9 +6378,10 @@ public sealed class GalleryDatabase
         command.Parameters.AddWithValue("$storageLocationsJson", JsonSerializer.Serialize(storageLocations, JsonOptions));
         command.Parameters.AddWithValue("$evaluationMetricsJson", JsonSerializer.Serialize(evaluationMetrics, JsonOptions));
         command.Parameters.AddWithValue("$personalRating", personalRating);
-        command.Parameters.AddWithValue("$evaluationMemo", tracking.EvaluationMemo.Trim());
+        command.Parameters.AddWithValue("$evaluationMemo", evaluationMemo);
         command.Parameters.AddWithValue("$subscriptionHistoryJson", JsonSerializer.Serialize(subscriptionHistory, JsonOptions));
         command.Parameters.AddWithValue("$purchaseHistoryJson", JsonSerializer.Serialize(purchaseHistory, JsonOptions));
+        command.Parameters.AddWithValue("$tasksJson", JsonSerializer.Serialize(tasks, JsonOptions));
         command.Parameters.AddWithValue("$monthlySupportAmount", primarySubscription?.Amount ?? Math.Max(0, tracking.MonthlySupportAmount));
         command.Parameters.AddWithValue("$lifetimeSpend", Math.Max(0, tracking.LifetimeSpend));
         command.Parameters.AddWithValue("$currency", primarySubscription?.Currency ?? NormalizeCreatorTrackingCurrency(tracking.Currency));
@@ -5182,7 +6394,15 @@ public sealed class GalleryDatabase
                     ? primarySubscription.EndedOn
                     : primarySubscription.RenewalOn);
         command.Parameters.AddWithValue("$supportMemo", tracking.SupportMemo.Trim());
+        command.Parameters.AddWithValue("$wishlistFlg", tracking.Wishlist ? 1 : 0);
         command.ExecuteNonQuery();
+        SaveCreatorTrackingCategoryProfiles(
+            connection,
+            creator,
+            categoryProfiles,
+            transaction,
+            replaceExisting: true);
+        transaction.Commit();
     }
 
     public CreatorDataDeleteResultDto DeleteCreatorData(string creator)
@@ -5230,6 +6450,11 @@ public sealed class GalleryDatabase
             connection,
             transaction,
             "DELETE FROM creator_tracking_archive_snapshots WHERE creator = $creator COLLATE NOCASE;",
+            normalizedCreator);
+        ExecuteCreatorDataDelete(
+            connection,
+            transaction,
+            "DELETE FROM creator_tracking_category_profiles WHERE creator = $creator COLLATE NOCASE;",
             normalizedCreator);
         var creatorTrackingRowsDeleted = ExecuteCreatorDataDelete(
             connection,
@@ -5733,6 +6958,38 @@ public sealed class GalleryDatabase
         }
     }
 
+    private static IReadOnlyList<CreatorTrackingTaskDto> DeserializeCreatorTrackingTasks(string json)
+    {
+        try
+        {
+            var tasks = JsonSerializer.Deserialize<CreatorTrackingTaskDto[]>(json, JsonOptions);
+            return NormalizeCreatorTrackingTasks(tasks);
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static IReadOnlyList<CreatorTrackingTaskDto> NormalizeCreatorTrackingTasks(
+        IReadOnlyList<CreatorTrackingTaskDto>? tasks)
+    {
+        return (tasks ?? [])
+            .Select(task => new CreatorTrackingTaskDto(
+                string.IsNullOrWhiteSpace(task.Id) ? Guid.NewGuid().ToString("N") : task.Id.Trim(),
+                task.Category?.Trim() ?? string.Empty,
+                task.Name?.Trim() ?? string.Empty,
+                task.StartedOn?.Trim() ?? string.Empty,
+                task.EndedOn?.Trim() ?? string.Empty,
+                task.AlertFrequency?.Trim().ToLowerInvariant() switch
+                {
+                    "daily" => "daily",
+                    "end" => "end",
+                    _ => "none"
+                }))
+            .ToArray();
+    }
+
     private static IReadOnlyList<CreatorTrackingActivityLinkDto> DeserializeCreatorTrackingActivityLinks(string json)
     {
         try
@@ -5817,7 +7074,7 @@ public sealed class GalleryDatabase
             ? locations
             : CreateLegacyCreatorTrackingStorageLocations(mainStoragePath, workStoragePath, unsortedStoragePath);
         var normalized = new List<CreatorTrackingStorageLocationDto>();
-        var singletonUsages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var hasStockroom = false;
         foreach (var location in source)
         {
             var usage = location.Usage?.Trim().ToLowerInvariant() switch
@@ -5828,9 +7085,13 @@ public sealed class GalleryDatabase
                 _ => string.Empty
             };
             if (string.IsNullOrEmpty(usage) ||
-                (usage != "Temporary" && !singletonUsages.Add(usage)))
+                (usage == "Stockroom" && hasStockroom))
             {
                 continue;
+            }
+            if (usage == "Stockroom")
+            {
+                hasStockroom = true;
             }
 
             normalized.Add(new CreatorTrackingStorageLocationDto(
@@ -6026,9 +7287,216 @@ public sealed class GalleryDatabase
             StringComparer.OrdinalIgnoreCase);
     }
 
-    private double CalculateCreatorTrackingRating(IReadOnlyDictionary<string, int> metrics)
+    private static IReadOnlyList<string> NormalizeCreatorTrackingSummaryCardIds(
+        IReadOnlyList<string>? cardIds)
     {
-        var weightedRating = GetCreatorTrackingMetricSettings()
+        var normalized = (cardIds ?? [])
+            .Select(cardId => cardId?.Trim() ?? string.Empty)
+            .Where(cardId => CreatorTrackingSummaryCardIdSet.Contains(cardId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(DefaultCreatorTrackingSummaryCardIds.Length)
+            .ToList();
+        foreach (var defaultCardId in DefaultCreatorTrackingSummaryCardIds)
+        {
+            if (normalized.Count >= DefaultCreatorTrackingSummaryCardIds.Length)
+            {
+                break;
+            }
+            if (!normalized.Contains(defaultCardId, StringComparer.OrdinalIgnoreCase))
+            {
+                normalized.Add(defaultCardId);
+            }
+        }
+        return normalized;
+    }
+
+    private IReadOnlyList<CreatorTrackingCategoryProfileDto> NormalizeCreatorTrackingCategoryProfiles(
+        IReadOnlyList<CreatorTrackingCategoryProfileDto>? profiles)
+    {
+        var normalized = new List<CreatorTrackingCategoryProfileDto>();
+        var categories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in profiles ?? [])
+        {
+            var category = profile.Category?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(category) || !categories.Add(category))
+            {
+                continue;
+            }
+
+            var metrics = NormalizeCreatorTrackingMetrics(profile.EvaluationMetrics, profile.PersonalRating);
+            normalized.Add(new CreatorTrackingCategoryProfileDto(
+                category,
+                metrics,
+                CalculateCreatorTrackingRating(metrics, category),
+                profile.EvaluationMemo?.Trim() ?? string.Empty,
+                NormalizeCreatorTrackingSummaryCardIds(profile.SummaryCardIds)));
+        }
+        return normalized;
+    }
+
+    private IReadOnlyList<CreatorTrackingCategoryProfileDto> ListCreatorTrackingCategoryProfiles(
+        SqliteConnection connection,
+        string creator)
+    {
+        var profiles = new List<CreatorTrackingCategoryProfileDto>();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT category, evaluation_metrics_json, personal_rating, evaluation_memo, summary_card_ids_json
+            FROM creator_tracking_category_profiles
+            WHERE creator = $creator COLLATE NOCASE
+            ORDER BY category COLLATE NOCASE;
+            """;
+        command.Parameters.AddWithValue("$creator", creator.Trim());
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            IReadOnlyDictionary<string, int>? metrics = null;
+            IReadOnlyList<string>? cardIds = null;
+            try
+            {
+                metrics = JsonSerializer.Deserialize<Dictionary<string, int>>(reader.GetString(1), JsonOptions);
+            }
+            catch (JsonException)
+            {
+                // Fall back to the stored rating below.
+            }
+            try
+            {
+                cardIds = JsonSerializer.Deserialize<string[]>(reader.GetString(4), JsonOptions);
+            }
+            catch (JsonException)
+            {
+                // Fall back to the default six-card layout below.
+            }
+            profiles.Add(new CreatorTrackingCategoryProfileDto(
+                reader.GetString(0),
+                NormalizeCreatorTrackingMetrics(metrics, reader.GetDouble(2)),
+                reader.GetDouble(2),
+                reader.GetString(3),
+                cardIds ?? DefaultCreatorTrackingSummaryCardIds));
+        }
+        return NormalizeCreatorTrackingCategoryProfiles(profiles);
+    }
+
+    private void SaveCreatorTrackingCategoryProfiles(
+        SqliteConnection connection,
+        string creator,
+        IReadOnlyList<CreatorTrackingCategoryProfileDto>? profiles,
+        SqliteTransaction? transaction = null,
+        bool replaceExisting = false)
+    {
+        var normalizedCreator = creator.Trim();
+        var normalizedProfiles = NormalizeCreatorTrackingCategoryProfiles(profiles);
+        if (replaceExisting)
+        {
+            var retainedCategories = new HashSet<string>(
+                normalizedProfiles.Select(profile => profile.Category),
+                StringComparer.OrdinalIgnoreCase);
+            var removedCategories = new List<string>();
+            using (var listCommand = connection.CreateCommand())
+            {
+                listCommand.Transaction = transaction;
+                listCommand.CommandText = """
+                    SELECT category
+                    FROM creator_tracking_category_profiles
+                    WHERE creator = $creator COLLATE NOCASE;
+                    """;
+                listCommand.Parameters.AddWithValue("$creator", normalizedCreator);
+                using var reader = listCommand.ExecuteReader();
+                while (reader.Read())
+                {
+                    var category = reader.GetString(0);
+                    if (!retainedCategories.Contains(category))
+                    {
+                        removedCategories.Add(category);
+                    }
+                }
+            }
+
+            foreach (var removedCategory in removedCategories)
+            {
+                using var deleteProfiles = connection.CreateCommand();
+                deleteProfiles.Transaction = transaction;
+                deleteProfiles.CommandText = """
+                    DELETE FROM creator_tracking_category_profiles
+                    WHERE creator = $creator COLLATE NOCASE
+                      AND category = $category COLLATE NOCASE;
+                    """;
+                deleteProfiles.Parameters.AddWithValue("$creator", normalizedCreator);
+                deleteProfiles.Parameters.AddWithValue("$category", removedCategory);
+                deleteProfiles.ExecuteNonQuery();
+
+                using var deleteSnapshots = connection.CreateCommand();
+                deleteSnapshots.Transaction = transaction;
+                deleteSnapshots.CommandText = """
+                    DELETE FROM creator_tracking_archive_snapshots
+                    WHERE creator = $creator COLLATE NOCASE
+                      AND category = $category COLLATE NOCASE;
+                    """;
+                deleteSnapshots.Parameters.AddWithValue("$creator", normalizedCreator);
+                deleteSnapshots.Parameters.AddWithValue("$category", removedCategory);
+                deleteSnapshots.ExecuteNonQuery();
+            }
+        }
+
+        foreach (var profile in normalizedProfiles)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO creator_tracking_category_profiles (
+                    creator,
+                    category,
+                    evaluation_metrics_json,
+                    personal_rating,
+                    evaluation_memo,
+                    summary_card_ids_json)
+                VALUES ($creator, $category, $metrics, $rating, $memo, $cards)
+                ON CONFLICT(creator, category) DO UPDATE SET
+                    evaluation_metrics_json = excluded.evaluation_metrics_json,
+                    personal_rating = excluded.personal_rating,
+                    evaluation_memo = excluded.evaluation_memo,
+                    summary_card_ids_json = excluded.summary_card_ids_json,
+                    updated_at = CURRENT_TIMESTAMP;
+                """;
+            command.Parameters.AddWithValue("$creator", normalizedCreator);
+            command.Parameters.AddWithValue("$category", profile.Category);
+            command.Parameters.AddWithValue("$metrics", JsonSerializer.Serialize(profile.EvaluationMetrics, JsonOptions));
+            command.Parameters.AddWithValue("$rating", profile.PersonalRating);
+            command.Parameters.AddWithValue("$memo", profile.EvaluationMemo);
+            command.Parameters.AddWithValue("$cards", JsonSerializer.Serialize(profile.SummaryCardIds, JsonOptions));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    public IReadOnlyList<CreatorTrackingCategoryMetricSettingDto> GetCreatorTrackingMetricSettingsByCategory()
+    {
+        EnsureCreated();
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT metric_definitions_by_category_json FROM creator_tracking_settings WHERE id = 1;";
+        var rawValue = command.ExecuteScalar() as string;
+        if (string.IsNullOrWhiteSpace(rawValue))
+        {
+            return [];
+        }
+
+        try
+        {
+            return NormalizeCreatorTrackingMetricSettingsByCategory(
+                JsonSerializer.Deserialize<CreatorTrackingCategoryMetricSettingDto[]>(rawValue, JsonOptions));
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private double CalculateCreatorTrackingRating(
+        IReadOnlyDictionary<string, int> metrics,
+        string? category = null)
+    {
+        var weightedRating = GetCreatorTrackingMetricSettings(category)
             .Where(metric => metric.WeightPercent is > 0)
             .Sum(metric => metrics[metric.Key] * metric.WeightPercent!.Value / 100d);
         return Math.Floor((weightedRating * 1.25 + 1e-9) * 10) / 10;
@@ -6181,7 +7649,8 @@ public sealed class GalleryDatabase
         string sort,
         string filterSort,
         int offset,
-        int pageSize)
+        int pageSize,
+        Action<IReadOnlyList<GalleryWorkDto>>? reportItemsLoaded = null)
     {
         if (!File.Exists(ExternalGalleryDatabasePath))
         {
@@ -6200,32 +7669,33 @@ public sealed class GalleryDatabase
 
             offset = Math.Max(0, offset);
             pageSize = Math.Clamp(pageSize, 1, 200);
-            var targetPaths = ListGalleryScanTargets(category)
-                .Select(target => NormalizeGalleryTargetPath(target.Path))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            var supportedExtensions = GetGalleryScanSettings(category).SupportedExtensions
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(NormalizeExtension)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            var cacheKey = CreateDerivedDataCacheKey("gallery-works", new
+            var queryScope = GetGalleryQueryScope(category);
+            var targetPaths = queryScope.TargetPaths;
+            var supportedExtensions = queryScope.SupportedExtensions;
+            var sourceSignature = CreateExternalDataSignature(GalleryWorksCacheVersion);
+            var filterCacheDescriptor = new
             {
-                Version = CreateExternalDataSignature(GalleryWorksCacheVersion),
+                Version = sourceSignature,
                 Category = category.ToLowerInvariant(),
-                TargetPaths = targetPaths.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
-                SupportedExtensions = supportedExtensions.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
+                TargetPaths = targetPaths,
+                SupportedExtensions = supportedExtensions,
                 Ratings = ratings.Order().ToArray(),
                 Tags = tags.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
                 Creators = creators.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
                 Titles = titles.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
-                Characters = characters.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
+                Characters = characters.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray()
+            };
+            var countCacheKey = CreateDerivedDataCacheKey("gallery-work-count", filterCacheDescriptor);
+            var cacheKey = CreateDerivedDataCacheKey("gallery-works", new
+            {
+                Filter = filterCacheDescriptor,
                 Sort = sort,
                 Offset = offset,
                 PageSize = pageSize
             });
             if (_galleryWorksCache.TryGet(cacheKey, out var cachedPage))
             {
+                reportItemsLoaded?.Invoke(cachedPage.Items);
                 return cachedPage;
             }
 
@@ -6249,11 +7719,6 @@ public sealed class GalleryDatabase
             var titleSelect = BuildGalleryWorkAttributeSelectExpression("title", "title");
             var characterSelect = BuildGalleryWorkAttributeSelectExpression("character", "character");
 
-            using var countCommand = connection.CreateCommand();
-            countCommand.CommandText = $"SELECT COUNT(*) FROM items AS i WHERE {where};";
-            AddGalleryWorkParameters(countCommand, category, ratings, tags, creators, titles, characters, targetPaths, supportedExtensions);
-            var total = Convert.ToInt32((long)(countCommand.ExecuteScalar() ?? 0));
-
             using var command = connection.CreateCommand();
             command.CommandText = $"""
                 SELECT
@@ -6270,12 +7735,18 @@ public sealed class GalleryDatabase
                     i.duration_seconds,
                     COALESCE(i.last_access_time, ''),
                     COALESCE(i.last_write_time, ''),
-                    COALESCE(group_concat(t.tag, '|'), '') AS tags
+                    COALESCE((
+                        SELECT group_concat(tag_name, '|')
+                        FROM (
+                            SELECT tag.tag AS tag_name
+                            FROM item_tags AS tag_map
+                            JOIN tags AS tag ON tag.tag_id = tag_map.tag_id
+                            WHERE tag_map.gid = i.gid
+                            ORDER BY tag.tag COLLATE NOCASE
+                        )
+                    ), '') AS tags
                 FROM items AS i
-                LEFT JOIN item_tags AS it ON it.gid = i.gid
-                LEFT JOIN tags AS t ON t.tag_id = it.tag_id
                 WHERE {where}
-                GROUP BY i.gid
                 ORDER BY {orderBy}
                 LIMIT $limit OFFSET $offset;
                 """;
@@ -6284,9 +7755,10 @@ public sealed class GalleryDatabase
             command.Parameters.AddWithValue("$offset", offset);
 
             using var reader = command.ExecuteReader();
-            var items = new List<GalleryWorkDto>();
+            var items = new List<GalleryWorkDto>(pageSize);
             while (reader.Read())
             {
+                var tagText = reader.GetString(13);
                 items.Add(new GalleryWorkDto(
                     reader.GetString(0),
                     reader.GetString(1),
@@ -6301,7 +7773,27 @@ public sealed class GalleryDatabase
                     reader.IsDBNull(10) ? null : reader.GetDouble(10),
                     reader.GetString(11),
                     reader.GetString(12),
-                    reader.GetString(13).Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)));
+                    tagText.Length == 0
+                        ? []
+                        : tagText.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)));
+            }
+            reportItemsLoaded?.Invoke(items);
+
+            int total;
+            if (!_galleryWorkCountCache.TryGet(countCacheKey, out total))
+            {
+                if (offset == 0 && items.Count < pageSize)
+                {
+                    total = items.Count;
+                }
+                else
+                {
+                    using var countCommand = connection.CreateCommand();
+                    countCommand.CommandText = $"SELECT COUNT(*) FROM items AS i WHERE {where};";
+                    AddGalleryWorkParameters(countCommand, category, ratings, tags, creators, titles, characters, targetPaths, supportedExtensions);
+                    total = Convert.ToInt32((long)(countCommand.ExecuteScalar() ?? 0));
+                }
+                _galleryWorkCountCache.Set(countCacheKey, total);
             }
 
             var page = new GalleryWorksPageDto(
@@ -6371,15 +7863,9 @@ public sealed class GalleryDatabase
             var effectiveCreators = applyCurrentFilters ? creators : emptyStrings;
             var effectiveTitles = applyCurrentFilters ? titles : emptyStrings;
             var effectiveCharacters = applyCurrentFilters ? characters : emptyStrings;
-            var targetPaths = ListGalleryScanTargets(category)
-                .Select(target => NormalizeGalleryTargetPath(target.Path))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            var supportedExtensions = GetGalleryScanSettings(category).SupportedExtensions
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(NormalizeExtension)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            var queryScope = GetGalleryQueryScope(category);
+            var targetPaths = queryScope.TargetPaths;
+            var supportedExtensions = queryScope.SupportedExtensions;
 
             using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
             {
@@ -6552,21 +8038,15 @@ public sealed class GalleryDatabase
                 return new GalleryWorkFiltersDto([], [], [], [], []);
             }
 
-            var targetPaths = ListGalleryScanTargets(category)
-                .Select(target => NormalizeGalleryTargetPath(target.Path))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            var supportedExtensions = GetGalleryScanSettings(category).SupportedExtensions
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(NormalizeExtension)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            var queryScope = GetGalleryQueryScope(category);
+            var targetPaths = queryScope.TargetPaths;
+            var supportedExtensions = queryScope.SupportedExtensions;
             var cacheKey = CreateDerivedDataCacheKey("gallery-filters", new
             {
                 Version = CreateExternalDataSignature(GalleryFiltersCacheVersion),
                 Category = category.ToLowerInvariant(),
-                TargetPaths = targetPaths.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
-                SupportedExtensions = supportedExtensions.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
+                TargetPaths = targetPaths,
+                SupportedExtensions = supportedExtensions,
                 Ratings = ratings.Order().ToArray(),
                 Tags = tags.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
                 Creators = creators.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
@@ -6611,7 +8091,8 @@ public sealed class GalleryDatabase
     }
 
     private IReadOnlyDictionary<string, CreatorTrackingSummaryFacts> ListCreatorTrackingSummaryFacts(
-        SqliteConnection connection)
+        SqliteConnection connection,
+        string? category = null)
     {
         var exchangeRates = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         using (var rateCommand = connection.CreateCommand())
@@ -6635,20 +8116,24 @@ public sealed class GalleryDatabase
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT
-                creator,
-                last_checked_on,
-                last_activity_on,
-                activity_links_json,
-                evaluation_metrics_json,
-                personal_rating,
-                subscription_history_json,
-                purchase_history_json,
-                monthly_support_amount,
-                currency,
-                support_started_on,
-                support_ended_on
-            FROM creator_tracking;
+                ct.creator,
+                ct.last_checked_on,
+                ct.last_activity_on,
+                ct.activity_links_json,
+                COALESCE(p.evaluation_metrics_json, ct.evaluation_metrics_json),
+                COALESCE(p.personal_rating, ct.personal_rating),
+                ct.subscription_history_json,
+                ct.purchase_history_json,
+                ct.monthly_support_amount,
+                ct.currency,
+                ct.support_started_on,
+                ct.support_ended_on
+            FROM creator_tracking AS ct
+            LEFT JOIN creator_tracking_category_profiles AS p
+              ON p.creator = ct.creator COLLATE NOCASE
+             AND p.category = $category COLLATE NOCASE;
             """;
+        command.Parameters.AddWithValue("$category", category?.Trim() ?? string.Empty);
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
@@ -6741,16 +8226,11 @@ public sealed class GalleryDatabase
                 .Select(section =>
                 {
                     var category = section.Id;
-                    var targetPaths = ListGalleryScanTargets(category)
-                        .Select(target => NormalizeGalleryTargetPath(target.Path))
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToArray();
-                    var supportedExtensions = GetGalleryScanSettings(category).SupportedExtensions
-                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                        .Select(NormalizeExtension)
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToArray();
-                    return (Category: category, TargetPaths: targetPaths, SupportedExtensions: supportedExtensions);
+                    var queryScope = GetGalleryQueryScope(category);
+                    return (
+                        Category: category,
+                        TargetPaths: queryScope.TargetPaths,
+                        SupportedExtensions: queryScope.SupportedExtensions);
                 })
                 .ToArray();
 
@@ -6762,8 +8242,16 @@ public sealed class GalleryDatabase
             }.ConnectionString);
             connection.Open();
 
-            var creatorTrackingFacts = ListCreatorTrackingSummaryFacts(connection);
-            var summaries = new Dictionary<string, GalleryCreatorSummaryAccumulator>(StringComparer.OrdinalIgnoreCase);
+            var creatorTrackingFactsByCategory = scopes
+                .Select(scope => scope.Category)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    category => category,
+                    category => ListCreatorTrackingSummaryFacts(connection, category),
+                    StringComparer.OrdinalIgnoreCase);
+            var summaries = new Dictionary<GalleryCreatorSummaryKey, GalleryCreatorSummaryAccumulator>(
+                GalleryCreatorSummaryKeyComparer.Instance);
+            var creatorFoldersByDirectory = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var tagsByGid = ListGalleryCreatorTagsByGid(connection);
             var titlesByGid = ListGalleryAssignedFilterValuesByGid(connection, "title");
             var emptyRatings = Array.Empty<int>();
@@ -6788,6 +8276,7 @@ public sealed class GalleryDatabase
                         COALESCE(TRIM(i.title), ''),
                         COALESCE(i.rating, 0),
                         COALESCE(i.image_count, 0),
+                        COALESCE(i.duration_seconds, 0),
                         COALESCE(i.last_access_time, ''),
                         COALESCE(i.last_write_time, '')
                     FROM items AS i
@@ -6813,21 +8302,22 @@ public sealed class GalleryDatabase
                     var title = reader.GetString(3);
                     var rating = reader.GetInt32(4);
                     var imageCount = reader.GetInt32(5);
-                    var lastAccessTime = reader.GetString(6);
-                    var lastWriteTime = reader.GetString(7);
+                    var durationSeconds = Math.Max(0, reader.GetInt32(6));
+                    var lastAccessTime = reader.GetString(7);
+                    var lastWriteTime = reader.GetString(8);
 
                     if (string.IsNullOrWhiteSpace(creator))
                     {
                         continue;
                     }
 
-                    var creatorFolder = FindGalleryCreatorFolder(path, creator);
+                    var creatorFolder = FindGalleryCreatorFolder(path, creator, creatorFoldersByDirectory);
                     if (string.IsNullOrWhiteSpace(creatorFolder))
                     {
                         continue;
                     }
 
-                    var key = $"{scope.Category}\u001f{creator}\u001f{creatorFolder}";
+                    var key = new GalleryCreatorSummaryKey(scope.Category, creator, creatorFolder);
                     if (!summaries.TryGetValue(key, out var summary))
                     {
                         summary = new GalleryCreatorSummaryAccumulator(scope.Category, creator, creatorFolder);
@@ -6836,10 +8326,15 @@ public sealed class GalleryDatabase
 
                     summary.TotalRating += rating;
                     summary.FileCount += 1;
-                    if (string.Equals(Path.GetExtension(path), ".zip", StringComparison.OrdinalIgnoreCase))
+                    if (path.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                     {
                         summary.ZipFileCount += 1;
                         summary.TotalImageCount += imageCount;
+                    }
+                    if (durationSeconds > 0)
+                    {
+                        summary.VideoFileCount += 1;
+                        summary.TotalDurationSeconds += durationSeconds;
                     }
                     if (rating > 0)
                     {
@@ -6872,6 +8367,16 @@ public sealed class GalleryDatabase
             var categoryOrder = scopes
                 .Select((scope, index) => (scope.Category, index))
                 .ToDictionary(entry => entry.Category, entry => entry.index, StringComparer.OrdinalIgnoreCase);
+            var folderTimestampConcurrency = Math.Clamp(Environment.ProcessorCount / 2, 2, 6);
+            var folderLastWriteTimes = summaries.Values
+                .Select(summary => summary.CreatorFolder)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .AsParallel()
+                .WithDegreeOfParallelism(folderTimestampConcurrency)
+                .ToDictionary(
+                    folder => folder,
+                    GetGalleryCreatorFolderLastWriteTime,
+                    StringComparer.OrdinalIgnoreCase);
             var items = summaries.Values
                 .Select(summary =>
                 {
@@ -6879,8 +8384,12 @@ public sealed class GalleryDatabase
                     var coreTags = ListGalleryCreatorCoreValues(summary.TagCounts, summary.FileCount);
                     var titleComposition = ListGalleryCreatorComposition(summary.TitleCounts, coreTitles, compositionLabelLimit);
                     var tagComposition = ListGalleryCreatorComposition(summary.TagCounts, coreTags, compositionLabelLimit);
-                    creatorTrackingFacts.TryGetValue(summary.Creator, out var trackingFacts);
-                    var folderLastWriteTime = GetGalleryCreatorFolderLastWriteTime(summary.CreatorFolder);
+                    CreatorTrackingSummaryFacts? trackingFacts = null;
+                    if (creatorTrackingFactsByCategory.TryGetValue(summary.Category, out var categoryTrackingFacts))
+                    {
+                        categoryTrackingFacts.TryGetValue(summary.Creator, out trackingFacts);
+                    }
+                    var folderLastWriteTime = folderLastWriteTimes.GetValueOrDefault(summary.CreatorFolder, string.Empty);
                     var lastUpdatedTime = !string.IsNullOrWhiteSpace(folderLastWriteTime)
                         ? folderLastWriteTime
                         : string.IsNullOrWhiteSpace(summary.LastUpdatedTime)
@@ -6918,7 +8427,14 @@ public sealed class GalleryDatabase
                         trackingFacts?.EvaluationMetrics ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
                         trackingFacts?.PersonalRating ?? 0,
                         GetGalleryCreatorRatingBucket(summary.TotalRating),
-                        $"{searchSource} {FileNameRomanizer.Romanize(searchSource)}".ToLowerInvariant());
+                        $"{searchSource} {FileNameRomanizer.Romanize(searchSource)}".ToLowerInvariant())
+                    {
+                        VideoFileCount = summary.VideoFileCount,
+                        TotalDurationSeconds = summary.TotalDurationSeconds,
+                        AverageDurationSeconds = summary.VideoFileCount > 0
+                            ? (int)(summary.TotalDurationSeconds / summary.VideoFileCount)
+                            : 0
+                    };
                 })
                 .OrderBy(item => categoryOrder.GetValueOrDefault(item.Category, int.MaxValue))
                 .ThenByDescending(item => item.TotalRating)
@@ -6935,44 +8451,164 @@ public sealed class GalleryDatabase
         }
     }
 
+    public (GalleryCreatorSummarySnapshotDto? Snapshot, bool IsCurrent) ReadGalleryCreatorSummaryCacheState()
+    {
+        if (!File.Exists(ExternalGalleryDatabasePath))
+        {
+            return (null, false);
+        }
+
+        var currentSignature = CreateGalleryCreatorSummarySourceSignature();
+        lock (_creatorSummaryCacheLock)
+        {
+            if (_creatorSummaryMemorySnapshot is not null &&
+                !string.IsNullOrWhiteSpace(_creatorSummaryMemorySignature) &&
+                _creatorSummaryMemorySignature.StartsWith(
+                    CreatorSummaryCacheVersion + "|",
+                    StringComparison.Ordinal))
+            {
+                return (
+                    _creatorSummaryMemorySnapshot,
+                    string.Equals(_creatorSummaryMemorySignature, currentSignature, StringComparison.Ordinal));
+            }
+
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT source_signature, payload_json FROM creator_summary_cache WHERE id = 1;";
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return (null, false);
+            }
+
+            var sourceSignature = reader.GetString(0);
+            if (!sourceSignature.StartsWith(CreatorSummaryCacheVersion + "|", StringComparison.Ordinal))
+            {
+                return (null, false);
+            }
+
+            try
+            {
+                var snapshot = JsonSerializer.Deserialize<GalleryCreatorSummarySnapshotDto>(
+                    reader.GetString(1),
+                    JsonOptions);
+                if (snapshot is null)
+                {
+                    return (null, false);
+                }
+
+                _creatorSummaryMemorySignature = sourceSignature;
+                _creatorSummaryMemorySnapshot = snapshot;
+                return (
+                    snapshot,
+                    string.Equals(sourceSignature, currentSignature, StringComparison.Ordinal));
+            }
+            catch (JsonException)
+            {
+                return (null, false);
+            }
+        }
+    }
+
+    public void WarmGalleryCreatorSummaryCache()
+    {
+        if (!File.Exists(ExternalGalleryDatabasePath))
+        {
+            return;
+        }
+
+        try
+        {
+            var sourceSignature = CreateGalleryCreatorSummarySourceSignature();
+            _ = TryReadGalleryCreatorSummaryCache(sourceSignature, out _);
+        }
+        catch
+        {
+            // Cache warming is opportunistic; the normal request path reports real failures.
+        }
+    }
+
     private string CreateGalleryCreatorSummarySourceSignature() =>
         CreateExternalDataSignature(CreatorSummaryCacheVersion);
 
     private string CreateExternalDataSignature(string cacheVersion)
     {
-        static string GetStamp(string path)
-        {
-            try
-            {
-                var info = new FileInfo(path);
-                return info.Exists ? $"{info.Length}:{info.LastWriteTimeUtc.Ticks}" : "missing";
-            }
-            catch
-            {
-                return "unknown";
-            }
-        }
-
         var fullPath = Path.GetFullPath(ExternalGalleryDatabasePath);
         return string.Join('|',
             cacheVersion,
             DateOnly.FromDateTime(DateTime.Today).ToString("yyyyMMdd", CultureInfo.InvariantCulture),
-            fullPath.ToUpperInvariant(),
-            GetStamp(fullPath),
-            GetStamp(fullPath + "-wal"));
+            GetExternalDataStamp(fullPath));
+    }
+
+    private string GetExternalDataStamp(string fullPath)
+    {
+        lock (_externalDataStampLock)
+        {
+            if (string.Equals(_externalDataStampPath, fullPath, StringComparison.OrdinalIgnoreCase) &&
+                _externalDataStamp is not null &&
+                _externalDataStampRefreshedAt != 0 &&
+                Stopwatch.GetElapsedTime(_externalDataStampRefreshedAt) < ExternalDataStampCacheDuration)
+            {
+                return _externalDataStamp;
+            }
+
+            static string GetStamp(string path)
+            {
+                try
+                {
+                    var info = new FileInfo(path);
+                    return info.Exists ? $"{info.Length}:{info.LastWriteTimeUtc.Ticks}" : "missing";
+                }
+                catch
+                {
+                    return "unknown";
+                }
+            }
+
+            _externalDataStampPath = fullPath;
+            _externalDataStamp = string.Join('|',
+                fullPath.ToUpperInvariant(),
+                GetStamp(fullPath),
+                GetStamp(fullPath + "-wal"));
+            _externalDataStampRefreshedAt = Stopwatch.GetTimestamp();
+            return _externalDataStamp;
+        }
     }
 
     private static string CreateDerivedDataCacheKey(string prefix, object value)
     {
         var payload = JsonSerializer.Serialize(value, JsonOptions);
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
+        var hash = ComputeSha256Hex(payload);
         return $"{prefix}:{hash}";
     }
 
     private static string CombineSourceSignatures(params string[] values)
     {
         var payload = string.Join('\0', values);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
+        return ComputeSha256Hex(payload);
+    }
+
+    private static string ComputeSha256Hex(string value)
+    {
+        var maximumByteCount = Encoding.UTF8.GetMaxByteCount(value.Length);
+        byte[]? rentedBuffer = null;
+        Span<byte> utf8Buffer = maximumByteCount <= 1_024
+            ? stackalloc byte[maximumByteCount]
+            : (rentedBuffer = ArrayPool<byte>.Shared.Rent(maximumByteCount));
+        try
+        {
+            var bytesWritten = Encoding.UTF8.GetBytes(value.AsSpan(), utf8Buffer);
+            Span<byte> hash = stackalloc byte[32];
+            SHA256.HashData(utf8Buffer[..bytesWritten], hash);
+            return Convert.ToHexStringLower(hash);
+        }
+        finally
+        {
+            if (rentedBuffer is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rentedBuffer);
+            }
+        }
     }
 
     private bool TryReadGalleryCreatorSummaryCache(
@@ -7128,21 +8764,15 @@ public sealed class GalleryDatabase
         }
 
         var cacheKey = $"user-metrics:{normalizedCategory}";
-        var targetPaths = ListGalleryScanTargets(normalizedCategory)
-            .Select(target => NormalizeGalleryTargetPath(target.Path))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        var supportedExtensions = GetGalleryScanSettings(normalizedCategory).SupportedExtensions
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(NormalizeExtension)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        var queryScope = GetGalleryQueryScope(normalizedCategory);
+        var targetPaths = queryScope.TargetPaths;
+        var supportedExtensions = queryScope.SupportedExtensions;
         string CreateSourceSignature() => CombineSourceSignatures(
             CreateExternalDataSignature(UserMetricsCacheVersion),
             CreateDerivedDataCacheKey("targets", new
             {
-                Paths = targetPaths.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray(),
-                Extensions = supportedExtensions.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray()
+                Paths = targetPaths,
+                Extensions = supportedExtensions
             }));
         var sourceSignature = CreateSourceSignature();
         if (!forceRefresh && TryReadDerivedDataCache(cacheKey, sourceSignature, out UserMetricsDashboardDto cachedDashboard))
@@ -7176,7 +8806,7 @@ public sealed class GalleryDatabase
             var tagsByGid = ListGalleryCreatorTagsByGid(connection);
             var titlesByGid = ListGalleryAssignedFilterValuesByGid(connection, "title");
             var charactersByGid = ListGalleryAssignedFilterValuesByGid(connection, "character");
-            var trackingFacts = ListCreatorTrackingSummaryFacts(connection);
+            var trackingFacts = ListCreatorTrackingSummaryFacts(connection, normalizedCategory);
             var creators = new Dictionary<string, UserMetricsEntityAccumulator>(StringComparer.OrdinalIgnoreCase);
             var titles = new Dictionary<string, UserMetricsEntityAccumulator>(StringComparer.OrdinalIgnoreCase);
             var characters = new Dictionary<string, UserMetricsEntityAccumulator>(StringComparer.OrdinalIgnoreCase);
@@ -7244,14 +8874,14 @@ public sealed class GalleryDatabase
                     tagsByGid.TryGetValue(gid, out var itemTags);
                     var hasTargetTag = itemTags?.Any(tag => tag.Equals(targetTag, StringComparison.OrdinalIgnoreCase)) == true;
                     UpdateUserMetricsEntity(creators, creator, rating, imageCount, isRecent, false);
-                    var itemTitles = titlesByGid.TryGetValue(gid, out var assignedTitles) && assignedTitles.Count > 0
+                    IReadOnlyList<string> itemTitles = titlesByGid.TryGetValue(gid, out var assignedTitles) && assignedTitles.Count > 0
                         ? assignedTitles
                         : SplitUserMetricsValues(title).ToArray();
                     foreach (var value in itemTitles)
                     {
                         UpdateUserMetricsEntity(titles, value, rating, imageCount, isRecent, hasTargetTag);
                     }
-                    var itemCharacters = charactersByGid.TryGetValue(gid, out var assignedCharacters) && assignedCharacters.Count > 0
+                    IReadOnlyList<string> itemCharacters = charactersByGid.TryGetValue(gid, out var assignedCharacters) && assignedCharacters.Count > 0
                         ? assignedCharacters
                         : SplitUserMetricsValues(character).ToArray();
                     foreach (var value in itemCharacters)
@@ -7342,7 +8972,7 @@ public sealed class GalleryDatabase
         var service = new UserMetricsRegressionService(
             ExternalGalleryDatabasePath,
             _databasePath,
-            GetCreatorTrackingMetricSettings());
+            GetCreatorTrackingMetricSettings(category));
         return service.Read(category);
     }
 
@@ -7356,7 +8986,7 @@ public sealed class GalleryDatabase
         var service = new UserMetricsRegressionService(
             ExternalGalleryDatabasePath,
             _databasePath,
-            GetCreatorTrackingMetricSettings());
+            GetCreatorTrackingMetricSettings(category));
         return service.Analyze(category);
     }
 
@@ -7694,7 +9324,7 @@ public sealed class GalleryDatabase
         return denominator > 0 ? numerator / denominator : 0;
     }
 
-    private static IReadOnlyDictionary<string, IReadOnlyList<string>> ListGalleryCreatorTagsByGid(SqliteConnection connection)
+    private static IReadOnlyDictionary<string, List<string>> ListGalleryCreatorTagsByGid(SqliteConnection connection)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -7718,13 +9348,10 @@ public sealed class GalleryDatabase
             tags.Add(reader.GetString(1));
         }
 
-        return tagsByGid.ToDictionary(
-            entry => entry.Key,
-            entry => (IReadOnlyList<string>)entry.Value,
-            StringComparer.OrdinalIgnoreCase);
+        return tagsByGid;
     }
 
-    private static IReadOnlyDictionary<string, IReadOnlyList<string>> ListGalleryAssignedFilterValuesByGid(
+    private static IReadOnlyDictionary<string, List<string>> ListGalleryAssignedFilterValuesByGid(
         SqliteConnection connection,
         string filterType)
     {
@@ -7762,10 +9389,7 @@ public sealed class GalleryDatabase
             values.Add(reader.GetString(1));
         }
 
-        return valuesByGid.ToDictionary(
-            entry => entry.Key,
-            entry => (IReadOnlyList<string>)entry.Value,
-            StringComparer.OrdinalIgnoreCase);
+        return valuesByGid;
     }
 
     private static string[] ListGalleryCreatorCoreValues(IReadOnlyDictionary<string, int> counts, int totalFileCount)
@@ -7817,7 +9441,10 @@ public sealed class GalleryDatabase
         return visible;
     }
 
-    private static string FindGalleryCreatorFolder(string fullPath, string creator)
+    private static string FindGalleryCreatorFolder(
+        string fullPath,
+        string creator,
+        IDictionary<string, string> foldersByDirectory)
     {
         if (string.IsNullOrWhiteSpace(fullPath) || string.IsNullOrWhiteSpace(creator))
         {
@@ -7833,21 +9460,50 @@ public sealed class GalleryDatabase
         try
         {
             var exactFolderName = $"【{creator}】";
-            for (var directory = new DirectoryInfo(directoryPath); directory is not null; directory = directory.Parent)
+            List<string>? visitedKeys = null;
+            var creatorFolder = string.Empty;
+            for (var currentPath = directoryPath; !string.IsNullOrWhiteSpace(currentPath);)
             {
-                if (string.Equals(directory.Name, exactFolderName, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(directory.Name, creator, StringComparison.OrdinalIgnoreCase))
+                var cacheKey = $"{creator}\u001f{currentPath}";
+                if (foldersByDirectory.TryGetValue(cacheKey, out var cachedFolder))
                 {
-                    return directory.FullName;
+                    creatorFolder = cachedFolder ?? string.Empty;
+                    break;
+                }
+
+                (visitedKeys ??= []).Add(cacheKey);
+                var folderName = Path.GetFileName(
+                    currentPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                if (string.Equals(folderName, exactFolderName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(folderName, creator, StringComparison.OrdinalIgnoreCase))
+                {
+                    creatorFolder = currentPath;
+                    break;
+                }
+
+                var parentPath = Path.GetDirectoryName(
+                    currentPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                if (string.IsNullOrWhiteSpace(parentPath) ||
+                    string.Equals(parentPath, currentPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    break;
+                }
+                currentPath = parentPath;
+            }
+
+            if (visitedKeys is not null)
+            {
+                foreach (var cacheKey in visitedKeys)
+                {
+                    foldersByDirectory[cacheKey] = creatorFolder;
                 }
             }
+            return creatorFolder;
         }
         catch
         {
             return string.Empty;
         }
-
-        return string.Empty;
     }
 
     private static string SelectLatestGalleryTimestamp(string current, string candidate)
@@ -7860,11 +9516,27 @@ public sealed class GalleryDatabase
         {
             return candidate;
         }
+        if (current.Length == candidate.Length &&
+            HasSortableGalleryTimestampShape(current) &&
+            HasSortableGalleryTimestampShape(candidate) &&
+            current[10] == candidate[10])
+        {
+            return string.CompareOrdinal(candidate, current) > 0 ? candidate : current;
+        }
         if (DateTime.TryParse(current, out var currentDate) && DateTime.TryParse(candidate, out var candidateDate))
         {
             return candidateDate > currentDate ? candidate : current;
         }
         return string.Compare(candidate, current, StringComparison.Ordinal) > 0 ? candidate : current;
+    }
+
+    private static bool HasSortableGalleryTimestampShape(string value)
+    {
+        return value.Length >= 19 &&
+               value[4] == '-' &&
+               value[7] == '-' &&
+               value[13] == ':' &&
+               value[16] == ':';
     }
 
     private static string GetGalleryCreatorFolderLastWriteTime(string folderPath)
@@ -11118,12 +12790,1295 @@ public sealed class GalleryDatabase
         return new GalleryTagAssignmentResultDto(addedCount, skippedCount, removedCount);
     }
 
+    private static AiAttributeInferenceFilterDto NormalizeAiAttributeInferenceFilter(
+        AiAttributeInferenceFilterDto? filter)
+    {
+        filter ??= new AiAttributeInferenceFilterDto();
+        int? minimumRating = filter.MinimumRating is { } rawMinimumRating
+            ? Math.Max(0, rawMinimumRating)
+            : null;
+        int? maximumRating = filter.MaximumRating is { } rawMaximumRating
+            ? Math.Max(0, rawMaximumRating)
+            : null;
+        if (minimumRating is { } minRating &&
+            maximumRating is { } maxRating &&
+            minRating > maxRating)
+        {
+            (minimumRating, maximumRating) = (maxRating, minRating);
+        }
+
+        int? minimumImageCount = filter.MinimumImageCount is { } rawMinimumImageCount
+            ? Math.Max(0, rawMinimumImageCount)
+            : null;
+        int? maximumImageCount = filter.MaximumImageCount is { } rawMaximumImageCount
+            ? Math.Max(0, rawMaximumImageCount)
+            : null;
+        if (minimumImageCount is { } minImages &&
+            maximumImageCount is { } maxImages &&
+            minImages > maxImages)
+        {
+            (minimumImageCount, maximumImageCount) =
+                (maxImages, minImages);
+        }
+
+        return new AiAttributeInferenceFilterDto
+        {
+            Creators = NormalizeAiAttributeInferenceValues(filter.Creators),
+            Tags = NormalizeAiAttributeInferenceValues(filter.Tags),
+            Paths = (filter.Paths ?? [])
+                .Select(path => path?.Trim() ?? string.Empty)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(20)
+                .ToArray(),
+            TagMatch = string.Equals(
+                filter.TagMatch,
+                "all",
+                StringComparison.OrdinalIgnoreCase)
+                ? "all"
+                : "any",
+            PathContains = NormalizeAiAttributeInferenceText(filter.PathContains),
+            FileNameContains =
+                NormalizeAiAttributeInferenceText(filter.FileNameContains),
+            MinimumRating = minimumRating,
+            MaximumRating = maximumRating,
+            MinimumImageCount = minimumImageCount,
+            MaximumImageCount = maximumImageCount
+        };
+    }
+
+    private static string[] NormalizeAiAttributeInferenceValues(
+        IReadOnlyList<string>? values) =>
+        (values ?? [])
+        .Select(NormalizeAiAttributeInferenceText)
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Take(100)
+        .ToArray();
+
+    private static string NormalizeAiAttributeInferenceText(string? value)
+    {
+        value = value?.Trim() ?? string.Empty;
+        return value[..Math.Min(value.Length, 512)];
+    }
+
+    private static string BuildAiAttributeInferenceConditionWhere(
+        AiAttributeInferenceFilterDto filter)
+    {
+        var clauses = new List<string>();
+        if (filter.Paths.Count > 0)
+        {
+            var pathParameters = string.Join(
+                ", ",
+                filter.Paths.Select((_, index) => $"$inferencePath{index}"));
+            clauses.Add($"i.current_path COLLATE NOCASE IN ({pathParameters})");
+        }
+        if (filter.Tags.Count > 0)
+        {
+            var tagParameters = string.Join(
+                ", ",
+                filter.Tags.Select((_, index) => $"$inferenceTag{index}"));
+            if (filter.TagMatch == "all")
+            {
+                clauses.Add($"""
+                    (
+                        SELECT COUNT(DISTINCT tag.tag COLLATE NOCASE)
+                        FROM item_tags AS tag_map
+                        JOIN tags AS tag ON tag.tag_id = tag_map.tag_id
+                        WHERE tag_map.gid = i.gid
+                          AND tag.tag COLLATE NOCASE IN ({tagParameters})
+                    ) = $inferenceTagCount
+                    """);
+            }
+            else
+            {
+                clauses.Add($"""
+                    EXISTS (
+                        SELECT 1
+                        FROM item_tags AS tag_map
+                        JOIN tags AS tag ON tag.tag_id = tag_map.tag_id
+                        WHERE tag_map.gid = i.gid
+                          AND tag.tag COLLATE NOCASE IN ({tagParameters})
+                    )
+                    """);
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(filter.PathContains))
+        {
+            clauses.Add(
+                "instr(lower(i.current_path), lower($inferencePathContains)) > 0");
+        }
+        if (!string.IsNullOrWhiteSpace(filter.FileNameContains))
+        {
+            clauses.Add("""
+                instr(
+                    lower(COALESCE(NULLIF(i.source_zip_name, ''), i.current_path)),
+                    lower($inferenceFileNameContains)) > 0
+                """);
+        }
+        if (filter.MinimumRating is not null)
+        {
+            clauses.Add("COALESCE(i.rating, 0) >= $inferenceMinimumRating");
+        }
+        if (filter.MaximumRating is not null)
+        {
+            clauses.Add("COALESCE(i.rating, 0) <= $inferenceMaximumRating");
+        }
+        if (filter.MinimumImageCount is not null)
+        {
+            clauses.Add("COALESCE(i.image_count, 0) >= $inferenceMinimumImageCount");
+        }
+        if (filter.MaximumImageCount is not null)
+        {
+            clauses.Add("COALESCE(i.image_count, 0) <= $inferenceMaximumImageCount");
+        }
+        return string.Join(" AND ", clauses);
+    }
+
+    private static void AddAiAttributeInferenceConditionParameters(
+        SqliteCommand command,
+        AiAttributeInferenceFilterDto filter)
+    {
+        for (var index = 0; index < filter.Paths.Count; index++)
+        {
+            command.Parameters.AddWithValue(
+                $"$inferencePath{index}",
+                filter.Paths[index]);
+        }
+        for (var index = 0; index < filter.Tags.Count; index++)
+        {
+            command.Parameters.AddWithValue(
+                $"$inferenceTag{index}",
+                filter.Tags[index]);
+        }
+        if (filter.Tags.Count > 0 && filter.TagMatch == "all")
+        {
+            command.Parameters.AddWithValue(
+                "$inferenceTagCount",
+                filter.Tags.Count);
+        }
+        if (!string.IsNullOrWhiteSpace(filter.PathContains))
+        {
+            command.Parameters.AddWithValue(
+                "$inferencePathContains",
+                filter.PathContains);
+        }
+        if (!string.IsNullOrWhiteSpace(filter.FileNameContains))
+        {
+            command.Parameters.AddWithValue(
+                "$inferenceFileNameContains",
+                filter.FileNameContains);
+        }
+        if (filter.MinimumRating is { } minimumRating)
+        {
+            command.Parameters.AddWithValue(
+                "$inferenceMinimumRating",
+                minimumRating);
+        }
+        if (filter.MaximumRating is { } maximumRating)
+        {
+            command.Parameters.AddWithValue(
+                "$inferenceMaximumRating",
+                maximumRating);
+        }
+        if (filter.MinimumImageCount is { } minimumImageCount)
+        {
+            command.Parameters.AddWithValue(
+                "$inferenceMinimumImageCount",
+                minimumImageCount);
+        }
+        if (filter.MaximumImageCount is { } maximumImageCount)
+        {
+            command.Parameters.AddWithValue(
+                "$inferenceMaximumImageCount",
+                maximumImageCount);
+        }
+    }
+
+    public AiAttributeInferenceBatchDto ListAiAttributeInferenceBatch(
+        string galleryCategory,
+        string creator,
+        string cursor,
+        int batchSize,
+        AiAttributeInferenceFilterDto? filter = null)
+    {
+        galleryCategory = galleryCategory.Trim();
+        creator = creator.Trim();
+        cursor = cursor.Trim();
+        batchSize = Math.Clamp(batchSize, 1, 20);
+        var normalizedFilter = NormalizeAiAttributeInferenceFilter(filter);
+        if (string.IsNullOrWhiteSpace(galleryCategory) ||
+            !File.Exists(ExternalGalleryDatabasePath))
+        {
+            return new AiAttributeInferenceBatchDto([], [], 0, string.Empty);
+        }
+
+        EnsureExternalGalleryGidSchema();
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = ExternalGalleryDatabasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Cache = SqliteCacheMode.Shared
+        }.ConnectionString);
+        connection.Open();
+
+        var queryScope = GetGalleryQueryScope(galleryCategory);
+        var creators = normalizedFilter.Creators
+            .Concat(string.IsNullOrWhiteSpace(creator) ? [] : [creator])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var where = BuildGalleryWorkWhere(
+            [],
+            [],
+            creators,
+            [],
+            [],
+            queryScope.TargetPaths,
+            queryScope.SupportedExtensions);
+        where += " AND TRIM(COALESCE(i.creator, '')) <> ''";
+        var inferenceConditionWhere =
+            BuildAiAttributeInferenceConditionWhere(normalizedFilter);
+        if (!string.IsNullOrWhiteSpace(inferenceConditionWhere))
+        {
+            where += " AND " + inferenceConditionWhere;
+        }
+        const string unassignedTitle = """
+            NOT EXISTS (
+                SELECT 1
+                FROM gallery_item_filter_combinations AS combination_map
+                JOIN gallery_filter_combinations AS combination
+                  ON combination.combination_id = combination_map.combination_id
+                 AND combination.use_flg <> 0
+                WHERE combination_map.gid = i.gid
+                  AND combination.title_filter_id IS NOT NULL
+            )
+            """;
+
+        int totalUnassigned;
+        using (var count = connection.CreateCommand())
+        {
+            count.CommandText = $"SELECT COUNT(*) FROM items AS i WHERE {where} AND {unassignedTitle};";
+            AddGalleryWorkParameters(
+                count,
+                galleryCategory,
+                [],
+                [],
+                creators,
+                [],
+                [],
+                queryScope.TargetPaths,
+                queryScope.SupportedExtensions);
+            AddAiAttributeInferenceConditionParameters(count, normalizedFilter);
+            totalUnassigned = Convert.ToInt32((long)(count.ExecuteScalar() ?? 0L));
+        }
+
+        var rows = new List<(string Gid, string Path, string Name, string Category, string Creator, int ImageCount)>();
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = $"""
+                SELECT i.gid,
+                       i.current_path,
+                       COALESCE(NULLIF(i.source_zip_name, ''), i.current_path),
+                       COALESCE(i.category, ''),
+                       COALESCE(i.creator, ''),
+                       COALESCE(i.image_count, 0)
+                FROM items AS i
+                WHERE {where}
+                  AND {unassignedTitle}
+                  AND ($cursor = '' OR i.current_path COLLATE NOCASE > $cursor COLLATE NOCASE)
+                ORDER BY i.current_path COLLATE NOCASE, i.gid
+                LIMIT $limit;
+                """;
+            AddGalleryWorkParameters(
+                command,
+                galleryCategory,
+                [],
+                [],
+                creators,
+                [],
+                [],
+                queryScope.TargetPaths,
+                queryScope.SupportedExtensions);
+            AddAiAttributeInferenceConditionParameters(command, normalizedFilter);
+            command.Parameters.AddWithValue("$cursor", cursor);
+            command.Parameters.AddWithValue("$limit", batchSize);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                rows.Add((
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.GetString(4),
+                    reader.GetInt32(5)));
+            }
+        }
+
+        var works = rows
+            .Select(row => new AiAttributeInferenceWorkDto(
+                row.Gid,
+                row.Path,
+                row.Name,
+                row.Category,
+                row.Creator,
+                ListAiTitleHintFolders(row.Path, row.Creator),
+                row.ImageCount,
+                ListAiTitleCandidates(
+                    connection,
+                    galleryCategory,
+                    row.Creator,
+                    row.Path,
+                    48)))
+            .ToArray();
+        var learningExamples = ListAiAttributeLearningExamples(
+            connection,
+            creator,
+            16);
+        return new AiAttributeInferenceBatchDto(
+            works,
+            learningExamples,
+            totalUnassigned,
+            rows.Count == 0 ? string.Empty : rows[^1].Path);
+    }
+
+    private static IReadOnlyList<string> ListAiTitleHintFolders(
+        string path,
+        string creator)
+    {
+        var directory = Path.GetDirectoryName(path);
+        creator = creator.Trim();
+        if (string.IsNullOrWhiteSpace(directory) ||
+            string.IsNullOrWhiteSpace(creator))
+        {
+            return [];
+        }
+
+        var segments = directory
+            .Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var creatorIndex = Array.FindLastIndex(
+            segments,
+            segment => GalleryCreatorPathRules.IsCreatorBoundary(segment, creator));
+        if (creatorIndex < 0 || creatorIndex >= segments.Length - 1)
+        {
+            return [];
+        }
+
+        return segments
+            .Skip(creatorIndex + 1)
+            .Where(segment => !string.IsNullOrWhiteSpace(segment))
+            .Take(12)
+            .ToArray();
+    }
+
+    public IReadOnlyList<AiAttributeCharacterCandidateSetDto>
+        ListAiAttributeCharacterCandidates(
+            string galleryCategory,
+            IReadOnlyList<AiAttributeCharacterRequestDto> requests)
+    {
+        galleryCategory = galleryCategory.Trim();
+        var normalizedRequests = requests
+            .Where(request => request.TitleId > 0 && !string.IsNullOrWhiteSpace(request.Path))
+            .Select(request => request with { Path = request.Path.Trim() })
+            .DistinctBy(request => (request.Path.ToLowerInvariant(), request.TitleId))
+            .Take(20)
+            .ToArray();
+        if (string.IsNullOrWhiteSpace(galleryCategory) ||
+            normalizedRequests.Length == 0 ||
+            !File.Exists(ExternalGalleryDatabasePath))
+        {
+            return [];
+        }
+
+        EnsureExternalGalleryGidSchema();
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = ExternalGalleryDatabasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Cache = SqliteCacheMode.Shared
+        }.ConnectionString);
+        connection.Open();
+
+        var result = new List<AiAttributeCharacterCandidateSetDto>(normalizedRequests.Length);
+        foreach (var request in normalizedRequests)
+        {
+            string creator;
+            using (var findCreator = connection.CreateCommand())
+            {
+                findCreator.CommandText = """
+                    SELECT COALESCE(creator, '')
+                    FROM items
+                    WHERE current_path = $path COLLATE NOCASE
+                      AND category = $category
+                      AND COALESCE(archived_flg, 0) = 0;
+                    """;
+                findCreator.Parameters.AddWithValue("$path", request.Path);
+                findCreator.Parameters.AddWithValue("$category", galleryCategory);
+                creator = (findCreator.ExecuteScalar() as string)?.Trim() ?? string.Empty;
+            }
+
+            string title;
+            using (var findTitle = connection.CreateCommand())
+            {
+                findTitle.CommandText = """
+                    SELECT canonical_name
+                    FROM gallery_filters
+                    WHERE filter_id = $titleId
+                      AND filter_type = 'title';
+                    """;
+                findTitle.Parameters.AddWithValue("$titleId", request.TitleId);
+                title = (findTitle.ExecuteScalar() as string)?.Trim() ?? string.Empty;
+            }
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                continue;
+            }
+
+            result.Add(new AiAttributeCharacterCandidateSetDto(
+                request.Path,
+                request.TitleId,
+                title,
+                ListAiCharacterCandidates(
+                    connection,
+                    galleryCategory,
+                    creator,
+                    request.Path,
+                    request.TitleId,
+                    80)));
+        }
+        return result;
+    }
+
+    public AiAttributeInferenceApplyResultDto ApplyAiAttributeInferences(
+        IReadOnlyList<AiAttributeInferenceAssignmentDto> assignments)
+    {
+        var normalizedAssignments = assignments
+            .Where(assignment =>
+                assignment.TitleIds.Any(id => id > 0) &&
+                !string.IsNullOrWhiteSpace(assignment.Path))
+            .Select(assignment => assignment with
+            {
+                Path = assignment.Path.Trim(),
+                TitleIds = assignment.TitleIds
+                    .Where(id => id > 0)
+                    .Distinct()
+                    .Order()
+                    .Take(8)
+                    .ToArray(),
+                CharacterIds = assignment.CharacterIds
+                    .Where(id => id > 0)
+                    .Distinct()
+                    .Order()
+                    .Take(32)
+                    .ToArray(),
+                Confidence = Math.Clamp(assignment.Confidence, 0d, 1d),
+                Reason = (assignment.Reason ?? string.Empty).Trim()[..Math.Min(
+                    (assignment.Reason ?? string.Empty).Trim().Length,
+                    2_000)]
+            })
+            .DistinctBy(assignment => assignment.Path, StringComparer.OrdinalIgnoreCase)
+            .Take(50)
+            .ToArray();
+        if (normalizedAssignments.Length == 0)
+        {
+            return new AiAttributeInferenceApplyResultDto(0, 0, []);
+        }
+
+        EnsureExternalGalleryGidSchema();
+        var appliedCount = 0;
+        var skippedCount = 0;
+        var errors = new List<string>();
+        foreach (var assignment in normalizedAssignments)
+        {
+            try
+            {
+                string gid;
+                string category;
+                string creator;
+                using (var connection = OpenExternalReadWriteConnection(ExternalGalleryDatabasePath))
+                {
+                    using var findItem = connection.CreateCommand();
+                    findItem.CommandText = """
+                        SELECT i.gid, COALESCE(i.category, ''), COALESCE(i.creator, '')
+                        FROM items AS i
+                        WHERE i.current_path = $path COLLATE NOCASE
+                          AND COALESCE(i.archived_flg, 0) = 0
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM gallery_item_filter_combinations AS combination_map
+                              JOIN gallery_filter_combinations AS combination
+                                ON combination.combination_id = combination_map.combination_id
+                               AND combination.use_flg <> 0
+                              WHERE combination_map.gid = i.gid
+                                AND combination.title_filter_id IS NOT NULL
+                          );
+                        """;
+                    findItem.Parameters.AddWithValue("$path", assignment.Path);
+                    using var reader = findItem.ExecuteReader();
+                    if (!reader.Read())
+                    {
+                        skippedCount++;
+                        continue;
+                    }
+                    gid = reader.GetString(0);
+                    category = reader.GetString(1);
+                    creator = reader.GetString(2);
+                }
+
+                ValidateAiAttributeInferenceSelection(
+                    category,
+                    assignment.TitleIds,
+                    assignment.CharacterIds);
+                foreach (var titleId in assignment.TitleIds)
+                {
+                    UpdateGalleryWorkTitles([assignment.Path], titleId, []);
+                }
+                if (assignment.CharacterIds.Count > 0)
+                {
+                    UpdateGalleryWorkCharacters(
+                        [assignment.Path],
+                        assignment.CharacterIds,
+                        []);
+                }
+                RecordAiAttributeInference(
+                    gid,
+                    assignment.Path,
+                    category,
+                    creator,
+                    assignment);
+                ResolveAiAttributeInferenceReviews([assignment.Path]);
+                appliedCount++;
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{assignment.Path}: {ex.Message}");
+            }
+        }
+
+        if (appliedCount > 0)
+        {
+            ClearGalleryDefinitionMemoryCaches();
+            ClearGalleryDerivedCaches();
+        }
+        return new AiAttributeInferenceApplyResultDto(
+            appliedCount,
+            skippedCount,
+            errors);
+    }
+
+    public int QueueAiAttributeInferenceReviews(
+        string galleryCategory,
+        IReadOnlyList<AiAttributeInferenceReviewRequestDto> works)
+    {
+        galleryCategory = galleryCategory.Trim();
+        var normalizedWorks = works
+            .Where(work => !string.IsNullOrWhiteSpace(work.Path))
+            .Select(work => new AiAttributeInferenceReviewRequestDto(
+                work.Path.Trim(),
+                (work.Reason ?? string.Empty).Trim()))
+            .DistinctBy(work => work.Path, StringComparer.OrdinalIgnoreCase)
+            .Take(50)
+            .ToArray();
+        if (string.IsNullOrWhiteSpace(galleryCategory) || normalizedWorks.Length == 0)
+        {
+            return 0;
+        }
+
+        EnsureExternalGalleryGidSchema();
+        using var connection = OpenExternalReadWriteConnection(ExternalGalleryDatabasePath);
+        using var transaction = connection.BeginTransaction();
+        var queuedCount = 0;
+        var now = DateTimeOffset.UtcNow.ToString(
+            "yyyy-MM-dd'T'HH:mm:ss.fff'Z'",
+            CultureInfo.InvariantCulture);
+        foreach (var work in normalizedWorks)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO ai_attribute_inference_review_queue (
+                    gid,
+                    reason,
+                    created_at,
+                    updated_at)
+                SELECT item.gid,
+                       $reason,
+                       $now,
+                       $now
+                FROM items AS item
+                WHERE item.current_path = $path COLLATE NOCASE
+                  AND item.category = $category COLLATE NOCASE
+                  AND COALESCE(item.archived_flg, 0) = 0
+                  AND TRIM(COALESCE(item.creator, '')) <> ''
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM gallery_item_filter_combinations AS combination_map
+                      JOIN gallery_filter_combinations AS combination
+                        ON combination.combination_id = combination_map.combination_id
+                       AND combination.use_flg <> 0
+                      WHERE combination_map.gid = item.gid
+                        AND combination.title_filter_id IS NOT NULL
+                  )
+                ON CONFLICT(gid) DO UPDATE SET
+                    reason = CASE
+                        WHEN length(trim(excluded.reason)) > 0 THEN excluded.reason
+                        ELSE ai_attribute_inference_review_queue.reason
+                    END,
+                    updated_at = excluded.updated_at;
+                """;
+            command.Parameters.AddWithValue("$path", work.Path);
+            command.Parameters.AddWithValue("$category", galleryCategory);
+            command.Parameters.AddWithValue(
+                "$reason",
+                work.Reason[..Math.Min(work.Reason.Length, 1_000)]);
+            command.Parameters.AddWithValue("$now", now);
+            if (command.ExecuteNonQuery() > 0)
+            {
+                queuedCount++;
+            }
+        }
+        transaction.Commit();
+        return queuedCount;
+    }
+
+    public IReadOnlyList<AiAttributeInferenceReviewItemDto>
+        ListAiAttributeInferenceReviews()
+    {
+        EnsureExternalGalleryGidSchema();
+        using var connection = OpenExternalReadWriteConnection(ExternalGalleryDatabasePath);
+        using (var cleanup = connection.CreateCommand())
+        {
+            cleanup.CommandText = """
+                DELETE FROM ai_attribute_inference_review_queue
+                WHERE gid NOT IN (
+                    SELECT item.gid
+                    FROM items AS item
+                    WHERE COALESCE(item.archived_flg, 0) = 0
+                      AND TRIM(COALESCE(item.creator, '')) <> ''
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM gallery_item_filter_combinations AS combination_map
+                          JOIN gallery_filter_combinations AS combination
+                            ON combination.combination_id = combination_map.combination_id
+                           AND combination.use_flg <> 0
+                          WHERE combination_map.gid = item.gid
+                            AND combination.title_filter_id IS NOT NULL
+                      )
+                );
+                """;
+            cleanup.ExecuteNonQuery();
+        }
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT item.gid,
+                   item.current_path,
+                   item.source_zip_name,
+                   COALESCE(item.category, ''),
+                   COALESCE(item.creator, ''),
+                   COALESCE(item.image_count, 0),
+                   review.reason,
+                   review.created_at
+            FROM ai_attribute_inference_review_queue AS review
+            JOIN items AS item ON item.gid = review.gid
+            ORDER BY review.created_at, item.creator COLLATE NOCASE,
+                     item.source_zip_name COLLATE NOCASE;
+            """;
+        using var reader = command.ExecuteReader();
+        var result = new List<AiAttributeInferenceReviewItemDto>();
+        while (reader.Read())
+        {
+            result.Add(new AiAttributeInferenceReviewItemDto(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetInt32(5),
+                reader.GetString(6),
+                reader.GetString(7)));
+        }
+        return result;
+    }
+
+    public int ResolveAiAttributeInferenceReviews(IReadOnlyList<string> paths)
+    {
+        var normalizedPaths = paths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => path.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalizedPaths.Length == 0)
+        {
+            return 0;
+        }
+
+        EnsureExternalGalleryGidSchema();
+        using var connection = OpenExternalReadWriteConnection(ExternalGalleryDatabasePath);
+        using var transaction = connection.BeginTransaction();
+        var removedCount = 0;
+        foreach (var path in normalizedPaths)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                DELETE FROM ai_attribute_inference_review_queue
+                WHERE gid IN (
+                    SELECT gid
+                    FROM items
+                    WHERE current_path = $path COLLATE NOCASE
+                );
+                """;
+            command.Parameters.AddWithValue("$path", path);
+            removedCount += command.ExecuteNonQuery();
+        }
+        transaction.Commit();
+        return removedCount;
+    }
+
+    private static IReadOnlyList<AiAttributeCandidateDto> ListAiTitleCandidates(
+        SqliteConnection connection,
+        string galleryCategory,
+        string creator,
+        string sourcePath,
+        int limit)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            WITH usage AS (
+                SELECT combination.title_filter_id AS filter_id,
+                       COUNT(DISTINCT item.gid) AS total_count,
+                       COUNT(DISTINCT CASE
+                           WHEN item.creator = $creator COLLATE NOCASE THEN item.gid
+                       END) AS creator_count
+                FROM items AS item
+                JOIN gallery_item_filter_combinations AS combination_map
+                  ON combination_map.gid = item.gid
+                JOIN gallery_filter_combinations AS combination
+                  ON combination.combination_id = combination_map.combination_id
+                 AND combination.use_flg <> 0
+                WHERE item.category = $category
+                  AND COALESCE(item.archived_flg, 0) = 0
+                  AND combination.title_filter_id IS NOT NULL
+                GROUP BY combination.title_filter_id
+            )
+            SELECT title_filter.filter_id,
+                   title_filter.canonical_name,
+                   COALESCE(filter_category.name, '未分類'),
+                   COALESCE(usage.creator_count, 0),
+                   COALESCE(usage.total_count, 0),
+                   COALESCE((
+                       SELECT group_concat(alias.alias, '|')
+                       FROM gallery_filter_aliases AS alias
+                       WHERE alias.filter_id = title_filter.filter_id
+                   ), ''),
+                   CASE WHEN EXISTS (
+                       SELECT 1
+                       FROM gallery_filter_aliases AS path_alias
+                       WHERE path_alias.filter_id = title_filter.filter_id
+                         AND length(trim(path_alias.alias)) >= 2
+                         AND instr(lower($sourcePath), lower(path_alias.alias)) > 0
+                   ) THEN 1 ELSE 0 END AS path_match
+            FROM gallery_filters AS title_filter
+            JOIN gallery_filter_section_visibility AS visibility
+              ON visibility.filter_id = title_filter.filter_id
+             AND visibility.gallery_category = $category
+             AND visibility.is_visible <> 0
+            LEFT JOIN filter_categories AS filter_category
+              ON filter_category.category_id = title_filter.filter_category_id
+            LEFT JOIN usage ON usage.filter_id = title_filter.filter_id
+            WHERE title_filter.filter_type = 'title'
+            ORDER BY path_match DESC,
+                     COALESCE(usage.creator_count, 0) DESC,
+                     COALESCE(usage.total_count, 0) DESC,
+                     title_filter.canonical_name COLLATE NOCASE
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$category", galleryCategory);
+        command.Parameters.AddWithValue("$creator", creator);
+        command.Parameters.AddWithValue("$sourcePath", sourcePath);
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = command.ExecuteReader();
+        var result = new List<AiAttributeCandidateDto>();
+        while (reader.Read())
+        {
+            result.Add(new AiAttributeCandidateDto(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                string.Empty,
+                reader.GetString(2),
+                reader.GetInt32(3),
+                reader.GetInt32(4),
+                SplitAiAttributeAliases(reader.GetString(5))));
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<AiAttributeCandidateDto> ListAiCharacterCandidates(
+        SqliteConnection connection,
+        string galleryCategory,
+        string creator,
+        string sourcePath,
+        long titleId,
+        int limit)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            WITH usage AS (
+                SELECT combination.character_filter_id AS filter_id,
+                       COUNT(DISTINCT item.gid) AS total_count,
+                       COUNT(DISTINCT CASE
+                           WHEN item.creator = $creator COLLATE NOCASE THEN item.gid
+                       END) AS creator_count
+                FROM items AS item
+                JOIN gallery_item_filter_combinations AS combination_map
+                  ON combination_map.gid = item.gid
+                JOIN gallery_filter_combinations AS combination
+                  ON combination.combination_id = combination_map.combination_id
+                 AND combination.use_flg <> 0
+                WHERE item.category = $category
+                  AND COALESCE(item.archived_flg, 0) = 0
+                  AND combination.title_filter_id = $titleId
+                  AND combination.character_filter_id IS NOT NULL
+                GROUP BY combination.character_filter_id
+            )
+            SELECT character_filter.filter_id,
+                   character_filter.canonical_name,
+                   title_filter.canonical_name,
+                   COALESCE(usage.creator_count, 0),
+                   COALESCE(usage.total_count, 0),
+                   COALESCE((
+                       SELECT group_concat(alias.alias, '|')
+                       FROM gallery_filter_aliases AS alias
+                       WHERE alias.filter_id = character_filter.filter_id
+                   ), ''),
+                   CASE WHEN EXISTS (
+                       SELECT 1
+                       FROM gallery_filter_aliases AS path_alias
+                       WHERE path_alias.filter_id = character_filter.filter_id
+                         AND length(trim(path_alias.alias)) >= 2
+                         AND instr(lower($sourcePath), lower(path_alias.alias)) > 0
+                   ) THEN 1 ELSE 0 END AS path_match
+            FROM gallery_filters AS character_filter
+            JOIN gallery_filters AS title_filter
+              ON title_filter.filter_id = character_filter.parent_filter_id
+             AND title_filter.filter_type = 'title'
+            JOIN gallery_filter_section_visibility AS visibility
+              ON visibility.filter_id = character_filter.filter_id
+             AND visibility.gallery_category = $category
+             AND visibility.is_visible <> 0
+            LEFT JOIN usage ON usage.filter_id = character_filter.filter_id
+            WHERE character_filter.filter_type = 'character'
+              AND character_filter.parent_filter_id = $titleId
+            ORDER BY path_match DESC,
+                     COALESCE(usage.creator_count, 0) DESC,
+                     COALESCE(usage.total_count, 0) DESC,
+                     character_filter.canonical_name COLLATE NOCASE
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$category", galleryCategory);
+        command.Parameters.AddWithValue("$creator", creator);
+        command.Parameters.AddWithValue("$sourcePath", sourcePath);
+        command.Parameters.AddWithValue("$titleId", titleId);
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = command.ExecuteReader();
+        var result = new List<AiAttributeCandidateDto>();
+        while (reader.Read())
+        {
+            result.Add(new AiAttributeCandidateDto(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                string.Empty,
+                reader.GetInt32(3),
+                reader.GetInt32(4),
+                SplitAiAttributeAliases(reader.GetString(5))));
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<string> SplitAiAttributeAliases(string aliases) =>
+        aliases.Split(
+                '|',
+                StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(24)
+            .ToArray();
+
+    private static IReadOnlyList<AiAttributeLearningExampleDto>
+        ListAiAttributeLearningExamples(
+            SqliteConnection connection,
+            string creator,
+            int limit)
+    {
+        if (!DatabaseTableExists(connection, "main", "ai_attribute_correction_history"))
+        {
+            return [];
+        }
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT inference.creator,
+                   inference.source_path,
+                   inference.predicted_title_ids_json,
+                   inference.predicted_character_ids_json,
+                   correction.title_ids_json,
+                   correction.character_ids_json
+            FROM ai_attribute_correction_history AS correction
+            JOIN ai_attribute_inference_history AS inference
+              ON inference.inference_id = correction.inference_id
+            WHERE correction.correction_id = (
+                      SELECT MAX(latest.correction_id)
+                      FROM ai_attribute_correction_history AS latest
+                      WHERE latest.inference_id = correction.inference_id
+                  )
+              AND ($creator = '' OR inference.creator = $creator COLLATE NOCASE)
+            ORDER BY correction.corrected_at DESC, correction.correction_id DESC
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$creator", creator);
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = command.ExecuteReader();
+        var raw = new List<(string Creator, string Path, long[] PredictedTitles, long[] PredictedCharacters, long[] CorrectedTitles, long[] CorrectedCharacters)>();
+        while (reader.Read())
+        {
+            raw.Add((
+                reader.GetString(0),
+                reader.GetString(1),
+                ParseAiAttributeIds(reader.GetString(2)),
+                ParseAiAttributeIds(reader.GetString(3)),
+                ParseAiAttributeIds(reader.GetString(4)),
+                ParseAiAttributeIds(reader.GetString(5))));
+        }
+
+        var ids = raw
+            .SelectMany(row => row.PredictedTitles
+                .Concat(row.PredictedCharacters)
+                .Concat(row.CorrectedTitles)
+                .Concat(row.CorrectedCharacters))
+            .Distinct()
+            .ToArray();
+        var names = ResolveAiAttributeNames(connection, ids);
+        return raw.Select(row => new AiAttributeLearningExampleDto(
+                row.Creator,
+                Path.GetFileName(row.Path),
+                row.PredictedTitles.Select(id => names.GetValueOrDefault(id, $"filter:{id}")).ToArray(),
+                row.PredictedCharacters.Select(id => names.GetValueOrDefault(id, $"filter:{id}")).ToArray(),
+                row.CorrectedTitles.Select(id => names.GetValueOrDefault(id, $"filter:{id}")).ToArray(),
+                row.CorrectedCharacters.Select(id => names.GetValueOrDefault(id, $"filter:{id}")).ToArray()))
+            .ToArray();
+    }
+
+    private static Dictionary<long, string> ResolveAiAttributeNames(
+        SqliteConnection connection,
+        IReadOnlyList<long> ids)
+    {
+        if (ids.Count == 0)
+        {
+            return [];
+        }
+        using var command = connection.CreateCommand();
+        var placeholders = string.Join(", ", ids.Select((_, index) => $"$id{index}"));
+        command.CommandText = $"SELECT filter_id, canonical_name FROM gallery_filters WHERE filter_id IN ({placeholders});";
+        for (var index = 0; index < ids.Count; index++)
+        {
+            command.Parameters.AddWithValue($"$id{index}", ids[index]);
+        }
+        using var reader = command.ExecuteReader();
+        var result = new Dictionary<long, string>();
+        while (reader.Read())
+        {
+            result[reader.GetInt64(0)] = reader.GetString(1);
+        }
+        return result;
+    }
+
+    private static long[] ParseAiAttributeIds(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<long[]>(json, JsonOptions) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private void ValidateAiAttributeInferenceSelection(
+        string galleryCategory,
+        IReadOnlyList<long> titleIds,
+        IReadOnlyList<long> characterIds)
+    {
+        using var connection = OpenExternalReadWriteConnection(ExternalGalleryDatabasePath);
+        foreach (var titleId in titleIds)
+        {
+            using var validateTitle = connection.CreateCommand();
+            validateTitle.CommandText = """
+                SELECT COUNT(*)
+                FROM gallery_filters AS filter
+                JOIN gallery_filter_section_visibility AS visibility
+                  ON visibility.filter_id = filter.filter_id
+                 AND visibility.gallery_category = $category
+                 AND visibility.is_visible <> 0
+                WHERE filter.filter_id = $titleId
+                  AND filter.filter_type = 'title';
+                """;
+            validateTitle.Parameters.AddWithValue("$category", galleryCategory);
+            validateTitle.Parameters.AddWithValue("$titleId", titleId);
+            if (Convert.ToInt64(validateTitle.ExecuteScalar()) == 0)
+            {
+                throw new InvalidOperationException("指定されたTitleはこの区分で利用できません。");
+            }
+        }
+
+        foreach (var characterId in characterIds)
+        {
+            using var validateCharacter = connection.CreateCommand();
+            var titlePlaceholders = string.Join(
+                ", ",
+                titleIds.Select((_, index) => $"$title{index}"));
+            validateCharacter.CommandText = $"""
+                SELECT COUNT(*)
+                FROM gallery_filters AS character_filter
+                JOIN gallery_filter_section_visibility AS visibility
+                  ON visibility.filter_id = character_filter.filter_id
+                 AND visibility.gallery_category = $category
+                 AND visibility.is_visible <> 0
+                WHERE character_filter.filter_id = $characterId
+                  AND character_filter.filter_type = 'character'
+                  AND character_filter.parent_filter_id IN ({titlePlaceholders});
+                """;
+            validateCharacter.Parameters.AddWithValue("$category", galleryCategory);
+            for (var index = 0; index < titleIds.Count; index++)
+            {
+                validateCharacter.Parameters.AddWithValue(
+                    $"$title{index}",
+                    titleIds[index]);
+            }
+            validateCharacter.Parameters.AddWithValue("$characterId", characterId);
+            if (Convert.ToInt64(validateCharacter.ExecuteScalar()) == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Character filter:{characterId} は指定Titleに属していません。");
+            }
+        }
+    }
+
+    private void RecordAiAttributeInference(
+        string gid,
+        string path,
+        string category,
+        string creator,
+        AiAttributeInferenceAssignmentDto assignment)
+    {
+        using var connection = OpenExternalReadWriteConnection(ExternalGalleryDatabasePath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO ai_attribute_inference_history (
+                gid,
+                source_path,
+                category,
+                creator,
+                predicted_title_ids_json,
+                predicted_character_ids_json,
+                confidence,
+                reason,
+                created_at)
+            VALUES (
+                $gid,
+                $path,
+                $category,
+                $creator,
+                $titleIds,
+                $characterIds,
+                $confidence,
+                $reason,
+                $createdAt);
+            """;
+        command.Parameters.AddWithValue("$gid", gid);
+        command.Parameters.AddWithValue("$path", path);
+        command.Parameters.AddWithValue("$category", category);
+        command.Parameters.AddWithValue("$creator", creator);
+        command.Parameters.AddWithValue("$titleIds", JsonSerializer.Serialize(assignment.TitleIds, JsonOptions));
+        command.Parameters.AddWithValue("$characterIds", JsonSerializer.Serialize(assignment.CharacterIds, JsonOptions));
+        command.Parameters.AddWithValue("$confidence", assignment.Confidence);
+        command.Parameters.AddWithValue("$reason", assignment.Reason);
+        command.Parameters.AddWithValue(
+            "$createdAt",
+            DateTimeOffset.UtcNow.ToString(
+                "yyyy-MM-dd'T'HH:mm:ss.fff'Z'",
+                CultureInfo.InvariantCulture));
+        command.ExecuteNonQuery();
+    }
+
+    private void CaptureManualAiAttributeCorrections(IReadOnlyList<string> paths)
+    {
+        var targetPaths = paths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => path.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (targetPaths.Length == 0 || !File.Exists(ExternalGalleryDatabasePath))
+        {
+            return;
+        }
+
+        using var connection = OpenExternalReadWriteConnection(ExternalGalleryDatabasePath);
+        if (!DatabaseTableExists(connection, "main", "ai_attribute_inference_history"))
+        {
+            return;
+        }
+        using var transaction = connection.BeginTransaction();
+        foreach (var path in targetPaths)
+        {
+            long inferenceId;
+            string gid;
+            long[] predictedTitles;
+            long[] predictedCharacters;
+            using (var find = connection.CreateCommand())
+            {
+                find.Transaction = transaction;
+                find.CommandText = """
+                    SELECT inference.inference_id,
+                           inference.gid,
+                           inference.predicted_title_ids_json,
+                           inference.predicted_character_ids_json
+                    FROM ai_attribute_inference_history AS inference
+                    JOIN items AS item ON item.gid = inference.gid
+                    WHERE item.current_path = $path COLLATE NOCASE
+                    ORDER BY inference.inference_id DESC
+                    LIMIT 1;
+                    """;
+                find.Parameters.AddWithValue("$path", path);
+                using var reader = find.ExecuteReader();
+                if (!reader.Read())
+                {
+                    continue;
+                }
+                inferenceId = reader.GetInt64(0);
+                gid = reader.GetString(1);
+                predictedTitles = ParseAiAttributeIds(reader.GetString(2));
+                predictedCharacters = ParseAiAttributeIds(reader.GetString(3));
+            }
+
+            var currentTitles = ListAssignedAiAttributeIds(
+                connection,
+                transaction,
+                gid,
+                "title_filter_id");
+            var currentCharacters = ListAssignedAiAttributeIds(
+                connection,
+                transaction,
+                gid,
+                "character_filter_id");
+            if (predictedTitles.SequenceEqual(currentTitles) &&
+                predictedCharacters.SequenceEqual(currentCharacters))
+            {
+                continue;
+            }
+
+            var titleJson = JsonSerializer.Serialize(currentTitles, JsonOptions);
+            var characterJson = JsonSerializer.Serialize(currentCharacters, JsonOptions);
+            using (var duplicate = connection.CreateCommand())
+            {
+                duplicate.Transaction = transaction;
+                duplicate.CommandText = """
+                    SELECT COUNT(*)
+                    FROM ai_attribute_correction_history
+                    WHERE correction_id = (
+                        SELECT correction_id
+                        FROM ai_attribute_correction_history
+                        WHERE inference_id = $inferenceId
+                        ORDER BY correction_id DESC
+                        LIMIT 1
+                    )
+                      AND title_ids_json = $titleIds
+                      AND character_ids_json = $characterIds;
+                    """;
+                duplicate.Parameters.AddWithValue("$inferenceId", inferenceId);
+                duplicate.Parameters.AddWithValue("$titleIds", titleJson);
+                duplicate.Parameters.AddWithValue("$characterIds", characterJson);
+                if (Convert.ToInt64(duplicate.ExecuteScalar()) > 0)
+                {
+                    continue;
+                }
+            }
+
+            using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT INTO ai_attribute_correction_history (
+                    inference_id,
+                    gid,
+                    title_ids_json,
+                    character_ids_json,
+                    corrected_at)
+                VALUES (
+                    $inferenceId,
+                    $gid,
+                    $titleIds,
+                    $characterIds,
+                    $correctedAt);
+                """;
+            insert.Parameters.AddWithValue("$inferenceId", inferenceId);
+            insert.Parameters.AddWithValue("$gid", gid);
+            insert.Parameters.AddWithValue("$titleIds", titleJson);
+            insert.Parameters.AddWithValue("$characterIds", characterJson);
+            insert.Parameters.AddWithValue(
+                "$correctedAt",
+                DateTimeOffset.UtcNow.ToString(
+                    "yyyy-MM-dd'T'HH:mm:ss.fff'Z'",
+                    CultureInfo.InvariantCulture));
+            insert.ExecuteNonQuery();
+        }
+        transaction.Commit();
+    }
+
+    private static long[] ListAssignedAiAttributeIds(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string gid,
+        string filterIdColumn)
+    {
+        if (filterIdColumn is not ("title_filter_id" or "character_filter_id"))
+        {
+            throw new ArgumentOutOfRangeException(nameof(filterIdColumn));
+        }
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = $"""
+            SELECT DISTINCT combination.{filterIdColumn}
+            FROM gallery_item_filter_combinations AS combination_map
+            JOIN gallery_filter_combinations AS combination
+              ON combination.combination_id = combination_map.combination_id
+             AND combination.use_flg <> 0
+            WHERE combination_map.gid = $gid
+              AND combination.{filterIdColumn} IS NOT NULL
+            ORDER BY combination.{filterIdColumn};
+            """;
+        command.Parameters.AddWithValue("$gid", gid);
+        using var reader = command.ExecuteReader();
+        var ids = new List<long>();
+        while (reader.Read())
+        {
+            ids.Add(reader.GetInt64(0));
+        }
+        return ids.ToArray();
+    }
+
     public GalleryTitleAssignmentResultDto AssignGalleryWorkTitle(
         IReadOnlyList<string> paths,
         long titleFilterId,
         IReadOnlyList<long>? removeTitleFilterIds = null)
     {
-        return UpdateGalleryWorkTitles(paths, titleFilterId, removeTitleFilterIds ?? []);
+        var result = UpdateGalleryWorkTitles(paths, titleFilterId, removeTitleFilterIds ?? []);
+        CaptureManualAiAttributeCorrections(paths);
+        ResolveAiAttributeInferenceReviews(paths);
+        return result;
     }
 
     public GalleryTitleAssignmentResultDto RemoveGalleryWorkTitles(
@@ -11135,7 +14090,9 @@ public sealed class GalleryDatabase
             throw new ArgumentException("解除するTitle属性を選択してください。", nameof(titleFilterIds));
         }
 
-        return UpdateGalleryWorkTitles(paths, null, titleFilterIds);
+        var result = UpdateGalleryWorkTitles(paths, null, titleFilterIds);
+        CaptureManualAiAttributeCorrections(paths);
+        return result;
     }
 
     private GalleryTitleAssignmentResultDto UpdateGalleryWorkTitles(
@@ -11305,7 +14262,9 @@ public sealed class GalleryDatabase
             throw new ArgumentException("登録するCharacter属性を選択してください。", nameof(characterFilterIds));
         }
 
-        return UpdateGalleryWorkCharacters(paths, normalizedCharacterFilterIds, removeCharacterFilterIds ?? []);
+        var result = UpdateGalleryWorkCharacters(paths, normalizedCharacterFilterIds, removeCharacterFilterIds ?? []);
+        CaptureManualAiAttributeCorrections(paths);
+        return result;
     }
 
     public GalleryCharacterAssignmentResultDto RemoveGalleryWorkCharacters(
@@ -11317,7 +14276,9 @@ public sealed class GalleryDatabase
             throw new ArgumentException("解除するCharacter属性を選択してください。", nameof(characterFilterIds));
         }
 
-        return UpdateGalleryWorkCharacters(paths, [], characterFilterIds);
+        var result = UpdateGalleryWorkCharacters(paths, [], characterFilterIds);
+        CaptureManualAiAttributeCorrections(paths);
+        return result;
     }
 
     private GalleryCharacterAssignmentResultDto UpdateGalleryWorkCharacters(
@@ -11620,6 +14581,8 @@ public sealed class GalleryDatabase
             clearCache.CommandText = $"""
                 DELETE FROM file_metadata
                 WHERE {pathPredicate};
+                DELETE FROM archive_page_counts
+                WHERE {pathPredicate};
                 DELETE FROM creator_summary_cache;
                 DELETE FROM derived_data_cache;
                 """;
@@ -11638,6 +14601,7 @@ public sealed class GalleryDatabase
             _derivedDataMemoryCache.Clear();
         }
         _galleryWorksCache.Clear();
+        _galleryWorkCountCache.Clear();
         _galleryFiltersCache.Clear();
     }
 
@@ -11663,6 +14627,7 @@ public sealed class GalleryDatabase
             _derivedDataMemoryCache.Clear();
         }
         _galleryWorksCache.Clear();
+        _galleryWorkCountCache.Clear();
         _galleryFiltersCache.Clear();
     }
 
@@ -12289,6 +15254,7 @@ public sealed class GalleryDatabase
         }
 
         ClearGalleryDefinitionMemoryCaches();
+        InvalidateGalleryConfigurationMemoryCache();
         PersistApplicationSettings();
         return section;
     }
@@ -12372,6 +15338,7 @@ public sealed class GalleryDatabase
         }
 
         ClearGalleryDefinitionMemoryCaches();
+        InvalidateGalleryConfigurationMemoryCache();
         PersistApplicationSettings();
     }
 
@@ -12405,31 +15372,139 @@ public sealed class GalleryDatabase
             _derivedDataMemoryCache.Clear();
         }
         _galleryWorksCache.Clear();
+        _galleryWorkCountCache.Clear();
         _galleryFiltersCache.Clear();
+    }
+
+    private void InvalidateGalleryConfigurationMemoryCache()
+    {
+        lock (_galleryConfigurationCacheLock)
+        {
+            _galleryScanTargetsMemoryCache = null;
+            _galleryScanTargetsByCategoryMemoryCache = null;
+            _galleryScanSettingsMemoryCache = null;
+            _galleryScanSettingsByCategoryMemoryCache = null;
+            _galleryQueryScopesByCategoryMemoryCache = null;
+        }
+    }
+
+    private GalleryQueryScope GetGalleryQueryScope(string category)
+    {
+        category = category.Trim();
+        EnsureCreated();
+        EnsureGalleryConfigurationMemoryCache();
+        lock (_galleryConfigurationCacheLock)
+        {
+            _galleryQueryScopesByCategoryMemoryCache ??=
+                new Dictionary<string, GalleryQueryScope>(StringComparer.OrdinalIgnoreCase);
+            if (_galleryQueryScopesByCategoryMemoryCache.TryGetValue(category, out var cached))
+            {
+                return cached;
+            }
+
+            var targetPaths = (_galleryScanTargetsByCategoryMemoryCache!.GetValueOrDefault(category) ?? [])
+                .Select(target => NormalizeGalleryTargetPath(target.Path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var supportedExtensionText =
+                _galleryScanSettingsByCategoryMemoryCache!.GetValueOrDefault(category)?.SupportedExtensions
+                ?? string.Empty;
+            var supportedExtensions = supportedExtensionText
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(NormalizeExtension)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var scope = new GalleryQueryScope(targetPaths, supportedExtensions);
+            _galleryQueryScopesByCategoryMemoryCache[category] = scope;
+            return scope;
+        }
+    }
+
+    private void EnsureGalleryConfigurationMemoryCache()
+    {
+        if (_galleryScanTargetsMemoryCache is not null &&
+            _galleryScanTargetsByCategoryMemoryCache is not null &&
+            _galleryScanSettingsMemoryCache is not null &&
+            _galleryScanSettingsByCategoryMemoryCache is not null)
+        {
+            return;
+        }
+
+        lock (_galleryConfigurationCacheLock)
+        {
+            if (_galleryScanTargetsMemoryCache is not null &&
+                _galleryScanTargetsByCategoryMemoryCache is not null &&
+                _galleryScanSettingsMemoryCache is not null &&
+                _galleryScanSettingsByCategoryMemoryCache is not null)
+            {
+                return;
+            }
+
+            using var connection = OpenConnection();
+            var targets = new List<GalleryScanTargetDto>();
+            using (var targetCommand = connection.CreateCommand())
+            {
+                targetCommand.CommandText =
+                    "SELECT category, path, position FROM gallery_scan_targets ORDER BY category, position, path COLLATE NOCASE;";
+                using var reader = targetCommand.ExecuteReader();
+                while (reader.Read())
+                {
+                    targets.Add(new GalleryScanTargetDto(
+                        reader.GetString(0),
+                        reader.GetString(1),
+                        reader.GetInt32(2)));
+                }
+            }
+
+            var settings = new List<GalleryScanSettingsDto>();
+            using (var settingsCommand = connection.CreateCommand())
+            {
+                settingsCommand.CommandText =
+                    "SELECT category, supported_extensions, card_aspect, enabled_filters, file_name_lines, creator_label, title_label, character_label, tag_label, core_title_label, core_tags_label FROM gallery_scan_settings ORDER BY category;";
+                using var reader = settingsCommand.ExecuteReader();
+                while (reader.Read())
+                {
+                    settings.Add(new GalleryScanSettingsDto(
+                        reader.GetString(0),
+                        reader.GetString(1),
+                        reader.GetString(2),
+                        ParseGalleryEnabledFilters(reader.GetString(3), reader.GetString(0)),
+                        NormalizeGalleryFileNameLines(reader.GetInt32(4)),
+                        NormalizeGalleryFilterLabel(reader.GetString(5), "Creator"),
+                        NormalizeGalleryFilterLabel(reader.GetString(6), "Title"),
+                        NormalizeGalleryFilterLabel(reader.GetString(7), "Character"),
+                        NormalizeGalleryFilterLabel(reader.GetString(8), "Tag"),
+                        NormalizeGalleryFilterLabel(reader.GetString(9), "Core title"),
+                        NormalizeGalleryFilterLabel(reader.GetString(10), "Core tags")));
+                }
+            }
+
+            _galleryScanTargetsMemoryCache = targets.ToArray();
+            _galleryScanTargetsByCategoryMemoryCache = targets
+                .GroupBy(target => target.Category, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => (IReadOnlyList<GalleryScanTargetDto>)group.ToArray(),
+                    StringComparer.OrdinalIgnoreCase);
+            _galleryScanSettingsMemoryCache = settings.ToArray();
+            _galleryScanSettingsByCategoryMemoryCache = settings.ToDictionary(
+                setting => setting.Category,
+                StringComparer.OrdinalIgnoreCase);
+        }
     }
 
     public IReadOnlyList<GalleryScanTargetDto> ListGalleryScanTargets(string? category = null)
     {
         EnsureCreated();
-
-        using var connection = OpenConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = string.IsNullOrWhiteSpace(category)
-            ? "SELECT category, path, position FROM gallery_scan_targets ORDER BY category, position, path COLLATE NOCASE;"
-            : "SELECT category, path, position FROM gallery_scan_targets WHERE category = $category ORDER BY position, path COLLATE NOCASE;";
-        if (!string.IsNullOrWhiteSpace(category))
+        EnsureGalleryConfigurationMemoryCache();
+        if (string.IsNullOrWhiteSpace(category))
         {
-            command.Parameters.AddWithValue("$category", category.Trim());
+            return _galleryScanTargetsMemoryCache!;
         }
 
-        using var reader = command.ExecuteReader();
-        var targets = new List<GalleryScanTargetDto>();
-        while (reader.Read())
-        {
-            targets.Add(new GalleryScanTargetDto(reader.GetString(0), reader.GetString(1), reader.GetInt32(2)));
-        }
-
-        return targets;
+        return _galleryScanTargetsByCategoryMemoryCache!.GetValueOrDefault(category.Trim()) ?? [];
     }
 
     public string? FindGalleryCategoryForPath(string path)
@@ -12580,6 +15655,9 @@ public sealed class GalleryDatabase
                 DELETE FROM file_metadata
                 WHERE path = $oldPath COLLATE NOCASE
                    OR instr(lower(path), lower($childPrefix)) = 1;
+                DELETE FROM archive_page_counts
+                WHERE path = $oldPath COLLATE NOCASE
+                   OR instr(lower(path), lower($childPrefix)) = 1;
                 DELETE FROM creator_summary_cache;
                 DELETE FROM derived_data_cache;
                 """;
@@ -12599,6 +15677,7 @@ public sealed class GalleryDatabase
             _derivedDataMemoryCache.Clear();
         }
         _galleryWorksCache.Clear();
+        _galleryWorkCountCache.Clear();
         _galleryFiltersCache.Clear();
     }
 
@@ -12650,59 +15729,30 @@ public sealed class GalleryDatabase
         }
 
         transaction.Commit();
+        ClearGalleryDefinitionMemoryCaches();
+        InvalidateGalleryConfigurationMemoryCache();
         PersistApplicationSettings();
     }
 
     public IReadOnlyList<GalleryScanSettingsDto> ListGalleryScanSettings()
     {
         EnsureCreated();
-        using var connection = OpenConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT category, supported_extensions, card_aspect, enabled_filters, file_name_lines, creator_label, title_label, character_label, tag_label, core_title_label, core_tags_label FROM gallery_scan_settings ORDER BY category;";
-        using var reader = command.ExecuteReader();
-        var settings = new List<GalleryScanSettingsDto>();
-        while (reader.Read())
-        {
-            settings.Add(new GalleryScanSettingsDto(
-                reader.GetString(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                ParseGalleryEnabledFilters(reader.GetString(3), reader.GetString(0)),
-                NormalizeGalleryFileNameLines(reader.GetInt32(4)),
-                NormalizeGalleryFilterLabel(reader.GetString(5), "Creator"),
-                NormalizeGalleryFilterLabel(reader.GetString(6), "Title"),
-                NormalizeGalleryFilterLabel(reader.GetString(7), "Character"),
-                NormalizeGalleryFilterLabel(reader.GetString(8), "Tag"),
-                NormalizeGalleryFilterLabel(reader.GetString(9), "Core title"),
-                NormalizeGalleryFilterLabel(reader.GetString(10), "Core tags")));
-        }
-
-        return settings;
+        EnsureGalleryConfigurationMemoryCache();
+        return _galleryScanSettingsMemoryCache!;
     }
 
     public GalleryScanSettingsDto GetGalleryScanSettings(string category)
     {
         category = category.Trim();
         EnsureCreated();
-        using var connection = OpenConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT supported_extensions, card_aspect, enabled_filters, file_name_lines, creator_label, title_label, character_label, tag_label, core_title_label, core_tags_label FROM gallery_scan_settings WHERE category = $category;";
-        command.Parameters.AddWithValue("$category", category);
-        using var reader = command.ExecuteReader();
-        return reader.Read()
-            ? new GalleryScanSettingsDto(
+        EnsureGalleryConfigurationMemoryCache();
+        return _galleryScanSettingsByCategoryMemoryCache!.GetValueOrDefault(category)
+            ?? new GalleryScanSettingsDto(
                 category,
-                reader.GetString(0),
-                reader.GetString(1),
-                ParseGalleryEnabledFilters(reader.GetString(2), category),
-                NormalizeGalleryFileNameLines(reader.GetInt32(3)),
-                NormalizeGalleryFilterLabel(reader.GetString(4), "Creator"),
-                NormalizeGalleryFilterLabel(reader.GetString(5), "Title"),
-                NormalizeGalleryFilterLabel(reader.GetString(6), "Character"),
-                NormalizeGalleryFilterLabel(reader.GetString(7), "Tag"),
-                NormalizeGalleryFilterLabel(reader.GetString(8), "Core title"),
-                NormalizeGalleryFilterLabel(reader.GetString(9), "Core tags"))
-            : new GalleryScanSettingsDto(category, string.Empty, GetDefaultGalleryCardAspect(category), GetDefaultGalleryEnabledFilters(category), 3);
+                string.Empty,
+                GetDefaultGalleryCardAspect(category),
+                GetDefaultGalleryEnabledFilters(category),
+                3);
     }
 
     public void SaveGalleryScanSettings(
@@ -12761,6 +15811,8 @@ public sealed class GalleryDatabase
         command.Parameters.AddWithValue("$coreTitleLabel", NormalizeGalleryFilterLabel(coreTitleLabel, "Core title"));
         command.Parameters.AddWithValue("$coreTagsLabel", NormalizeGalleryFilterLabel(coreTagsLabel, "Core tags"));
         command.ExecuteNonQuery();
+        ClearGalleryDefinitionMemoryCaches();
+        InvalidateGalleryConfigurationMemoryCache();
         PersistApplicationSettings();
     }
 
@@ -13385,6 +16437,7 @@ public sealed class GalleryDatabase
             MergeGalleryTags(connection, transaction);
             CopyMergeTable(connection, transaction, "item_events", ["gid", "event_type", "detail_json", "created_at"], ["event_id"]);
             CopyMergeTable(connection, transaction, "creator_tracking", ["creator"]);
+            CopyMergeTable(connection, transaction, "creator_tracking_category_profiles", ["creator", "category"]);
             CopyMergeTable(connection, transaction, "creator_tracking_exchange_rates", ["rate_date", "base_currency", "quote_currency"]);
             CopyMergeTable(connection, transaction, "creator_tracking_archive_snapshots", ["creator", "category", "snapshot_date"]);
             CopyMergeTable(connection, transaction, "gid_registry", ["gid"]);
@@ -14128,6 +17181,91 @@ public sealed class GalleryDatabase
         return new GalleryCreatorReassignmentResultDto(itemCount, trackingRenamed, trackingConflict, message);
     }
 
+    public GalleryCreatorFolderUpdateResultDto UpdateGalleryCreatorForFolder(
+        string folder,
+        string creator)
+    {
+        var root = NormalizeGalleryTargetPath(folder);
+        var targetCreator = creator.Trim();
+        if (string.IsNullOrWhiteSpace(targetCreator))
+        {
+            throw new ArgumentException(
+                "作者フォルダ名からCreatorを取得できません。",
+                nameof(creator));
+        }
+
+        EnsureExternalGalleryGidSchema();
+        using var connection = OpenExternalReadWriteConnection(ExternalGalleryDatabasePath);
+        using var transaction = connection.BeginTransaction();
+        long itemCount;
+        using (var count = connection.CreateCommand())
+        {
+            count.Transaction = transaction;
+            count.CommandText = """
+                SELECT COUNT(*)
+                FROM items
+                WHERE current_path = $root COLLATE NOCASE
+                   OR instr(lower(current_path), lower($childPrefix)) = 1;
+                """;
+            count.Parameters.AddWithValue("$root", root);
+            count.Parameters.AddWithValue(
+                "$childPrefix",
+                root + Path.DirectorySeparatorChar);
+            itemCount = Convert.ToInt64(
+                count.ExecuteScalar(),
+                CultureInfo.InvariantCulture);
+        }
+
+        using var update = connection.CreateCommand();
+        update.Transaction = transaction;
+        update.CommandText = """
+            UPDATE items
+            SET creator = $creator,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE (current_path = $root COLLATE NOCASE
+                   OR instr(lower(current_path), lower($childPrefix)) = 1)
+              AND creator <> $creator COLLATE NOCASE;
+            """;
+        update.Parameters.AddWithValue("$creator", targetCreator);
+        update.Parameters.AddWithValue("$root", root);
+        update.Parameters.AddWithValue(
+            "$childPrefix",
+            root + Path.DirectorySeparatorChar);
+        var updatedCount = update.ExecuteNonQuery();
+
+        if (updatedCount > 0)
+        {
+            using var clearCache = connection.CreateCommand();
+            clearCache.Transaction = transaction;
+            clearCache.CommandText = """
+                DELETE FROM creator_summary_cache;
+                DELETE FROM derived_data_cache;
+                """;
+            clearCache.ExecuteNonQuery();
+        }
+        transaction.Commit();
+
+        if (updatedCount > 0)
+        {
+            lock (_creatorSummaryCacheLock)
+            {
+                _creatorSummaryMemorySignature = null;
+                _creatorSummaryMemorySnapshot = null;
+            }
+            lock (_derivedDataCacheLock)
+            {
+                _derivedDataMemoryCache.Clear();
+            }
+            _galleryWorksCache.Clear();
+            _galleryWorkCountCache.Clear();
+            _galleryFiltersCache.Clear();
+        }
+
+        return new GalleryCreatorFolderUpdateResultDto(
+            checked((int)itemCount),
+            updatedCount);
+    }
+
     public void ApplyGalleryTargetCategories(IReadOnlyList<string> categories)
     {
         using var connection = OpenExternalReadWriteConnection(_externalGalleryDatabasePath);
@@ -14232,6 +17370,7 @@ public sealed class GalleryDatabase
             {
                 EnsureExternalGalleryArchivedFlag(connection, columns);
                 EnsureExternalGalleryTagCategories(connection);
+                NormalizeGalleryCreatorsFromPathRules(connection);
                 EnsureExternalGalleryFilterSchema(connection);
                 return;
             }
@@ -14338,6 +17477,7 @@ public sealed class GalleryDatabase
             transaction.Commit();
             CreateExternalItemsView(connection);
             EnsureExternalGalleryTagCategories(connection);
+            NormalizeGalleryCreatorsFromPathRules(connection);
             EnsureExternalGalleryFilterSchema(connection);
         }
         finally
@@ -14607,6 +17747,33 @@ public sealed class GalleryDatabase
         }
     }
 
+    private static void NormalizeGalleryCreatorsFromPathRules(
+        SqliteConnection connection)
+    {
+        foreach (var folderName in GalleryCreatorPathRules.OtherCreatorFolderNames)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE items
+                SET creator = $creator,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE instr(
+                          replace(current_path, '/', char(92)),
+                          $folderSegment) > 0
+                  AND creator <> $creator COLLATE NOCASE;
+                """;
+            command.Parameters.AddWithValue(
+                "$creator",
+                GalleryCreatorPathRules.OtherCreatorName);
+            command.Parameters.AddWithValue(
+                "$folderSegment",
+                $"{Path.DirectorySeparatorChar}" +
+                $"{folderName}" +
+                $"{Path.DirectorySeparatorChar}");
+            command.ExecuteNonQuery();
+        }
+    }
+
     private static void EnsureExternalGalleryTagCategories(SqliteConnection connection)
     {
         var tagColumns = ReadColumns(connection, "tags")
@@ -14719,6 +17886,37 @@ public sealed class GalleryDatabase
                     metadata_value TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS ai_attribute_inference_history (
+                    inference_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    gid TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    creator TEXT NOT NULL,
+                    predicted_title_ids_json TEXT NOT NULL,
+                    predicted_character_ids_json TEXT NOT NULL,
+                    confidence REAL NOT NULL DEFAULT 0,
+                    reason TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS ai_attribute_correction_history (
+                    correction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    inference_id INTEGER NOT NULL
+                        REFERENCES ai_attribute_inference_history(inference_id)
+                        ON DELETE CASCADE,
+                    gid TEXT NOT NULL,
+                    title_ids_json TEXT NOT NULL,
+                    character_ids_json TEXT NOT NULL,
+                    corrected_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS ai_attribute_inference_review_queue (
+                    gid TEXT PRIMARY KEY REFERENCES items(gid) ON DELETE CASCADE,
+                    reason TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE UNIQUE INDEX IF NOT EXISTS ux_gallery_title_canonical_name
                     ON gallery_filters(canonical_name) WHERE filter_type = 'title';
                 CREATE UNIQUE INDEX IF NOT EXISTS ux_gallery_character_parent_canonical_name
@@ -14728,8 +17926,20 @@ public sealed class GalleryDatabase
                 CREATE INDEX IF NOT EXISTS idx_gallery_filter_visibility_category ON gallery_filter_section_visibility(gallery_category, filter_id);
                 CREATE INDEX IF NOT EXISTS idx_gallery_item_filters_filter ON gallery_item_filters(filter_id, gid);
                 CREATE INDEX IF NOT EXISTS idx_gallery_item_filter_combinations_combination ON gallery_item_filter_combinations(combination_id, gid);
+                CREATE INDEX IF NOT EXISTS idx_ai_attribute_inference_gid
+                    ON ai_attribute_inference_history(gid, inference_id DESC);
+                CREATE INDEX IF NOT EXISTS idx_ai_attribute_correction_inference
+                    ON ai_attribute_correction_history(inference_id, correction_id DESC);
+                CREATE INDEX IF NOT EXISTS idx_ai_attribute_review_created
+                    ON ai_attribute_inference_review_queue(created_at, gid);
                 CREATE INDEX IF NOT EXISTS idx_items_gallery_category ON items(category);
                 CREATE INDEX IF NOT EXISTS idx_items_gallery_category_creator ON items(category, creator);
+                CREATE INDEX IF NOT EXISTS idx_items_gallery_category_rating
+                    ON items(category, COALESCE(archived_flg, 0), COALESCE(rating, 0) DESC, gid DESC);
+                CREATE INDEX IF NOT EXISTS idx_items_gallery_category_images
+                    ON items(category, COALESCE(archived_flg, 0), COALESCE(image_count, 0), gid DESC);
+                CREATE INDEX IF NOT EXISTS idx_items_gallery_category_access
+                    ON items(category, COALESCE(archived_flg, 0), COALESCE(last_access_time, ''), gid DESC);
                 """;
             command.ExecuteNonQuery();
         }

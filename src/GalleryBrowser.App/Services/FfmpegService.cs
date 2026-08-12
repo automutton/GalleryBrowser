@@ -9,20 +9,29 @@ public sealed class FfmpegService
 {
     public const string DefaultSupportedExtensions = ".mp4,.mkv,.avi,.mov,.wmv,.webm,.flv,.m4v,.mpeg,.mpg,.ts";
     private string _configuredExecutablePath = string.Empty;
-    private string _supportedExtensions = DefaultSupportedExtensions;
+    private HashSet<string> _supportedExtensions = ParseSupportedExtensions(DefaultSupportedExtensions);
 
     public bool IsAvailable => ResolveExecutablePath() is not null;
 
     public void Configure(FfmpegSettingsDto settings)
     {
         _configuredExecutablePath = settings.ExecutablePath.Trim();
-        _supportedExtensions = settings.SupportedExtensions;
+        _supportedExtensions = ParseSupportedExtensions(settings.SupportedExtensions);
     }
 
-    public bool SupportsVideo(string path) =>
-        File.Exists(path) &&
-        _supportedExtensions.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Any(extension => string.Equals(extension, Path.GetExtension(path), StringComparison.OrdinalIgnoreCase));
+    public bool SupportsVideo(string path)
+    {
+        var extension = Path.GetExtension(path.AsSpan());
+        return _supportedExtensions
+                   .GetAlternateLookup<ReadOnlySpan<char>>()
+                   .Contains(extension) &&
+               File.Exists(path);
+    }
+
+    private static HashSet<string> ParseSupportedExtensions(string extensions) =>
+        extensions
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
     public bool TryCreateThumbnail(string sourcePath, string cachePath)
     {

@@ -6,6 +6,7 @@ internal static class NotificationTestMessageFactory
     public const string CreatorFollowAlert = "creatorFollowAlert";
     public const string SubscriptionEnding = "subscriptionEnding";
     public const string SubscriptionReminder = "subscriptionReminder";
+    public const string CreatorTask = "creatorTask";
     public const string ScheduledScanStarted = "scheduledScanStarted";
     public const string ScheduledScanCompleted = "scheduledScanCompleted";
 
@@ -26,15 +27,19 @@ internal static class NotificationTestMessageFactory
                 "• **Sample Creator** — Patreon / Standard Plan — 1,000 JPY",
             SubscriptionReminder =>
                 "**⏰ 明日はサブスクの更新予定日です（テスト配信）**\n" +
-                "アラートが設定されているサブスクを確認してください。\n" +
+                "継続中のサブスクを確認してください。\n" +
                 "• **Sample Creator** — FANBOX / Support Plan — 500 JPY",
+            CreatorTask =>
+                "**📋 Creator Tracking タスク（テスト配信）**\n" +
+                "設定された通知タイミングになったタスクがあります。\n" +
+                "• **Sample Creator** — 制作確認 / 投稿内容を確認 — 2026-07-25",
             ScheduledScanStarted =>
                 "**🔄 定期フォルダ走査を開始しました（テスト配信）**\n" +
-                "対象: Gallery / Archive\n" +
+                "対象: 生成AI作品 / 同人誌\n" +
                 "予想所要時間: 12分30秒",
             ScheduledScanCompleted =>
                 "**✅ 完了: 定期フォルダ走査（テスト配信）**\n" +
-                "対象: Gallery / Archive\n" +
+                "対象: 生成AI作品 / 同人誌\n" +
                 "経過時間: 11分48秒\n" +
                 "作品 128件を確認 / エラー 0件",
             _ => throw CreateUnsupportedEventException(eventType)
@@ -57,15 +62,19 @@ internal static class NotificationTestMessageFactory
                 "・Sample Creator — Patreon / Standard Plan — 1,000 JPY",
             SubscriptionReminder =>
                 "⏰ 明日はサブスクの更新予定日です（テスト配信）\n" +
-                "アラートが設定されているサブスクを確認してください。\n" +
+                "継続中のサブスクを確認してください。\n" +
                 "・Sample Creator — FANBOX / Support Plan — 500 JPY",
+            CreatorTask =>
+                "📋 Creator Tracking タスク（テスト配信）\n" +
+                "設定された通知タイミングになったタスクがあります。\n" +
+                "・Sample Creator — 制作確認 / 投稿内容を確認 — 2026-07-25",
             ScheduledScanStarted =>
                 "🔄 定期フォルダ走査を開始しました（テスト配信）\n" +
-                "対象: Gallery / Archive\n" +
+                "対象: 生成AI作品 / 同人誌\n" +
                 "予想所要時間: 12分30秒",
             ScheduledScanCompleted =>
                 "✅ 完了: 定期フォルダ走査（テスト配信）\n" +
-                "対象: Gallery / Archive\n" +
+                "対象: 生成AI作品 / 同人誌\n" +
                 "経過時間: 11分48秒\n" +
                 "作品 128件を確認 / エラー 0件",
             _ => throw CreateUnsupportedEventException(eventType)

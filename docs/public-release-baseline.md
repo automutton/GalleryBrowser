@@ -1,11 +1,11 @@
 # Public release baseline
 
-This document is the source-of-truth baseline for GalleryBrowser public releases. The current public release is version 1.4.0; the baseline policy began with version 1.0.0.
+This document is the source-of-truth baseline for GalleryBrowser public releases. The current public release is version 1.5.0; the baseline policy began with version 1.0.0.
 
 ## Build and package
 
 - Build command: `scripts/Publish-GalleryBrowser.ps1 -Mode Public`
-- Current package: `artifacts/release/GalleryBrowser-1.4-win-x64`
+- Current package: `artifacts/release/GalleryBrowser-1.5-win-x64`
 - Target: Windows x64, .NET self-contained, single executable
 - Trimming: disabled
 - Debug symbols and XML documentation: excluded
@@ -29,10 +29,7 @@ The publish script deletes and recreates the package directory before every buil
 - Main navigation: Gallery, Explorer, and Creators start expanded
 - Creator Tracking custom metric labels, weights, activity-place candidates, and option lists: unset until configured by the user
 - pCloud target folder, OAuth client data, account data, and credentials: unset
-- Discord and LINE notifications: disabled; webhook URL, channel access token, and recipient user ID are unset
-- Google Calendar synchronization: disabled in the public build; OAuth client data, calendar ID, and tokens are unset
-- Search provider: Google; Brave Search and Gemini API keys are unset because the public package contains no database
-- External launch programs, WinRAR, FFmpeg, and NConvert paths: unset
+- Google Calendar synchronization: disabled in the public build
 - Personal database, cache, thumbnail, tool, and folder paths: unset
 
 ## Upgrade policy

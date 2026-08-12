@@ -24,6 +24,7 @@ internal static class ScheduledNotificationDigestBuilder
         bool notifyCreatorFollowAlert,
         bool notifySubscriptionEnding,
         bool notifySubscriptionReminder,
+        bool notifyCreatorTasks,
         bool markdown,
         int maximumMessageLength)
     {
@@ -63,7 +64,8 @@ internal static class ScheduledNotificationDigestBuilder
         }
 
         var tomorrow = DateOnly.FromDateTime(snapshot.RefreshedAt.LocalDateTime).AddDays(1);
-        var subscriptions = snapshot.Subscriptions
+        var subscriptions = snapshot.Events
+            .Where(entry => string.Equals(entry.EventType, "subscription", StringComparison.OrdinalIgnoreCase))
             .Where(entry => TryParseDate(entry.RenewalOn, out var renewalOn) && renewalOn == tomorrow)
             .ToArray();
 
@@ -87,7 +89,7 @@ internal static class ScheduledNotificationDigestBuilder
         if (notifySubscriptionReminder)
         {
             var reminderCandidates = subscriptions
-                .Where(entry => entry.Reminder && !entry.EndingPlanned)
+                .Where(entry => !entry.EndingPlanned)
                 .Select(entry => new ScheduledNotificationCandidate(
                     CreateEventKey(
                         "subscription-reminder",
@@ -97,8 +99,35 @@ internal static class ScheduledNotificationDigestBuilder
             AddSection(
                 sections,
                 "⏰ 明日はサブスクの更新予定日です",
-                "アラートが設定されているサブスクを確認してください。",
+                "更新予定のサブスクを確認してください。",
                 reminderCandidates);
+        }
+
+        if (notifyCreatorTasks)
+        {
+            var today = DateOnly.FromDateTime(snapshot.RefreshedAt.LocalDateTime);
+            var taskCandidates = snapshot.Events
+                .Where(entry => string.Equals(entry.EventType, "task", StringComparison.OrdinalIgnoreCase))
+                .Where(entry =>
+                    TryParseDate(entry.StartOn, out var startOn) &&
+                    TryParseDate(entry.EndOn, out var endOn) &&
+                    entry.AlertFrequency switch
+                    {
+                        "daily" => today >= startOn && today <= endOn,
+                        "end" => today == endOn,
+                        _ => false
+                    })
+                .Select(entry => new ScheduledNotificationCandidate(
+                    CreateEventKey(
+                        "creator-task",
+                        $"{entry.Id}|{today:yyyy-MM-dd}|{occurrenceKey}"),
+                    FormatTaskLine(entry, markdown)))
+                .ToArray();
+            AddSection(
+                sections,
+                "📋 Creator Tracking タスク",
+                "本日通知対象のタスクです。",
+                taskCandidates);
         }
 
         if (sections.Count == 0)
@@ -211,6 +240,20 @@ internal static class ScheduledNotificationDigestBuilder
             : string.Empty;
         var name = markdown ? $"**{entry.DisplayName}**" : entry.DisplayName;
         return $"・{name} — {platform}{plan}{amount}";
+    }
+
+    private static string FormatTaskLine(
+        CalendarSubscriptionEventDto entry,
+        bool markdown)
+    {
+        var name = markdown ? $"**{entry.DisplayName}**" : entry.DisplayName;
+        var category = string.IsNullOrWhiteSpace(entry.TaskCategory)
+            ? string.Empty
+            : $" [{entry.TaskCategory}]";
+        var dateRange = entry.StartOn == entry.EndOn
+            ? entry.EndOn
+            : $"{entry.StartOn}～{entry.EndOn}";
+        return $"・{name}{category} — {entry.Title}（{dateRange}）";
     }
 
     private static string FormatDate(string value) =>

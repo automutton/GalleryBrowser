@@ -58,6 +58,81 @@ internal sealed class StorageSettingsStore
         }
     }
 
+    public AiConciergeSettingsDto GetAiConciergeSettings(string defaultDataDirectory)
+    {
+        lock (_sync)
+        {
+            var stored = ReadUnsafe().AiConcierge ?? new AiConciergeStorageSettings();
+            return new AiConciergeSettingsDto(
+                ResolveAiConciergeDataDirectory(stored.DataDirectory, defaultDataDirectory),
+                NormalizeAiConciergeOption(stored.Model),
+                NormalizeAiConciergeOption(stored.ReasoningEffort),
+                NormalizeAiConciergeOption(stored.ServiceTier));
+        }
+    }
+
+    public void SaveAiConciergeRuntimeSettings(
+        string? model,
+        string? reasoningEffort,
+        string? serviceTier)
+    {
+        lock (_sync)
+        {
+            var settings = ReadUnsafe();
+            var current = settings.AiConcierge ?? new AiConciergeStorageSettings();
+            WriteUnsafe(settings with
+            {
+                AiConcierge = current with
+                {
+                    Model = NormalizeAiConciergeOption(model),
+                    ReasoningEffort = NormalizeAiConciergeOption(reasoningEffort),
+                    ServiceTier = NormalizeAiConciergeOption(serviceTier)
+                }
+            });
+        }
+    }
+
+    public void SaveAiConciergeDataDirectory(string? dataDirectory)
+    {
+        lock (_sync)
+        {
+            var settings = ReadUnsafe();
+            var current = settings.AiConcierge ?? new AiConciergeStorageSettings();
+            var normalized = string.IsNullOrWhiteSpace(dataDirectory)
+                ? string.Empty
+                : Path.GetFullPath(Environment.ExpandEnvironmentVariables(dataDirectory.Trim()));
+            if (!string.IsNullOrWhiteSpace(normalized))
+            {
+                Directory.CreateDirectory(normalized);
+            }
+            WriteUnsafe(settings with
+            {
+                AiConcierge = current with { DataDirectory = normalized }
+            });
+        }
+    }
+
+    private static string ResolveAiConciergeDataDirectory(
+        string? configuredDirectory,
+        string defaultDataDirectory)
+    {
+        var directory = string.IsNullOrWhiteSpace(configuredDirectory)
+            ? Path.Combine(defaultDataDirectory, "ai-concierge")
+            : Environment.ExpandEnvironmentVariables(configuredDirectory.Trim());
+        return Path.GetFullPath(directory);
+    }
+
+    private static string NormalizeAiConciergeOption(string? value)
+    {
+        var normalized = value?.Trim() ?? string.Empty;
+        if (normalized.Length > 120 ||
+            normalized.Any(char.IsControl))
+        {
+            throw new ArgumentException("AIコンシェルジュのモデル設定が正しくありません。");
+        }
+        return normalized;
+    }
+
     public IReadOnlyList<DatabaseScanScheduleDto> GetDatabaseScanSchedules()
     {
         lock (_sync)
@@ -534,6 +609,7 @@ internal sealed class StorageSettingsStore
                 settings.NotifyCreatorFollowAlert,
                 settings.NotifySubscriptionEnding,
                 settings.NotifySubscriptionReminder,
+                settings.NotifyCreatorTasks,
                 settings.NotifyScheduledScanStarted,
                 settings.NotifyScheduledScanCompleted);
         }
@@ -553,6 +629,7 @@ internal sealed class StorageSettingsStore
         bool notifyCreatorFollowAlert,
         bool notifySubscriptionEnding,
         bool notifySubscriptionReminder,
+        bool notifyCreatorTasks,
         bool notifyScheduledScanStarted,
         bool notifyScheduledScanCompleted)
     {
@@ -577,6 +654,7 @@ internal sealed class StorageSettingsStore
                     NotifyCreatorFollowAlert = notifyCreatorFollowAlert,
                     NotifySubscriptionEnding = notifySubscriptionEnding,
                     NotifySubscriptionReminder = notifySubscriptionReminder,
+                    NotifyCreatorTasks = notifyCreatorTasks,
                     NotifyScheduledScanStarted = notifyScheduledScanStarted,
                     NotifyScheduledScanCompleted = notifyScheduledScanCompleted
                 }
@@ -610,6 +688,7 @@ internal sealed class StorageSettingsStore
                 settings.NotifyCreatorFollowAlert,
                 settings.NotifySubscriptionEnding,
                 settings.NotifySubscriptionReminder,
+                settings.NotifyCreatorTasks,
                 settings.NotifyScheduledScanStarted,
                 settings.NotifyScheduledScanCompleted);
         }
@@ -632,6 +711,7 @@ internal sealed class StorageSettingsStore
         bool notifyCreatorFollowAlert,
         bool notifySubscriptionEnding,
         bool notifySubscriptionReminder,
+        bool notifyCreatorTasks,
         bool notifyScheduledScanStarted,
         bool notifyScheduledScanCompleted)
     {
@@ -668,6 +748,7 @@ internal sealed class StorageSettingsStore
                     NotifyCreatorFollowAlert = notifyCreatorFollowAlert,
                     NotifySubscriptionEnding = notifySubscriptionEnding,
                     NotifySubscriptionReminder = notifySubscriptionReminder,
+                    NotifyCreatorTasks = notifyCreatorTasks,
                     NotifyScheduledScanStarted = notifyScheduledScanStarted,
                     NotifyScheduledScanCompleted = notifyScheduledScanCompleted
                 }
@@ -903,6 +984,7 @@ internal sealed class StorageSettingsStore
         public GoogleCalendarStorageSettings? GoogleCalendar { get; init; }
         public DiscordNotificationStorageSettings? DiscordNotifications { get; init; }
         public LineNotificationStorageSettings? LineNotifications { get; init; }
+        public AiConciergeStorageSettings? AiConcierge { get; init; }
         public NotificationScheduleStorage[] NotificationSchedules { get; init; } =
         [
             new() { Id = "default-0900", Time = "09:00" }
@@ -975,6 +1057,7 @@ internal sealed class StorageSettingsStore
         public bool NotifyCreatorFollowAlert { get; init; } = true;
         public bool NotifySubscriptionEnding { get; init; } = true;
         public bool NotifySubscriptionReminder { get; init; } = true;
+        public bool NotifyCreatorTasks { get; init; } = true;
         public bool NotifyScheduledScanStarted { get; init; } = true;
         public bool NotifyScheduledScanCompleted { get; init; } = true;
 
@@ -988,8 +1071,20 @@ internal sealed class StorageSettingsStore
         public bool NotifyCreatorFollowAlert { get; init; } = true;
         public bool NotifySubscriptionEnding { get; init; } = true;
         public bool NotifySubscriptionReminder { get; init; } = true;
+        public bool NotifyCreatorTasks { get; init; } = true;
         public bool NotifyScheduledScanStarted { get; init; } = true;
         public bool NotifyScheduledScanCompleted { get; init; } = true;
+
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }
+    }
+
+    private sealed record AiConciergeStorageSettings
+    {
+        public string DataDirectory { get; init; } = string.Empty;
+        public string Model { get; init; } = string.Empty;
+        public string ReasoningEffort { get; init; } = string.Empty;
+        public string ServiceTier { get; init; } = string.Empty;
 
         [JsonExtensionData]
         public Dictionary<string, JsonElement>? AdditionalProperties { get; init; }

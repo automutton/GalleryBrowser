@@ -13,4 +13,21 @@ public sealed record CalendarSubscriptionEventDto(
     double Amount,
     string RenewalOn,
     bool EndingPlanned,
-    bool Reminder);
+    bool Reminder)
+{
+    public string EventType { get; init; } = "subscription";
+
+    public string Severity { get; init; } = "normal";
+
+    public string StartOn { get; init; } = RenewalOn;
+
+    public string EndOn { get; init; } = RenewalOn;
+
+    public string Title { get; init; } = string.Empty;
+
+    public string Detail { get; init; } = string.Empty;
+
+    public string TaskCategory { get; init; } = string.Empty;
+
+    public string AlertFrequency { get; init; } = "none";
+}

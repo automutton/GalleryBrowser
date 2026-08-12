@@ -4,4 +4,5 @@ public sealed record SearchEngineSettingsDto(
     string Provider,
     string GoogleSearchUrlTemplate,
     string BraveApiKey,
-    string GeminiApiKey);
+    string GeminiApiKey,
+    string YahooClientId);

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gallery属性推論付与"
+  short_description: "条件に一致する作品へ既存TitleとCharacterを推論付与"
+  default_prompt: "Use $infer-gallery-attributes to infer and assign existing Title and Character attributes to matching Gallery works."

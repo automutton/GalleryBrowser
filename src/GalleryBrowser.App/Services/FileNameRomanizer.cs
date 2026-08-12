@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 
@@ -5,6 +6,11 @@ namespace GalleryBrowser.Services;
 
 public static class FileNameRomanizer
 {
+    private const int MaximumCachedValues = 32_768;
+    private static readonly ConcurrentDictionary<string, string> RomanizedValues =
+        new(StringComparer.Ordinal);
+    private static readonly ConcurrentQueue<string> RomanizedValueOrder = new();
+    private static int _romanizedValueCount;
     private static readonly IReadOnlyDictionary<string, string> CompoundSyllables = new Dictionary<string, string>
     {
         ["きゃ"] = "kya", ["きゅ"] = "kyu", ["きょ"] = "kyo",
@@ -23,6 +29,10 @@ public static class FileNameRomanizer
         ["うぃ"] = "wi", ["うぇ"] = "we", ["うぉ"] = "wo",
         ["ゔぁ"] = "va", ["ゔぃ"] = "vi", ["ゔぇ"] = "ve", ["ゔぉ"] = "vo"
     };
+    private static readonly IReadOnlyDictionary<int, string> CompoundSyllablePairs =
+        CompoundSyllables.ToDictionary(
+            entry => CreateCompoundSyllableKey(entry.Key[0], entry.Key[1]),
+            entry => entry.Value);
 
     private static readonly IReadOnlyDictionary<char, string> BasicSyllables = new Dictionary<char, string>
     {
@@ -51,8 +61,19 @@ public static class FileNameRomanizer
         {
             return string.Empty;
         }
+        if (RomanizedValues.TryGetValue(value, out var cached))
+        {
+            return cached;
+        }
+        if (IsAscii(value))
+        {
+            return RememberRomanized(value, RomanizeAscii(value));
+        }
 
-        var source = ToHiragana(value.Normalize(NormalizationForm.FormKC));
+        var normalized = value.IsNormalized(NormalizationForm.FormKC)
+            ? value
+            : value.Normalize(NormalizationForm.FormKC);
+        var source = ToHiragana(normalized);
         var result = new StringBuilder(source.Length * 2);
         for (var index = 0; index < source.Length; index++)
         {
@@ -93,19 +114,90 @@ public static class FileNameRomanizer
             }
         }
 
-        return result.ToString().Trim();
+        return RememberRomanized(value, result.ToString().Trim());
     }
 
-    private static string ToHiragana(string value)
+    private static bool IsAscii(string value)
+    {
+        foreach (var character in value)
+        {
+            if (character > '\u007f')
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static string RomanizeAscii(string value)
     {
         var result = new StringBuilder(value.Length);
         foreach (var character in value)
         {
-            result.Append(character is >= '\u30A1' and <= '\u30F6'
-                ? (char)(character - 0x60)
-                : character);
+            if (character is >= 'A' and <= 'Z')
+            {
+                result.Append((char)(character + ('a' - 'A')));
+            }
+            else if (character is >= 'a' and <= 'z' or >= '0' and <= '9')
+            {
+                result.Append(character);
+            }
+            else if (char.IsWhiteSpace(character) && (result.Length == 0 || result[^1] != ' '))
+            {
+                result.Append(' ');
+            }
         }
-        return result.ToString();
+        return result.ToString().Trim();
+    }
+
+    private static string RememberRomanized(string source, string romanized)
+    {
+        if (!RomanizedValues.TryAdd(source, romanized))
+        {
+            return RomanizedValues.TryGetValue(source, out var existing) ? existing : romanized;
+        }
+
+        RomanizedValueOrder.Enqueue(source);
+        Interlocked.Increment(ref _romanizedValueCount);
+        while (Volatile.Read(ref _romanizedValueCount) > MaximumCachedValues &&
+               RomanizedValueOrder.TryDequeue(out var oldest))
+        {
+            if (RomanizedValues.TryRemove(oldest, out _))
+            {
+                Interlocked.Decrement(ref _romanizedValueCount);
+            }
+        }
+        return romanized;
+    }
+
+    private static string ToHiragana(string value)
+    {
+        var firstKatakanaIndex = -1;
+        for (var index = 0; index < value.Length; index++)
+        {
+            if (value[index] is >= '\u30A1' and <= '\u30F6')
+            {
+                firstKatakanaIndex = index;
+                break;
+            }
+        }
+        if (firstKatakanaIndex < 0)
+        {
+            return value;
+        }
+
+        return string.Create(value.Length, (value, firstKatakanaIndex), static (destination, state) =>
+        {
+            var (source, firstIndex) = state;
+            source.AsSpan(0, firstIndex).CopyTo(destination);
+            for (var index = firstIndex; index < source.Length; index++)
+            {
+                var character = source[index];
+                destination[index] = character is >= '\u30A1' and <= '\u30F6'
+                    ? (char)(character - 0x60)
+                    : character;
+            }
+        });
     }
 
     private static string? GetSyllable(string value, int index, out int consumed)
@@ -116,7 +208,10 @@ public static class FileNameRomanizer
             return null;
         }
 
-        if (index + 1 < value.Length && CompoundSyllables.TryGetValue(value.Substring(index, 2), out var compound))
+        if (index + 1 < value.Length &&
+            CompoundSyllablePairs.TryGetValue(
+                CreateCompoundSyllableKey(value[index], value[index + 1]),
+                out var compound))
         {
             consumed = 2;
             return compound;
@@ -124,6 +219,9 @@ public static class FileNameRomanizer
 
         return BasicSyllables.TryGetValue(value[index], out var basic) ? basic : null;
     }
+
+    private static int CreateCompoundSyllableKey(char first, char second) =>
+        (first << 16) | second;
 
     private static char? LastVowel(StringBuilder value)
     {

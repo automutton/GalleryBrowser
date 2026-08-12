@@ -20,10 +20,16 @@ const exactTranslations: Record<string, Translation> = {
   'Creator名': ['Creator name', 'Creator名称', 'Creator名稱'],
   '最終チェック日': ['Last checked', '最终检查日期', '最終檢查日期'],
   'アラート状況': ['Alert status', '警报状态', '警示狀態'],
+  '新規追加': ['Newly added', '新添加', '新加入'],
   'Indexを更新': ['Refresh Index', '刷新索引', '重新整理索引'],
   '経過': ['Elapsed', '已过天数', '經過天數'],
   'Creator Tracking Indexを読み込んでいます...': ['Loading Creator Tracking Index...', '正在加载Creator Tracking索引…', '正在載入Creator Tracking索引…'],
   'この区分に登録済みCreatorはありません': ['No registered Creators in this category.', '此分类中没有已注册的Creator。', '此分類中沒有已登錄的Creator。'],
+  'ウィッシュリストに登録済みのCreatorはありません': ['No Creators are registered in the wishlist.', '愿望清单中没有已注册的Creator。', '願望清單中沒有已登錄的Creator。'],
+  'ウィッシュリスト登録済みCreatorだけを表示': ['Show only Creators in the wishlist', '仅显示愿望清单中的Creator', '僅顯示願望清單中的Creator'],
+  'ウィッシュリストに登録': ['Add to wishlist', '加入愿望清单', '加入願望清單'],
+  'Wishlist': ['Wishlist', '愿望清单', '願望清單'],
+  '登録済み': ['Registered', '已注册', '已登錄'],
 
   'テーマ': ['Theme', '主题', '主題'],
   'テーマとアクセントカラー': ['Theme and accent colors', '主题与强调色', '主題與強調色'],
@@ -854,6 +860,23 @@ const exactTranslations: Record<string, Translation> = {
   'USD — 米ドル': ['USD — US dollar', 'USD — 美元', 'USD — 美元'],
   'Brave Search APIキー': ['Brave Search API key', 'Brave Search API密钥', 'Brave Search API金鑰'],
   'Brave Search API（候補取得）': ['Brave Search API (candidate lookup)', 'Brave Search API（获取候选项）', 'Brave Search API（取得候選項目）'],
+  'Yahoo! JAPAN Client ID': ['Yahoo! JAPAN Client ID', 'Yahoo! JAPAN Client ID', 'Yahoo! JAPAN Client ID'],
+  'ローマ字検索用のアプリケーションID': ['Application ID for romaji search', '用于罗马字搜索的应用ID', '用於羅馬字搜尋的應用程式ID'],
+  'Gallery、Explorer、Creators、各管理・属性登録画面の日本語をローマ字で検索するために使用します': [
+    'Used to search Japanese text by romaji in Gallery, Explorer, Creators, management screens, and attribute dialogs.',
+    '用于在Gallery、Explorer、Creators、管理画面和属性对话框中以罗马字搜索日文。',
+    '用於在Gallery、Explorer、Creators、管理畫面和屬性對話框中以羅馬字搜尋日文。'
+  ],
+  'Client IDを設定した場合だけ有効です。ローマ字検索時、候補となる日本語文字列をYahoo! JAPANへ送信します': [
+    'Enabled only when a Client ID is set. Japanese candidate text is sent to Yahoo! JAPAN during romaji searches.',
+    '仅在设置Client ID后启用。使用罗马字搜索时，候选日文文本会发送至Yahoo! JAPAN。',
+    '僅在設定Client ID後啟用。使用羅馬字搜尋時，候選日文文字會傳送至Yahoo! JAPAN。'
+  ],
+  'Google はブラウザ検索、Brave Search API と Gemini API はフィルタエディタ内へ候補を表示します。Yahoo! JAPAN ルビ振りAPIの読みはキャッシュDBへ保存し、同じ文字列を繰り返し取得しません': [
+    'Google opens a browser search, while Brave Search API and Gemini API show candidates in the filter editor. Readings from the Yahoo! JAPAN Furigana API are cached so the same text is not requested repeatedly.',
+    'Google会打开浏览器搜索，Brave Search API和Gemini API会在筛选器编辑器中显示候选项。Yahoo! JAPAN注音API的读音会缓存在数据库中，不会重复请求相同文本。',
+    'Google會開啟瀏覽器搜尋，Brave Search API與Gemini API會在篩選器編輯器中顯示候選項目。Yahoo! JAPAN注音API的讀音會快取於資料庫，不會重複請求相同文字。'
+  ],
   'Gemini APIキー': ['Gemini API key', 'Gemini API密钥', 'Gemini API金鑰'],
   'Gemini API（AI候補生成）': ['Gemini API (AI candidate generation)', 'Gemini API（AI候选生成）', 'Gemini API（AI候選產生）'],
   'Google検索URL': ['Google search URL', 'Google搜索URL', 'Google搜尋URL'],

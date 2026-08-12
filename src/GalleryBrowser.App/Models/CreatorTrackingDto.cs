@@ -18,6 +18,17 @@ public sealed record CreatorTrackingMetricSettingDto(
     string Label,
     double? WeightPercent);
 
+public sealed record CreatorTrackingCategoryMetricSettingDto(
+    string Category,
+    IReadOnlyList<CreatorTrackingMetricSettingDto> Metrics);
+
+public sealed record CreatorTrackingCategoryProfileDto(
+    string Category,
+    IReadOnlyDictionary<string, int> EvaluationMetrics,
+    double PersonalRating,
+    string EvaluationMemo,
+    IReadOnlyList<string> SummaryCardIds);
+
 public sealed record CreatorTrackingTemplateContextDto(
     string DisplayName,
     string MainStoragePath);
@@ -57,6 +68,14 @@ public sealed record CreatorTrackingPurchaseDto(
     public bool Wishlist { get; init; }
 }
 
+public sealed record CreatorTrackingTaskDto(
+    string Id,
+    string Category,
+    string Name,
+    string StartedOn,
+    string EndedOn,
+    string AlertFrequency);
+
 public sealed record CreatorTrackingDto(
     string Creator,
     string DisplayName,
@@ -84,5 +103,11 @@ public sealed record CreatorTrackingDto(
     string SupportMemo,
     string UpdatedAt)
 {
+    public bool Wishlist { get; init; }
+
     public IReadOnlyList<CreatorTrackingStorageLocationDto> StorageLocations { get; init; } = [];
+
+    public IReadOnlyList<CreatorTrackingTaskDto> Tasks { get; init; } = [];
+
+    public IReadOnlyList<CreatorTrackingCategoryProfileDto> CategoryProfiles { get; init; } = [];
 }

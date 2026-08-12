@@ -35,7 +35,14 @@ public sealed record GalleryCreatorSummaryDto(
     IReadOnlyDictionary<string, int> EvaluationMetrics,
     double PersonalRating,
     string RatingBucket,
-    string SearchText);
+    string SearchText)
+{
+    public int VideoFileCount { get; init; }
+
+    public long TotalDurationSeconds { get; init; }
+
+    public int AverageDurationSeconds { get; init; }
+}
 
 public sealed record GalleryCreatorSummarySnapshotDto(
     IReadOnlyList<GalleryCreatorSummaryDto> Items);

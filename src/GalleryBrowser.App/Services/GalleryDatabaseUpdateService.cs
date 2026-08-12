@@ -12,13 +12,18 @@ public sealed class GalleryDatabaseUpdateService
 
     private readonly GalleryDatabase _database;
     private readonly FileBrowserService _fileBrowser;
+    private readonly ThumbnailService _thumbnailService;
     private readonly GalleryFileScanner _fileScanner = new();
     private IReadOnlyDictionary<string, string> _categoryLabels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-    public GalleryDatabaseUpdateService(GalleryDatabase database, FileBrowserService fileBrowser)
+    public GalleryDatabaseUpdateService(
+        GalleryDatabase database,
+        FileBrowserService fileBrowser,
+        ThumbnailService thumbnailService)
     {
         _database = database;
         _fileBrowser = fileBrowser;
+        _thumbnailService = thumbnailService;
     }
 
     public async Task<GalleryDatabaseUpdateResult> UpdateAsync(
@@ -64,6 +69,8 @@ public sealed class GalleryDatabaseUpdateService
         {
             var error = new List<string>();
             var scanSummaries = new List<string>();
+            var deletedMissingRecords = 0;
+            var deletedThumbnailEntries = 0;
             for (var index = 0; index < scanPlans.Length; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -73,6 +80,8 @@ public sealed class GalleryDatabaseUpdateService
                 var result = await ScanCategoryAsync(plan, reportProgress, cancellationToken);
                 error.AddRange(result.Error);
                 scanSummaries.Add($"{GetCategoryLabel(plan.Category)}: {result.ScannedSummary}");
+                deletedMissingRecords += result.DeletedMissingRecords;
+                deletedThumbnailEntries += result.DeletedThumbnailEntries;
             }
 
             _database.RestoreGalleryRatings(ratings);
@@ -81,7 +90,11 @@ public sealed class GalleryDatabaseUpdateService
             var scanned = scanSummaries.Count > 0
                 ? string.Join(" / ", scanSummaries)
                 : "更新が完了しました。";
-            return new GalleryDatabaseUpdateResult(scanned, $"Errors: {error.Count}");
+            return new GalleryDatabaseUpdateResult(
+                scanned,
+                $"Errors: {error.Count}",
+                deletedMissingRecords,
+                deletedThumbnailEntries);
         }
         finally
         {
@@ -150,6 +163,8 @@ public sealed class GalleryDatabaseUpdateService
         {
             var error = new List<string>();
             var scanSummaries = new List<string>();
+            var deletedMissingRecords = 0;
+            var deletedThumbnailEntries = 0;
             for (var index = 0; index < scanPlans.Length; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -159,6 +174,8 @@ public sealed class GalleryDatabaseUpdateService
                 var result = await ScanCategoryAsync(plan, reportProgress, cancellationToken);
                 error.AddRange(result.Error);
                 scanSummaries.Add($"{GetCategoryLabel(plan.Category)}: {result.ScannedSummary}");
+                deletedMissingRecords += result.DeletedMissingRecords;
+                deletedThumbnailEntries += result.DeletedThumbnailEntries;
                 _database.SynchronizeGidRegistryPathsUnderFolders(plan.Targets);
             }
 
@@ -167,7 +184,11 @@ public sealed class GalleryDatabaseUpdateService
             var scanned = scanSummaries.Count > 0
                 ? string.Join(" / ", scanSummaries)
                 : "更新が完了しました。";
-            return new GalleryDatabaseUpdateResult(scanned, $"Errors: {error.Count}");
+            return new GalleryDatabaseUpdateResult(
+                scanned,
+                $"Errors: {error.Count}",
+                deletedMissingRecords,
+                deletedThumbnailEntries);
         }
         finally
         {
@@ -202,13 +223,56 @@ public sealed class GalleryDatabaseUpdateService
         {
             reportProgress?.Invoke($"[{GetCategoryLabel(plan.Category)}] [error] {error}");
         }
-        var scannedSummary = $"Scanned files: {written.WrittenCount}";
+        var cleanup = errors.Length == 0
+            ? CleanupMissingGalleryItems(plan, reportProgress, cancellationToken)
+            : new MissingGalleryItemCleanupResult(0, 0);
+        if (errors.Length > 0)
+        {
+            reportProgress?.Invoke(
+                $"[{GetCategoryLabel(plan.Category)}] 走査エラーがあるため、存在しない作品レコードの整理をスキップしました。");
+        }
+        var scannedSummary = $"Scanned files: {written.WrittenCount} / Missing records removed: {cleanup.DeletedRecords}";
         var errorSummary = $"Errors: {errors.Length}";
         reportProgress?.Invoke($"[{GetCategoryLabel(plan.Category)}] {scannedSummary}");
         reportProgress?.Invoke($"[{GetCategoryLabel(plan.Category)}] {errorSummary}");
         return new GalleryScanProcessResult(
             scannedSummary,
-            errors);
+            errors,
+            cleanup.DeletedRecords,
+            cleanup.DeletedThumbnailEntries);
+    }
+
+    private MissingGalleryItemCleanupResult CleanupMissingGalleryItems(
+        GalleryScanPlan plan,
+        Action<string>? reportProgress,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var missingPaths = _database.ListGalleryItemPathsUnderFolders(plan.Category, plan.Targets)
+            .Where(path => !File.Exists(path) && !Directory.Exists(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (missingPaths.Length == 0)
+        {
+            return new MissingGalleryItemCleanupResult(0, 0);
+        }
+
+        reportProgress?.Invoke(
+            $"[{GetCategoryLabel(plan.Category)}] 実体がない作品レコードを{missingPaths.Length:N0}件整理しています。");
+        var deletedRecords = 0;
+        var deletedThumbnailEntries = 0;
+        foreach (var batch in missingPaths.Chunk(150))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            deletedRecords += _database.DeleteGalleryWorks(batch);
+            foreach (var path in batch)
+            {
+                deletedThumbnailEntries += _thumbnailService.InvalidateSourcesUnderPath(path);
+            }
+        }
+        reportProgress?.Invoke(
+            $"[{GetCategoryLabel(plan.Category)}] 欠損作品の整理完了: DB {deletedRecords:N0}件 / サムネイル {deletedThumbnailEntries:N0}件");
+        return new MissingGalleryItemCleanupResult(deletedRecords, deletedThumbnailEntries);
     }
 
     private void AssignConfiguredGids(
@@ -266,11 +330,22 @@ public sealed class GalleryDatabaseUpdateService
 
 }
 
-public sealed record GalleryDatabaseUpdateResult(string ScanSummary, string ErrorSummary);
+public sealed record GalleryDatabaseUpdateResult(
+    string ScanSummary,
+    string ErrorSummary,
+    int DeletedMissingRecords = 0,
+    int DeletedThumbnailEntries = 0);
 public sealed record GalleryFolderScanRequest(
     string Category,
     IReadOnlyList<string> Folders,
     IReadOnlyList<string>? AdditionalExtensions = null);
 
 internal sealed record GalleryScanPlan(string Category, string[] Targets, string[] Extensions);
-internal sealed record GalleryScanProcessResult(string ScannedSummary, IReadOnlyList<string> Error);
+internal sealed record GalleryScanProcessResult(
+    string ScannedSummary,
+    IReadOnlyList<string> Error,
+    int DeletedMissingRecords,
+    int DeletedThumbnailEntries);
+internal sealed record MissingGalleryItemCleanupResult(
+    int DeletedRecords,
+    int DeletedThumbnailEntries);

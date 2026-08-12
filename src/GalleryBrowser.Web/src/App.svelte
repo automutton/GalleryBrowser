@@ -36,6 +36,7 @@
     GripVertical,
     Grid3X3,
     Hash,
+    Heart,
     Keyboard,
     Layers3,
     LayoutGrid,
@@ -71,20 +72,67 @@
     X
   } from 'lucide-svelte';
   import { postHostMessage } from './lib/hostBridge';
-  import {
-    type AppLanguage,
-    applySystemLanguage,
-    normalizeLanguage,
-    startSystemLocalization,
-    stopSystemLocalization,
-    translateSystemText
-  } from './lib/i18n';
+  import type { AppLanguage } from './lib/i18n';
+
+  type SystemLocalizationModule = typeof import('./lib/i18n');
+  let systemLocalizationModule: SystemLocalizationModule | null = null;
+  let systemLocalizationLoad: Promise<SystemLocalizationModule> | null = null;
+  let systemLocalizationStarted = false;
+  let requestedSystemLanguage: AppLanguage = 'ja';
+
+  function normalizeLanguage(value: unknown): AppLanguage {
+    return value === 'en' || value === 'zh-CN' || value === 'zh-TW' ? value : 'ja';
+  }
+
+  function loadSystemLocalization() {
+    systemLocalizationLoad ??= import('./lib/i18n').then((module) => {
+      systemLocalizationModule = module;
+      if (systemLocalizationStarted) {
+        module.startSystemLocalization(requestedSystemLanguage);
+      }
+      return module;
+    });
+    return systemLocalizationLoad;
+  }
+
+  function applySystemLanguage(language: AppLanguage) {
+    requestedSystemLanguage = normalizeLanguage(language);
+    document.documentElement.lang = requestedSystemLanguage;
+    if (systemLocalizationModule) {
+      systemLocalizationModule.applySystemLanguage(requestedSystemLanguage);
+    }
+    else if (requestedSystemLanguage !== 'ja') {
+      systemLocalizationStarted = true;
+      void loadSystemLocalization();
+    }
+  }
+
+  function startSystemLocalization(language: AppLanguage) {
+    requestedSystemLanguage = normalizeLanguage(language);
+    document.documentElement.lang = requestedSystemLanguage;
+    systemLocalizationStarted = true;
+    if (systemLocalizationModule) {
+      systemLocalizationModule.startSystemLocalization(requestedSystemLanguage);
+    }
+    else if (requestedSystemLanguage !== 'ja') {
+      void loadSystemLocalization();
+    }
+  }
+
+  function stopSystemLocalization() {
+    systemLocalizationStarted = false;
+    systemLocalizationModule?.stopSystemLocalization();
+  }
+
+  function translateSystemText(text: string, language: AppLanguage) {
+    return systemLocalizationModule?.translateSystemText(text, language) ?? text;
+  }
 
   type ActiveView = 'library' | 'bookmarks' | 'creators' | 'creatorTracking' | 'explorer' | 'filters' | 'tags' | 'userMetrics' | 'board' | 'calendar' | 'settings' | 'userGuide';
   type BookmarkableView = 'library' | 'explorer' | 'creators' | 'creatorTracking';
   type StickyNoteView = BookmarkableView | 'userMetrics';
-  type SettingsSection = 'programs' | 'gestures' | 'keyboardShortcuts' | 'calendar' | 'notifications' | 'gid' | 'theme' | 'language' | 'tabCandidates' | 'galleryTargets' | 'creatorTracking' | 'winrar' | 'ffmpeg' | 'nconvert' | 'thumbnailCache' | 'sqliteDatabase' | 'searchEngine';
-  type NotificationTestEvent = 'creatorFollowWarning' | 'creatorFollowAlert' | 'subscriptionEnding' | 'subscriptionReminder' | 'scheduledScanStarted' | 'scheduledScanCompleted';
+  type SettingsSection = 'programs' | 'gestures' | 'keyboardShortcuts' | 'calendar' | 'notifications' | 'gid' | 'theme' | 'language' | 'tabCandidates' | 'galleryTargets' | 'creatorTracking' | 'creatorBlacklist' | 'winrar' | 'ffmpeg' | 'nconvert' | 'thumbnailCache' | 'sqliteDatabase' | 'searchEngine' | 'aiConcierge';
+  type NotificationTestEvent = 'creatorFollowWarning' | 'creatorFollowAlert' | 'subscriptionEnding' | 'subscriptionReminder' | 'creatorTask' | 'scheduledScanStarted' | 'scheduledScanCompleted';
   type UserGuideSectionId = 'overview' | 'firstSteps' | 'gallery' | 'explorer' | 'organize' | 'creators' | 'bookmarks' | 'metrics' | 'calendar' | 'notifications' | 'settings' | 'data' | 'shortcuts' | 'troubleshooting' | 'acknowledgements';
   type ColorTheme = 'light' | 'dark';
   type ThemeSettings = {
@@ -142,6 +190,17 @@
     tags: string[];
   };
 
+  type AiAttributeInferenceReviewItem = {
+    gid: string;
+    path: string;
+    name: string;
+    category: string;
+    creator: string;
+    imageCount: number;
+    reason: string;
+    createdAt: string;
+  };
+
   type GalleryRandomPickSettings = {
     pickCount: number;
     minimumRating: number;
@@ -196,6 +255,9 @@
     zipFileCount: number;
     totalImageCount: number;
     averageImageCount: number;
+    videoFileCount: number;
+    totalDurationSeconds: number;
+    averageDurationSeconds: number;
     ratedFileCount: number;
     maxRating: number;
     lastAccessTime: string;
@@ -318,6 +380,15 @@
     count: number;
   };
 
+  type GalleryCreatorSummaryFilterIndex = {
+    ratingCounts: Map<string, number>;
+    siteCounts: Map<string, number>;
+    overallRatingCounts: Map<number, number>;
+    metricScoreCounts: Record<CreatorTrackingMetricKey, Map<number, number>>;
+    coreTitleOptions: GalleryCreatorCoreFilterOption[];
+    coreTagOptions: GalleryCreatorCoreFilterOption[];
+  };
+
   type CreatorTrackingActivityLink = {
     label: string;
     url: string;
@@ -361,6 +432,15 @@
     wishlist: boolean;
   };
 
+  type CreatorTrackingTask = {
+    id: string;
+    category: string;
+    name: string;
+    startedOn: string;
+    endedOn: string;
+    alertFrequency: 'none' | 'daily' | 'end';
+  };
+
   type CalendarSettings = {
     weekStartDay: number;
   };
@@ -387,6 +467,14 @@
     renewalOn: string;
     endingPlanned: boolean;
     reminder: boolean;
+    eventType: 'subscription' | 'creator-check' | 'task';
+    severity: 'normal' | 'warning' | 'alert';
+    startOn: string;
+    endOn: string;
+    title: string;
+    detail: string;
+    taskCategory: string;
+    alertFrequency: 'none' | 'daily' | 'end';
   };
 
   type CalendarViewMode = 'month' | 'focus';
@@ -437,6 +525,33 @@
   };
 
   type CreatorTrackingMetricKey = 'situation' | 'continuity' | 'consistency' | 'quality' | 'texture' | 'volume';
+  type CreatorTrackingSummaryCardId =
+    | 'totalFiles'
+    | 'totalImages'
+    | 'totalRating'
+    | 'trackingDays'
+    | 'totalSpend'
+    | 'recentSpend'
+    | 'videoFiles'
+    | 'totalDuration'
+    | 'averageDuration'
+    | 'averageImages'
+    | 'ratedFiles'
+    | 'maxRating'
+    | 'lastAdded';
+
+  type CreatorTrackingCardValuePart = {
+    text: string;
+    unit?: boolean;
+  };
+
+  type CreatorTrackingCategoryProfile = {
+    category: string;
+    evaluationMetrics: Record<CreatorTrackingMetricKey, number>;
+    personalRating: number;
+    evaluationMemo: string;
+    summaryCardIds: CreatorTrackingSummaryCardId[];
+  };
 
   type CreatorTrackingMetricDefinition = {
     key: CreatorTrackingMetricKey;
@@ -456,6 +571,7 @@
 
   type CreatorTrackingSettingsDraft = {
     metrics: CreatorTrackingSettingsMetricDraft[];
+    metricSettingsByCategory: Record<string, CreatorTrackingSettingsMetricDraft[]>;
     scoreMultiplier: number;
     scoreDecimalPlaces: number;
     displayCurrency: string;
@@ -468,6 +584,7 @@
     compositionLabelLimit: number;
     activityPlaces: CreatorTrackingActivityPlaceSetting[];
     followPolicyOptions: string[];
+    taskCategories: string[];
   };
 
   type CreatorTrackingTab = {
@@ -486,7 +603,7 @@
     requestId: string;
   };
 
-  type CreatorTrackingIndexSortKey = 'creator' | 'lastChecked' | 'alert';
+  type CreatorTrackingIndexSortKey = 'creator' | 'lastChecked' | 'alert' | 'new';
   type CreatorTrackingIndexSortDirection = 'asc' | 'desc';
   type CreatorTrackingIndexItem = {
     creator: string;
@@ -497,6 +614,8 @@
     sinceLastCheckDays: number;
     followWarnFlg: boolean;
     followAlertFlg: boolean;
+    isNewAfterScheduledScan: boolean;
+    wishlist: boolean;
   };
 
   type CreatorTracking = {
@@ -517,8 +636,10 @@
     evaluationMetrics: Record<CreatorTrackingMetricKey, number>;
     personalRating: number;
     evaluationMemo: string;
+    categoryProfiles: CreatorTrackingCategoryProfile[];
     subscriptionHistory: CreatorTrackingSubscription[];
     purchaseHistory: CreatorTrackingPurchase[];
+    tasks: CreatorTrackingTask[];
     monthlySupportAmount: number;
     lifetimeSpend: number;
     currency: string;
@@ -526,6 +647,7 @@
     supportEndedOn: string;
     supportMemo: string;
     updatedAt: string;
+    wishlist: boolean;
   };
 
   type GalleryFilterOption = {
@@ -576,6 +698,7 @@
     googleSearchUrlTemplate: string;
     braveApiKey: string;
     geminiApiKey: string;
+    yahooClientId: string;
   };
 
   type FilterCsvPreviewRow = {
@@ -850,6 +973,14 @@
     modifiedAt: string;
   };
 
+  type ExplorerDirectorySnapshot = {
+    path: string;
+    parentPath: string | null;
+    roots: string[];
+    entries: ExplorerEntry[];
+    isTruncated: boolean;
+  };
+
   type ExplorerDetailColumnId =
     | 'icon'
     | 'name'
@@ -873,7 +1004,7 @@
     id: ExplorerDetailColumnId;
     label: string;
     width: string;
-    sort?: 'name' | 'modified' | 'size' | 'type';
+    sort?: 'name' | 'pages' | 'modified' | 'size' | 'averageImageSize' | 'type';
   };
 
   type MouseGestureCommand = 'parent' | 'back' | 'forward' | 'clearFilter' | 'refresh' | 'copyPath' | 'none';
@@ -918,13 +1049,13 @@
   const explorerDetailColumnDefinitions: ExplorerDetailColumn[] = [
     { id: 'icon', label: 'アイコン', width: '34px' },
     { id: 'name', label: '名前', width: 'minmax(240px, 1fr)', sort: 'name' },
-    { id: 'pages', label: 'ページ', width: '70px' },
+    { id: 'pages', label: 'ページ', width: '70px', sort: 'pages' },
     { id: 'rating', label: 'レート', width: '70px' },
     { id: 'created', label: '作成日時', width: '165px' },
     { id: 'accessed', label: 'アクセス日時', width: '165px' },
     { id: 'modified', label: '更新日時', width: '165px', sort: 'modified' },
     { id: 'size', label: 'サイズ', width: '100px', sort: 'size' },
-    { id: 'averageImageSize', label: '平均画像サイズ', width: '120px' },
+    { id: 'averageImageSize', label: '平均画像サイズ', width: '120px', sort: 'averageImageSize' },
     { id: 'resolution', label: '解像度', width: '105px' },
     { id: 'ratio', label: '比', width: '72px' },
     { id: 'width', label: '幅', width: '70px' },
@@ -1014,12 +1145,36 @@
     { key: 'texture', label: '', weight: 0 },
     { key: 'volume', label: '', weight: 0 }
   ];
+  const defaultCreatorTrackingSummaryCardIds: CreatorTrackingSummaryCardId[] = [
+    'totalFiles',
+    'totalImages',
+    'totalRating',
+    'trackingDays',
+    'totalSpend',
+    'recentSpend'
+  ];
+  const creatorTrackingSummaryCardOptions: Array<{ id: CreatorTrackingSummaryCardId; label: string }> = [
+    { id: 'totalFiles', label: '総ファイル数' },
+    { id: 'totalImages', label: '総枚数' },
+    { id: 'totalRating', label: 'トータル評価値' },
+    { id: 'trackingDays', label: 'フォローしている日数' },
+    { id: 'totalSpend', label: '総課金額' },
+    { id: 'recentSpend', label: '直近3か月の課金額' },
+    { id: 'videoFiles', label: '動画ファイル数' },
+    { id: 'totalDuration', label: '総再生時間' },
+    { id: 'averageDuration', label: '平均再生時間' },
+    { id: 'averageImages', label: '1書庫あたり平均枚数' },
+    { id: 'ratedFiles', label: '評価済みファイル数' },
+    { id: 'maxRating', label: '単一作品の最大評価値' },
+    { id: 'lastAdded', label: '最終追加日' }
+  ];
 
   const defaultCreatorTrackingSettingsDraft: CreatorTrackingSettingsDraft = {
     metrics: creatorTrackingMetricDefinitions.map((metric) => ({
       ...metric,
       weightPercent: null
     })),
+    metricSettingsByCategory: {},
     scoreMultiplier: 1.25,
     scoreDecimalPlaces: 1,
     displayCurrency: 'JPY',
@@ -1031,6 +1186,7 @@
     archiveScale: 'month',
     compositionLabelLimit: 5,
     followPolicyOptions: [],
+    taskCategories: [],
     activityPlaces: []
   };
 
@@ -1082,14 +1238,16 @@
     tabCandidates: { title: '新規タブ候補', description: 'Explorer の新規タブメニューに表示するフォルダを登録します' },
     galleryTargets: { title: '区分別の設定', description: '区分ごとの走査対象、使用フィルタ、カード表示とサムネイルの調整を設定します' },
     creatorTracking: { title: 'Creator Tracking', description: '評価・集計・活動場所・表示に関する既定値を設定します' },
-    calendar: { title: 'Calendar', description: 'サブスク更新予定の表示とGoogleカレンダー連携用の出力を設定します' },
-    notifications: { title: '通知', description: 'Discord・LINEへ送るCreator、サブスク、定期更新の通知を設定します' },
+    creatorBlacklist: { title: 'Blacklist', description: 'Creator Trackingページを新規作成しない作者を管理します' },
+    calendar: { title: 'Calendar', description: 'サブスク・Creator確認・タスク予定とGoogleカレンダー連携を設定します' },
+    notifications: { title: '通知', description: 'Discord・LINEへ送るCreator、サブスク、タスク、定期更新の通知を設定します' },
     winrar: { title: 'WinRAR設定', description: 'WinRAR の実行ファイルと右クリックメニューで扱う書庫形式を設定します' },
     ffmpeg: { title: 'FFmpeg設定', description: '動画サムネイル生成に使用する FFmpeg の実行ファイルと対応形式を設定します' },
     nconvert: { title: 'NConvert設定', description: 'ZIP内の対応画像を標準画質のJPG（JPEGli）へ変換する実行ファイルと一時フォルダを設定します' },
     thumbnailCache: { title: 'サムネイルキャッシュ', description: '対象ディレクトリ配下のフォルダと対応ファイルのサムネイルを保存します' },
     sqliteDatabase: { title: 'データベース', description: '本体DB、キャッシュDB、走査スケジュール、クラウドバックアップを管理します' },
-    searchEngine: { title: '検索エンジン', description: 'フィルタエディタで標準名を調べる検索方法を設定します' }
+    searchEngine: { title: '検索エンジン', description: 'フィルタエディタで標準名を調べる検索方法を設定します' },
+    aiConcierge: { title: 'AIコンシェルジュ', description: '会話データの保存先と、学習データが保管されるDBを確認します' }
   };
 
   const notificationTestEvents: Array<{ value: NotificationTestEvent; label: string }> = [
@@ -1097,6 +1255,7 @@
     { value: 'creatorFollowAlert', label: 'Creator確認（アラート）' },
     { value: 'subscriptionEnding', label: 'サブスク解除予定' },
     { value: 'subscriptionReminder', label: 'サブスク更新アラート' },
+    { value: 'creatorTask', label: 'Creatorタスク' },
     { value: 'scheduledScanStarted', label: '定期走査開始' },
     { value: 'scheduledScanCompleted', label: '定期走査完了' }
   ];
@@ -1314,6 +1473,7 @@
     indexSection?: string;
     indexSortKey?: CreatorTrackingIndexSortKey;
     indexSortDirection?: CreatorTrackingIndexSortDirection;
+    indexWishlistOnly?: boolean;
     stickyNotes?: StickyNoteItem[];
   };
 
@@ -1444,6 +1604,14 @@
     kind: 'folder' | 'separator';
   };
 
+  type CreatorBlacklistItem = {
+    creator: string;
+    reason: string;
+    registeredOn: string;
+    originalCreator: string;
+    dirty: boolean;
+  };
+
   type ExplorerEntryDrag = {
     paths: string[];
     sourcePane: 'left' | 'right';
@@ -1480,6 +1648,8 @@
   let appLanguage: AppLanguage = 'ja';
   let languageSavePending = false;
   let creatorTrackingSettingsDraft = structuredClone(defaultCreatorTrackingSettingsDraft);
+  let creatorBlacklistItems: CreatorBlacklistItem[] = [];
+  let creatorBlacklistBusy = false;
   let items: GalleryItem[] = [];
   let isLoading = true;
   let thumbnailStatus = '';
@@ -1566,9 +1736,25 @@
     provider: 'google',
     googleSearchUrlTemplate: 'https://www.google.com/search?q={query}',
     braveApiKey: '',
-    geminiApiKey: ''
+    geminiApiKey: '',
+    yahooClientId: ''
   };
+  const romanizedSearchCache = new Map<string, string>();
+  const romanizedSearchCacheLookupPending = new Set<string>();
+  const romanizedSearchCacheLookupRequested = new Set<string>();
+  let romanizedSearchCacheLookupInFlight = false;
+  let romanizedSearchCacheLookupActiveValues: string[] = [];
+  let romanizedSearchCacheLookupTimer: ReturnType<typeof setTimeout> | undefined;
+  let nextRomanizedSearchCacheLookupRequestId = 1;
+  const romanizedSearchPending = new Set<string>();
+  const romanizedSearchRequested = new Set<string>();
+  let romanizedSearchRequestInFlight = false;
+  let romanizedSearchActiveValues: string[] = [];
+  let romanizedSearchRequestTimer: ReturnType<typeof setTimeout> | undefined;
+  let nextRomanizedSearchRequestId = 1;
+  let romanizedSearchConsecutiveFailures = 0;
   let galleryWorks: GalleryWork[] = [];
+  const galleryWorkIndexes = new Map<string, number>();
   let galleryCreatorSummaries: GalleryCreatorSummary[] = [];
   let galleryCreatorSummarySection = defaultGallerySectionId;
   let galleryCreatorSummaryRatings: string[] = [];
@@ -1609,6 +1795,11 @@
   let nextCalendarRequestId = 1;
   let calendarMonthCursor = toLocalDateInputValue(new Date()).slice(0, 7);
   let calendarViewMode: CalendarViewMode = 'month';
+  let calendarShowSubscriptions = true;
+  let calendarShowCreatorChecks = true;
+  let calendarShowTasks = true;
+  let calendarDetailDate = '';
+  let calendarDetailEvents: CalendarSubscriptionEvent[] = [];
   let googleCalendarAutoSyncEnabled = false;
   let googleCalendarSyncFeatureEnabled = false;
   let googleCalendarClientId = '';
@@ -1635,21 +1826,28 @@
   let creatorTrackingError = '';
   let creatorTrackingBillingView: 'subscriptions' | 'purchases' = 'subscriptions';
   let creatorTrackingArchiveScale: 'week' | 'month' | 'year' = 'month';
+  let creatorTrackingCategoryPicker: 'toolbar' | '' = '';
+  let creatorTrackingSummaryEditMode = false;
+  let creatorTrackingDashboardCategoryRequestId = '';
+  let creatorTrackingDashboardSwitching = false;
   let creatorTrackingRequestId = '';
   let nextCreatorTrackingRequestId = 1;
   let creatorTrackingRefreshRequestIds = new Set<string>();
   let creatorTrackingTabs: CreatorTrackingTab[] = [];
   let activeCreatorTrackingTabId = '';
   const creatorTrackingIndexTabId = 'creator-tracking-index';
-  let creatorTrackingIndexOpen = false;
+  let creatorTrackingIndexOpen = true;
   let creatorTrackingIndexItems: CreatorTrackingIndexItem[] = [];
   let creatorTrackingIndexIsLoading = false;
   let creatorTrackingIndexError = '';
   let creatorTrackingIndexRequestId = '';
   let creatorTrackingIndexPendingSaveRequestId = '';
   let creatorTrackingIndexSection = 'all';
+  let creatorTrackingIndexQuery = '';
+  let creatorTrackingIndexSearchElement: HTMLInputElement | null = null;
   let creatorTrackingIndexSortKey: CreatorTrackingIndexSortKey = 'creator';
   let creatorTrackingIndexSortDirection: CreatorTrackingIndexSortDirection = 'asc';
+  let creatorTrackingIndexWishlistOnly = false;
   let creatorTrackingNewDialogOpen = false;
   let creatorTrackingNewCreator = '';
   let creatorTrackingNewCategory = galleryCreatorSummarySection;
@@ -1662,6 +1860,15 @@
   let draggedCreatorTrackingBillingRow: { view: 'subscriptions' | 'purchases'; index: number } | null = null;
   let creatorTrackingIconFetchRequests: Record<string, number> = {};
   let creatorTrackingCompositionRefreshPending = false;
+  let creatorTrackingSettingsCategory = defaultGallerySectionId;
+  let creatorTrackingSettingsMetrics = defaultCreatorTrackingSettingsDraft.metrics;
+  let activeCreatorTrackingCategoryId = defaultGallerySectionId;
+  let activeCreatorTrackingCategoryProfile: CreatorTrackingCategoryProfile | null = null;
+  let activeCreatorTrackingMetricSettings = defaultCreatorTrackingSettingsDraft.metrics;
+  let activeCreatorTrackingSummaryCardIds = defaultCreatorTrackingSummaryCardIds;
+  let creatorTrackingCategoryProfileLabels: { category: string; label: string }[] = [];
+  let unusedCreatorTrackingCategories: GallerySectionDefinition[] = [];
+  let creatorTrackingCategoryDeleteTarget = '';
   let nextCreatorTrackingIconFetchRequestId = 1;
   let galleryTotal = 0;
   let galleryRatings: GalleryFilterOption[] = [];
@@ -1717,6 +1924,18 @@
   } | null = null;
   let galleryTagAssignmentReturnPending = false;
   let galleryTitleAssignment: GalleryTitleAssignment | null = null;
+  let aiAttributeReviewItems: AiAttributeInferenceReviewItem[] = [];
+  let visibleAiAttributeReviewItems: AiAttributeInferenceReviewItem[] = [];
+  let selectedAiAttributeReviewItem: AiAttributeInferenceReviewItem | null = null;
+  let aiAttributeReviewOpen = false;
+  let aiAttributeReviewLoading = false;
+  let aiAttributeReviewQuery = '';
+  let aiAttributeReviewSelectedGid = '';
+  let aiAttributeReviewEditingPath = '';
+  let aiAttributeReviewRenderLimit = 200;
+  let aiAttributeReviewLastQuery = '';
+  let renderedAiAttributeReviewItems: AiAttributeInferenceReviewItem[] = [];
+  let aiAttributeReviewPosition = { x: 0, y: 0 };
   let visibleGalleryTitleAssignmentCreatorTitles: GalleryTitleAssignmentOption[] = [];
   let visibleGalleryTitleAssignmentAvailableTitles: GalleryTitleAssignmentOption[] = [];
   let visibleGalleryTitleAssignmentCreatorTitleCharacters: GalleryCharacterAssignmentOption[] = [];
@@ -1811,12 +2030,16 @@
   };
   let galleryRandomPickSettingsSaveTimer: ReturnType<typeof setTimeout> | null = null;
   const requestedGalleryThumbnailIds = new Set<string>();
+  const requestedGalleryThumbnailPriorities = new Map<string, number>();
   const unavailableGalleryThumbnailIds = new Set<string>();
-  const pendingGalleryThumbnailRequests = new Map<string, { id: string; path: string; category: string }>();
-  const galleryThumbnailObserverCallbacks = new WeakMap<Element, () => void>();
+  const pendingGalleryThumbnailRequests = new Map<string, { id: string; path: string; category: string; priority: number }>();
+  const galleryThumbnailObserverCallbacks = new WeakMap<Element, (priority: number) => void>();
   const galleryThumbnailRequestBatchSize = 12;
-  let galleryThumbnailObserver: IntersectionObserver | null = null;
+  let galleryThumbnailPrefetchObserver: IntersectionObserver | null = null;
+  let galleryThumbnailViewportObserver: IntersectionObserver | null = null;
   let galleryThumbnailFlushFrame = 0;
+  let galleryThumbnailResultFrame = 0;
+  let pendingGalleryThumbnailUris: Record<string, string> = {};
   let galleryThumbnails: Record<string, string> = {};
   let galleryThumbnailRevision = 0;
   let galleryScanTargets: GalleryScanTarget[] = [];
@@ -1855,6 +2078,13 @@
   let nConvertAvailable = false;
   let nConvertZipBatchInProgress = false;
   let nConvertZipConfirmation: { pane: 'left' | 'right'; paths: string[]; directory: string } | null = null;
+  let aiConciergeDataDirectory = '';
+  let aiConciergeDataDirectoryDraft = '';
+  let aiConciergeRuntimeDataDirectory = '';
+  let aiConciergeLearningDatabasePath = '';
+  let aiConciergeRestartRequired = false;
+  let aiConciergeSettingsBusy = false;
+  let aiConciergeSettingsStatus = '';
   let gidSettings: GidSettings = {
     targetExtensions: 'zip;rar;7z;cbz;cbr',
     digitCount: 6
@@ -1931,6 +2161,7 @@
   let discordNotifyCreatorFollowAlert = true;
   let discordNotifySubscriptionEnding = true;
   let discordNotifySubscriptionReminder = true;
+  let discordNotifyCreatorTasks = true;
   let discordNotifyScheduledScanStarted = true;
   let discordNotifyScheduledScanCompleted = true;
   let discordNotificationBusy = false;
@@ -1946,6 +2177,7 @@
   let lineNotifyCreatorFollowAlert = true;
   let lineNotifySubscriptionEnding = true;
   let lineNotifySubscriptionReminder = true;
+  let lineNotifyCreatorTasks = true;
   let lineNotifyScheduledScanStarted = true;
   let lineNotifyScheduledScanCompleted = true;
   let lineNotificationBusy = false;
@@ -1972,6 +2204,8 @@
   let selectedNewTabCandidatePath = '';
   let draggedNewTabCandidate: NewTabCandidate | null = null;
   let explorerEntries: ExplorerEntry[] = [];
+  const explorerDirectorySnapshotCache = new Map<string, ExplorerDirectorySnapshot>();
+  const explorerDirectorySnapshotCacheLimit = 24;
   let explorerRoots: string[] = [];
   let explorerPath = '';
   let explorerParentPath: string | null = null;
@@ -2134,6 +2368,7 @@
   let explorerSplitLeftPaneElement: HTMLDivElement | null = null;
   let explorerSplitRightPaneElement: HTMLDivElement | null = null;
   let explorerSplitWorkspaceElement: HTMLDivElement | null = null;
+  let explorerTabStripElement: HTMLDivElement | null = null;
   let explorerFilterInputElement: HTMLInputElement | null = null;
   let gallerySearchInputElement: HTMLInputElement | null = null;
   let galleryCreatorSummarySearchInputElement: HTMLInputElement | null = null;
@@ -2146,20 +2381,76 @@
   const requestedThumbnailIds = new Set<number>();
   const requestedExplorerThumbnailPaths = new Set<string>();
   const unavailableExplorerThumbnailPaths = new Set<string>();
+  const pendingExplorerThumbnailRequests = new Map<string, { path: string; priority: number; requestToken: number }>();
+  const explorerThumbnailRequestTokens = new Map<string, number>();
+  const explorerThumbnailEntrySignatures = new Map<string, string>();
+  const explorerThumbnailRetriedUris = new Map<string, string>();
+  let nextExplorerThumbnailRequestToken = 1;
+  type ExplorerThumbnailRequest = { entry: ExplorerEntry; pane: 'left' | 'right' };
+  type ExplorerThumbnailObserverState = { request: ExplorerThumbnailRequest; observed: boolean };
+  const explorerThumbnailObserverTargets = new WeakMap<Element, ExplorerThumbnailObserverState>();
+  const explorerThumbnailObservers = new Map<Element | null, { observer: IntersectionObserver; mountedCount: number }>();
+  const explorerThumbnailRequestBatchSize = 16;
+  let explorerThumbnailFlushFrame = 0;
+  let explorerThumbnailResultFrame = 0;
+  let pendingExplorerThumbnailUris: Record<string, string> = {};
   let explorerThumbnails: Record<string, string> = {};
+  const explorerDetailVirtualizer = createVirtualizer<HTMLDivElement, HTMLButtonElement>({
+    count: 0,
+    getScrollElement: () => explorerDetailPaneElement,
+    estimateSize: () => 34,
+    overscan: 12
+  });
+  const explorerSplitLeftDetailVirtualizer = createVirtualizer<HTMLDivElement, HTMLButtonElement>({
+    count: 0,
+    getScrollElement: () => explorerSplitLeftPaneElement,
+    estimateSize: () => 34,
+    overscan: 12
+  });
+  const explorerSplitRightDetailVirtualizer = createVirtualizer<HTMLDivElement, HTMLButtonElement>({
+    count: 0,
+    getScrollElement: () => explorerSplitRightPaneElement,
+    estimateSize: () => 34,
+    overscan: 12
+  });
 
   $: filteredItems = filterItems(items, query);
   $: galleryRatingCounts = new Map(galleryRatings.map((option) => [Number(option.value), option.count]));
   $: visibleGalleryWorks = filterGalleryWorks(galleryWorks, galleryQuery);
-  $: creatorTrackingSettingsWeightTotal = creatorTrackingSettingsDraft.metrics.reduce((total, metric) => total + Number(metric.weightPercent || 0), 0);
+  $: creatorTrackingSettingsMetrics = getCreatorTrackingSettingsMetrics(
+    creatorTrackingSettingsCategory,
+    creatorTrackingSettingsDraft);
+  $: creatorTrackingSettingsWeightTotal = creatorTrackingSettingsMetrics
+    .reduce((total, metric) => total + Number(metric.weightPercent || 0), 0);
+  $: activeCreatorTrackingCategoryId = creatorTrackingSummary?.category
+    || creatorTrackingDashboardContext?.category
+    || creatorTracking?.categoryProfiles?.[0]?.category
+    || gallerySections[0]?.id
+    || defaultGallerySectionId;
+  $: activeCreatorTrackingCategoryProfile = creatorTracking?.categoryProfiles.find(profile =>
+    profile.category.localeCompare(activeCreatorTrackingCategoryId, 'ja-JP', { sensitivity: 'base' }) === 0) ?? null;
+  $: activeCreatorTrackingMetricSettings = getCreatorTrackingSettingsMetrics(
+    activeCreatorTrackingCategoryId,
+    creatorTrackingSettingsDraft);
+  $: activeCreatorTrackingSummaryCardIds = activeCreatorTrackingCategoryProfile?.summaryCardIds
+    ?? defaultCreatorTrackingSummaryCardIds;
+  $: creatorTrackingCategoryProfileLabels = buildCreatorTrackingCategoryProfileLabels(
+    creatorTracking?.categoryProfiles ?? [],
+    gallerySections);
+  $: unusedCreatorTrackingCategories = buildUnusedCreatorTrackingCategories(
+    creatorTracking?.categoryProfiles ?? [],
+    gallerySections);
   $: selectedGalleryScanTargets = galleryScanTargets.filter((target) => target.category === galleryTargetCategory);
   $: filteredExplorerEntries = sortExplorerEntries(
     filterExplorerEntries(explorerEntries, explorerQuery),
     explorerSort,
     explorerSortDirection
   );
-  $: selectedExplorerEntries = explorerEntries.filter((entry) => selectedPaths.includes(entry.path));
+  $: selectedPathSet = new Set(selectedPaths);
+  $: splitRightSelectedPathSet = new Set(explorerSplit?.rightSelectedPaths ?? []);
+  $: selectedExplorerEntries = explorerEntries.filter((entry) => selectedPathSet.has(entry.path));
   $: gidTargetExtensions = parseGidTargetExtensions(gidSettings.targetExtensions);
+  $: void revealActiveExplorerTab(explorerTabStripElement, activeExplorerTabId, explorerTabs.length);
   $: splitRightEntries = explorerSplit
     ? sortExplorerEntries(
         filterExplorerEntries(explorerSplit.rightEntries, splitExplorerQuery),
@@ -2167,6 +2458,33 @@
         explorerSortDirection
       )
     : [];
+  $: {
+    const scrollElement = explorerDetailPaneElement;
+    get(explorerDetailVirtualizer).setOptions({
+      count: filteredExplorerEntries.length,
+      getScrollElement: () => scrollElement,
+      estimateSize: () => 34,
+      overscan: 12
+    });
+  }
+  $: {
+    const scrollElement = explorerSplitLeftPaneElement;
+    get(explorerSplitLeftDetailVirtualizer).setOptions({
+      count: filteredExplorerEntries.length,
+      getScrollElement: () => scrollElement,
+      estimateSize: () => 34,
+      overscan: 12
+    });
+  }
+  $: {
+    const scrollElement = explorerSplitRightPaneElement;
+    get(explorerSplitRightDetailVirtualizer).setOptions({
+      count: splitRightEntries.length,
+      getScrollElement: () => scrollElement,
+      estimateSize: () => 34,
+      overscan: 12
+    });
+  }
   $: splitLeftTab = explorerSplit
     ? explorerTabs.find((tab) => tab.id === explorerSplit?.leftTabId)
     : undefined;
@@ -2174,6 +2492,9 @@
     ? explorerTabs.find((tab) => tab.id === explorerSplit?.rightTabId)
     : undefined;
   $: gestureTrailPoints = gestureTrail.map((point) => `${point.x},${point.y}`).join(' ');
+  $: activeExplorerPath = explorerSplit && splitFocusedPane === 'right'
+    ? explorerSplit.rightPath
+    : explorerPath;
   $: activeExplorerQuery = explorerSplit && splitFocusedPane === 'right'
     ? splitExplorerQuery
     : explorerQuery;
@@ -2200,7 +2521,8 @@
   $: filterEditorCategoryGroups = groupFilterEditorOptions(filterEditorOptions);
   $: filterEditorMergeOptions = getFilterEditorMergeOptions(filterEditorOptions, filterEditorSelectedId, filterEditorSelectedValue, filterEditorMergeSearch);
   $: filterEditorParentTitleOptions = filterEditorTitles.filter((title) => title.categoryName === (filterEditorCategoryName || '未分類'));
-  $: filterEditorCategoryOptions = filterEditorCategories.filter((category) => category.name.toLocaleLowerCase('ja-JP').includes(filterEditorSearch.toLocaleLowerCase('ja-JP')));
+  $: filterEditorCategoryOptions = filterEditorCategories.filter((category) =>
+    matchesSearchValues([category.name], filterEditorSearch));
   $: filterEditorCategoryFilterOptions = getFilterEditorCategoryFilterOptions(filterEditorDefinitions, filterEditorCategories);
   $: filterEditorRegisteredCharacters = filterEditorAttribute === 'title' && filterEditorSelectedId !== null
     ? filterEditorCharacters
@@ -2250,6 +2572,22 @@
   $: visibleGalleryTitleAssignmentAvailableCharacters = galleryTitleAssignment
     ? getGalleryTitleAssignmentAvailableCharacters(galleryTitleAssignment)
     : [];
+  $: visibleAiAttributeReviewItems = getVisibleAiAttributeReviewItems(
+    aiAttributeReviewItems,
+    aiAttributeReviewQuery);
+  $: selectedAiAttributeReviewItem =
+    visibleAiAttributeReviewItems.find((item) => item.gid === aiAttributeReviewSelectedGid)
+    ?? visibleAiAttributeReviewItems[0]
+    ?? null;
+  $: {
+    const normalizedReviewQuery = aiAttributeReviewQuery.trim();
+    if (normalizedReviewQuery !== aiAttributeReviewLastQuery) {
+      aiAttributeReviewLastQuery = normalizedReviewQuery;
+      aiAttributeReviewRenderLimit = 200;
+    }
+    renderedAiAttributeReviewItems =
+      visibleAiAttributeReviewItems.slice(0, aiAttributeReviewRenderLimit);
+  }
   $: selectedGalleryTitleAssignmentTitleName = galleryTitleAssignment?.selectedTitleId
     ? ([...galleryTitleAssignment.creatorTitles, ...galleryTitleAssignment.availableTitles, ...galleryTitleAssignment.commonAssignedTitles]
       .find((option) => option.id === galleryTitleAssignment?.selectedTitleId)?.title ?? '')
@@ -2270,8 +2608,11 @@
   $: galleryLandscapeBodyHeight = 126 + (galleryFileNameLines - 3) * 18;
   $: galleryCardWidth = ({ 5: 280, 6: 235, 7: 200, 8: 175, 9: 155 } as Record<number, number>)[galleryCardColumns];
   $: galleryGridStyle = `--gallery-card-width: ${galleryCardWidth}px; --gallery-card-height: ${galleryCardHeight}px; --gallery-card-body-height: ${galleryCardBodyHeight}px; --gallery-landscape-card-body-height: ${galleryLandscapeBodyHeight}px; --gallery-card-title-lines: ${galleryFileNameLines}; --gallery-card-title-height: ${galleryFileNameLines * 1.32}em; --gallery-card-title-size: ${galleryCardLayout.titleSize}; --gallery-card-meta-size: ${galleryCardLayout.metaSize}; --gallery-card-sub-size: ${galleryCardLayout.subSize};`;
-  $: galleryCreatorSummaryCoreTitleOptions = getGalleryCreatorCoreFilterOptions(galleryCreatorSummaries, galleryCreatorSummarySection, 'coreTitles');
-  $: galleryCreatorSummaryCoreTagOptions = getGalleryCreatorCoreFilterOptions(galleryCreatorSummaries, galleryCreatorSummarySection, 'coreTags');
+  $: galleryCreatorSummaryFilterIndex = buildGalleryCreatorSummaryFilterIndex(
+    galleryCreatorSummaries,
+    galleryCreatorSummarySection);
+  $: galleryCreatorSummaryCoreTitleOptions = galleryCreatorSummaryFilterIndex.coreTitleOptions;
+  $: galleryCreatorSummaryCoreTagOptions = galleryCreatorSummaryFilterIndex.coreTagOptions;
   $: visibleGalleryCreatorSummaries = getVisibleGalleryCreatorSummaries(
     galleryCreatorSummaries,
     galleryCreatorSummarySection,
@@ -2290,9 +2631,19 @@
   $: galleryCreatorSummaryCardAspect = getGalleryCardAspect(galleryCreatorSummarySection);
   $: galleryCreatorSummaryGridStyle = `--gallery-card-width: ${galleryCreatorSummaryCardWidth}px; --gallery-card-height: ${galleryCreatorSummaryCardHeight}px; --gallery-card-body-height: 149px; --gallery-landscape-card-body-height: 149px; --gallery-card-title-lines: 2; --gallery-card-title-height: 2.64em; --gallery-card-title-size: 0.95rem; --gallery-card-meta-size: 0.8rem; --gallery-card-sub-size: 0.75rem;`;
   $: creatorTrackingIndexActive = activeCreatorTrackingTabId === creatorTrackingIndexTabId;
+  $: primeRomanizedSearchValues(
+    creatorTrackingIndexQuery,
+    creatorTrackingIndexItems.flatMap((item) => [
+      item.creator,
+      item.displayName,
+      item.alternateName,
+      formatCreatorTrackingIndexName(item)
+    ]));
   $: visibleCreatorTrackingIndexItems = getVisibleCreatorTrackingIndexItems(
     creatorTrackingIndexItems,
     creatorTrackingIndexSection,
+    creatorTrackingIndexQuery,
+    creatorTrackingIndexWishlistOnly,
     creatorTrackingIndexSortKey,
     creatorTrackingIndexSortDirection);
   $: visibleGalleryTagAssignmentCreatorTitleTags = galleryTagAssignment
@@ -2301,7 +2652,7 @@
   $: visibleGalleryTagAssignmentAvailableTags = galleryTagAssignment
     ? getGalleryTagAssignmentAvailableTags(galleryTagAssignment)
     : [];
-  $: explorerBreadcrumbs = getExplorerBreadcrumbs(explorerPath);
+  $: explorerBreadcrumbs = getExplorerBreadcrumbs(activeExplorerPath);
   $: renameMaximumLength = Math.max(1, 255 - renameExtension.length - (renameIdentifier ? `{gid=${renameIdentifier}}`.length : 0));
   $: splitRenameMaximumLength = Math.max(1, 255 - splitRenameExtension.length - (splitRenameIdentifier ? `{gid=${splitRenameIdentifier}}`.length : 0));
   $: visibleExplorerDetailColumns = explorerDetailColumns
@@ -2315,6 +2666,552 @@
   $: explorerFocusedPaneDetailMode = explorerSplit
     ? (splitFocusedPane === 'right' ? explorerSplit.rightViewMode : explorerSplit.leftViewMode) === 'details'
     : explorerDetailOnly;
+
+  function getAiConciergeViewLabel() {
+    const labels: Record<ActiveView, string> = {
+      library: 'Gallery',
+      bookmarks: 'Bookmark',
+      creators: 'Creators',
+      creatorTracking: 'Creator Tracking',
+      explorer: 'Explorer',
+      filters: 'Filters',
+      tags: 'Tags',
+      userMetrics: 'User Metrics',
+      board: 'Board',
+      calendar: 'Calendar',
+      settings: 'Settings',
+      userGuide: 'User Guide'
+    };
+    return labels[activeView];
+  }
+
+  function buildAiConciergeContext() {
+    const selectedWorks = galleryWorks
+      .filter((work) => selectedGalleryWorkIds.has(work.id))
+      .slice(0, 12)
+      .map((work) => ({
+        id: work.id,
+        name: work.name,
+        creator: work.creator,
+        title: work.title,
+        character: work.character,
+        rating: work.rating,
+        imageCount: work.imageCount
+      }));
+    const activeTrackingTab = creatorTrackingTabs.find((tab) => tab.id === activeCreatorTrackingTabId);
+    const base = {
+      capturedAt: new Date().toISOString(),
+      view: activeView,
+      viewLabel: getAiConciergeViewLabel(),
+      language: appLanguage
+    };
+
+    if (activeView === 'library') {
+      return {
+        ...base,
+        detailSharing: true,
+        gallery: {
+          section: gallerySection,
+          sectionLabel: gallerySections.find((section) => section.id === gallerySection)?.label ?? gallerySection,
+          search: galleryQuery,
+          filters: {
+            ratings: galleryRatingFilters,
+            creators: galleryCreatorFilters,
+            titles: galleryTitleFilters,
+            characters: galleryCharacterFilters,
+            tags: galleryTagFilters
+          },
+          filterSorts: galleryFilterSorts,
+          thumbnailSorts: galleryThumbnailSorts,
+          loadedWorks: galleryWorks.length,
+          totalWorks: galleryTotal,
+          selectedWorks
+        }
+      };
+    }
+    if (activeView === 'explorer') {
+      return {
+        ...base,
+        detailSharing: true,
+        explorer: {
+          focusedPane: explorerSplit ? splitFocusedPane : 'left',
+          currentPath: activeExplorerPath,
+          search: activeExplorerQuery,
+          split: Boolean(explorerSplit),
+          leftPath: explorerPath,
+          rightPath: explorerSplit?.rightPath ?? '',
+          selectedPaths: (explorerSplit && splitFocusedPane === 'right'
+            ? explorerSplit.rightSelectedPaths
+            : selectedPaths).slice(0, 20),
+          tabs: explorerTabs.map((tab) => ({ label: tab.label, path: tab.path })),
+          viewMode: explorerFocusedPaneDetailMode ? 'details' : 'thumbnail'
+        }
+      };
+    }
+    if (activeView === 'creators') {
+      return {
+        ...base,
+        detailSharing: true,
+        creators: {
+          section: galleryCreatorSummarySection,
+          sectionLabel: gallerySections.find((section) => section.id === galleryCreatorSummarySection)?.label ?? galleryCreatorSummarySection,
+          search: galleryCreatorSummaryQuery,
+          ratings: galleryCreatorSummaryRatings,
+          coreTitles: galleryCreatorSummaryCoreTitles,
+          coreTags: galleryCreatorSummaryCoreTags,
+          sites: galleryCreatorSummarySites,
+          reminder: galleryCreatorSummaryReminderFilter,
+          sorts: galleryCreatorSummarySorts,
+          visibleCount: visibleGalleryCreatorSummaries.length
+        }
+      };
+    }
+    if (activeView === 'creatorTracking') {
+      return {
+        ...base,
+        detailSharing: true,
+        creatorTracking: {
+          indexOpen: creatorTrackingIndexActive,
+          creator: activeTrackingTab?.creator ?? creatorTracking?.creator ?? '',
+          displayName: activeTrackingTab?.tracking?.displayName ?? creatorTracking?.displayName ?? '',
+          alternateName: activeTrackingTab?.tracking?.alternateName ?? creatorTracking?.alternateName ?? '',
+          category: activeCreatorTrackingCategoryId,
+          openTabs: creatorTrackingTabs.map((tab) => tab.creator),
+          followUpStatus: activeTrackingTab?.tracking?.followUpStatus ?? creatorTracking?.followUpStatus ?? '',
+          lastCheckedOn: activeTrackingTab?.tracking?.lastCheckedOn ?? creatorTracking?.lastCheckedOn ?? '',
+          lastActivityOn: activeTrackingTab?.tracking?.lastActivityOn ?? creatorTracking?.lastActivityOn ?? '',
+          activitySummary: activeTrackingTab?.tracking?.activitySummary ?? creatorTracking?.activitySummary ?? '',
+          evaluationMemo: activeTrackingTab?.tracking?.evaluationMemo ?? creatorTracking?.evaluationMemo ?? '',
+          supportMemo: activeTrackingTab?.tracking?.supportMemo ?? creatorTracking?.supportMemo ?? '',
+          activityPlaceCount: (activeTrackingTab?.tracking?.activityLinks ?? creatorTracking?.activityLinks ?? []).length,
+          subscriptionCount: (activeTrackingTab?.tracking?.subscriptionHistory ?? creatorTracking?.subscriptionHistory ?? []).length,
+          purchaseCount: (activeTrackingTab?.tracking?.purchaseHistory ?? creatorTracking?.purchaseHistory ?? []).length,
+          taskCount: (activeTrackingTab?.tracking?.tasks ?? creatorTracking?.tasks ?? []).length
+        }
+      };
+    }
+    if (activeView === 'userMetrics') {
+      return {
+        ...base,
+        detailSharing: true,
+        userMetrics: {
+          category: userMetricsCategory,
+          generatedAt: userMetricsDashboard?.generatedAt ?? '',
+          totalFiles: userMetricsDashboard?.totalFiles ?? null,
+          totalImages: userMetricsDashboard?.totalImages ?? null,
+          totalRating: userMetricsDashboard?.totalRating ?? null,
+          regressionGeneratedAt: userMetricsRegressionResult?.generatedAt ?? ''
+        }
+      };
+    }
+    if (activeView === 'calendar') {
+      return {
+        ...base,
+        detailSharing: true,
+        calendar: {
+          month: calendarMonthCursor,
+          mode: calendarViewMode,
+          showSubscriptions: calendarShowSubscriptions,
+          showCreatorChecks: calendarShowCreatorChecks,
+          showTasks: calendarShowTasks,
+          loadedEvents: calendarEvents.length
+        }
+      };
+    }
+    if (activeView === 'settings') {
+      return { ...base, detailSharing: true, settings: { section: settingsSection } };
+    }
+    if (activeView === 'filters') {
+      return {
+        ...base,
+        detailSharing: true,
+        filters: {
+          editorView: filterEditorView,
+          attribute: filterEditorAttribute,
+          search: filterEditorSearch,
+          selectedValue: filterEditorSelectedValue
+        }
+      };
+    }
+    if (activeView === 'tags') {
+      return {
+        ...base,
+        detailSharing: true,
+        tags: {
+          search: tagManagementSearch,
+          selectedId: tagManagementSelectedId,
+          visibleCount: tagManagementTags.length
+        }
+      };
+    }
+    return { ...base, detailSharing: true };
+  }
+
+  function openAiConciergeWindow() {
+    postHostMessage({
+      type: 'ai.concierge.open',
+      context: buildAiConciergeContext()
+    });
+  }
+
+  function readAiActionString(argumentsValue: Record<string, unknown>, key: string) {
+    const value = argumentsValue[key];
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  function readAiActionStringArray(argumentsValue: Record<string, unknown>, key: string) {
+    const value = argumentsValue[key];
+    return Array.isArray(value)
+      ? [...new Set(value.filter((item): item is string => typeof item === 'string').map(item => item.trim()).filter(Boolean))]
+      : null;
+  }
+
+  function completeAiConciergeAction(
+    requestId: string,
+    success: boolean,
+    message: string) {
+    postHostMessage({
+      type: 'ai.concierge.action.result',
+      requestId,
+      success,
+      message,
+      context: buildAiConciergeContext()
+    });
+  }
+
+  function resolveAiCreatorSummary(creator: string, section: string) {
+    const normalizedCreator = creator.trim();
+    const normalizedSection = gallerySections.some(candidate => candidate.id === section)
+      ? section
+      : gallerySection;
+    return galleryCreatorSummaries.find(item =>
+      item.category === normalizedSection &&
+      item.creator.trim().localeCompare(normalizedCreator, 'ja-JP', { sensitivity: 'base' }) === 0)
+      ?? createCreatorTrackingTemplateSummary(normalizedCreator, normalizedSection, '');
+  }
+
+  function executeAiConciergeNavigation(argumentsValue: Record<string, unknown>) {
+    const destination = readAiActionString(argumentsValue, 'destination');
+    const section = readAiActionString(argumentsValue, 'section');
+    const creator = readAiActionString(argumentsValue, 'creator');
+    const viewMap: Record<string, ActiveView> = {
+      gallery: 'library',
+      explorer: 'explorer',
+      creators: 'creators',
+      creatorTracking: 'creatorTracking',
+      bookmarks: 'bookmarks',
+      filters: 'filters',
+      tags: 'tags',
+      userMetrics: 'userMetrics',
+      board: 'board',
+      calendar: 'calendar',
+      settings: 'settings',
+      userGuide: 'userGuide'
+    };
+    const view = viewMap[destination];
+    if (!view) {
+      return { success: false, message: `未対応の移動先です: ${destination || '(未指定)'}` };
+    }
+
+    if (destination === 'gallery' && section) {
+      if (!gallerySections.some(candidate => candidate.id === section)) {
+        return { success: false, message: `区分「${section}」が見つかりません。` };
+      }
+      applyGallerySection(section);
+      return { success: true, message: `Galleryの区分「${section}」へ移動しました。` };
+    }
+    if (destination === 'creators' && section) {
+      if (!gallerySections.some(candidate => candidate.id === section)) {
+        return { success: false, message: `区分「${section}」が見つかりません。` };
+      }
+      galleryCreatorSummarySection = section;
+      activateView('creators');
+      if (galleryCreatorSummaries.length === 0) loadGalleryCreatorSummaries();
+      return { success: true, message: `Creatorsの区分「${section}」へ移動しました。` };
+    }
+    if (destination === 'userMetrics' && section) {
+      if (!gallerySections.some(candidate => candidate.id === section)) {
+        return { success: false, message: `区分「${section}」が見つかりません。` };
+      }
+      selectUserMetricsCategory(section);
+      activateView('userMetrics');
+      return { success: true, message: `User Metricsの区分「${section}」へ移動しました。` };
+    }
+    if (destination === 'creatorTracking' && creator) {
+      const targetSection = section || galleryCreatorSummarySection || gallerySection;
+      openCreatorTrackingForSummary(resolveAiCreatorSummary(creator, targetSection));
+      return { success: true, message: `Creator「${creator}」のCreator Trackingを開きました。` };
+    }
+
+    activateView(view);
+    return { success: true, message: `${getAiConciergeViewLabel()}へ移動しました。` };
+  }
+
+  function executeAiConciergeGalleryFilters(argumentsValue: Record<string, unknown>) {
+    const section = readAiActionString(argumentsValue, 'section');
+    if (section && !gallerySections.some(candidate => candidate.id === section)) {
+      return { success: false, message: `区分「${section}」が見つかりません。` };
+    }
+    if (section && section !== gallerySection) {
+      gallerySection = section;
+      loadGalleryPins(section);
+      galleryFilterSnapshotSections = new Set(
+        [...galleryFilterSnapshotSections].filter(candidate => candidate !== section));
+    }
+
+    const creators = readAiActionStringArray(argumentsValue, 'creators');
+    const titles = readAiActionStringArray(argumentsValue, 'titles');
+    const characters = readAiActionStringArray(argumentsValue, 'characters');
+    const tags = readAiActionStringArray(argumentsValue, 'tags');
+    const ratings = Array.isArray(argumentsValue.ratings)
+      ? [...new Set(argumentsValue.ratings
+          .map(value => Number(value))
+          .filter(value => Number.isInteger(value) && value >= 0 && value <= 6))]
+      : null;
+    if (characters && characters.length > 0 && (titles ?? galleryTitleFilters).length !== 1) {
+      return {
+        success: false,
+        message: 'Characterフィルタを設定するにはTitleを1件だけ指定してください。'
+      };
+    }
+
+    if (creators !== null) galleryCreatorFilters = creators;
+    if (titles !== null) galleryTitleFilters = titles;
+    if (characters !== null) galleryCharacterFilters = characters;
+    if (tags !== null) galleryTagFilters = tags;
+    if (ratings !== null) galleryRatingFilters = ratings;
+    if (typeof argumentsValue.search === 'string') galleryQuery = argumentsValue.search;
+    galleryPromotedCreators = galleryCreatorFilters;
+    galleryPromotedTitles = galleryTitleFilters;
+    galleryPromotedCharacters = galleryCharacterFilters;
+    galleryPromotedTags = galleryTagFilters;
+    selectedGalleryWorkIds = new Set();
+    clearGalleryWorkItems();
+    clearPendingGalleryThumbnailResults();
+    activateView('library');
+    loadGalleryWorks(false, galleryRatingFilters, true);
+    return { success: true, message: 'Galleryの区分・検索・フィルタ条件を反映しました。' };
+  }
+
+  function executeAiConciergeSearch(argumentsValue: Record<string, unknown>) {
+    const query = typeof argumentsValue.query === 'string' ? argumentsValue.query : '';
+    const requestedScope = readAiActionString(argumentsValue, 'scope') || 'auto';
+    const scope = requestedScope === 'auto'
+      ? activeView === 'library'
+        ? 'gallery'
+        : activeView === 'explorer'
+          ? 'explorer'
+          : activeView === 'creators'
+            ? 'creators'
+            : activeView === 'creatorTracking' && creatorTrackingIndexActive
+              ? 'creatorTrackingIndex'
+              : activeView === 'filters'
+                ? 'filters'
+                : activeView === 'tags'
+                  ? 'tags'
+                  : ''
+      : requestedScope;
+
+    if (scope === 'gallery') {
+      galleryQuery = query;
+      activateView('library');
+    }
+    else if (scope === 'explorer') {
+      if (explorerSplit && splitFocusedPane === 'right') splitExplorerQuery = query;
+      else explorerQuery = query;
+      activateView('explorer');
+    }
+    else if (scope === 'creators') {
+      galleryCreatorSummaryQuery = query;
+      activateView('creators');
+      if (galleryCreatorSummaries.length === 0) loadGalleryCreatorSummaries();
+    }
+    else if (scope === 'creatorTrackingIndex') {
+      creatorTrackingIndexQuery = query;
+      activateCreatorTrackingIndex();
+      void focusCreatorTrackingIndexSearch();
+    }
+    else if (scope === 'filters') {
+      filterEditorSearch = query;
+      activateView('filters');
+    }
+    else if (scope === 'tags') {
+      tagManagementSearch = query;
+      activateView('tags');
+    }
+    else {
+      return { success: false, message: '現在の画面にはAIから操作できる検索欄がありません。' };
+    }
+    return { success: true, message: `検索語「${query}」を設定しました。` };
+  }
+
+  function executeAiConciergeRefresh(argumentsValue: Record<string, unknown>) {
+    const requestedTarget = readAiActionString(argumentsValue, 'target') || 'auto';
+    const target = requestedTarget === 'auto'
+      ? activeView === 'library'
+        ? 'gallery'
+        : activeView === 'explorer'
+          ? 'explorer'
+          : activeView === 'creators'
+            ? 'creators'
+            : activeView === 'creatorTracking'
+              ? 'creatorTracking'
+              : activeView === 'userMetrics'
+                ? 'userMetrics'
+                : activeView === 'calendar'
+                  ? 'calendar'
+                  : ''
+      : requestedTarget;
+    if (target === 'gallery') loadGalleryWorks(false, galleryRatingFilters, true);
+    else if (target === 'explorer') {
+      if (explorerSplit && splitFocusedPane === 'right') loadSplitExplorer(explorerSplit.rightPath);
+      else loadExplorer(explorerPath);
+    }
+    else if (target === 'creators') loadGalleryCreatorSummaries(true);
+    else if (target === 'creatorTracking') refreshCreatorTracking();
+    else if (target === 'userMetrics') loadUserMetrics(userMetricsCategory, true);
+    else if (target === 'calendar') loadCalendarSubscriptions();
+    else return { success: false, message: '現在の画面にはAIから実行できる更新処理がありません。' };
+    return { success: true, message: `${target}の再読み込みを開始しました。` };
+  }
+
+  function executeAiConciergeTabAction(argumentsValue: Record<string, unknown>) {
+    const area = readAiActionString(argumentsValue, 'area');
+    const operation = readAiActionString(argumentsValue, 'operation');
+    const target = readAiActionString(argumentsValue, 'target');
+    const section = readAiActionString(argumentsValue, 'section');
+    if (!target) return { success: false, message: '操作対象が指定されていません。' };
+
+    if (area === 'explorer') {
+      const tab = explorerTabs.find(candidate =>
+        normalizeWindowsPath(candidate.path) === normalizeWindowsPath(target)
+        || candidate.label.localeCompare(target, 'ja-JP', { sensitivity: 'base' }) === 0);
+      if (operation === 'open') {
+        requestExplorerPathsOpen([target], true, false, `フォルダ「${target}」を開けません。`);
+        return { success: true, message: `Explorerで「${target}」を開く要求を送信しました。` };
+      }
+      if (!tab) return { success: false, message: `Explorerタブ「${target}」が見つかりません。` };
+      if (operation === 'activate') selectExplorerTab(tab);
+      else if (operation === 'close') closeExplorerTab(tab);
+      else return { success: false, message: `未対応のタブ操作です: ${operation}` };
+      activateView('explorer');
+      return { success: true, message: `Explorerタブ「${tab.label}」を${operation === 'close' ? '閉じました' : '選択しました'}。` };
+    }
+
+    if (area === 'creatorTracking') {
+      const tab = creatorTrackingTabs.find(candidate =>
+        candidate.creator.localeCompare(target, 'ja-JP', { sensitivity: 'base' }) === 0
+        || getCreatorTrackingTabLabel(candidate).localeCompare(target, 'ja-JP', { sensitivity: 'base' }) === 0);
+      if (operation === 'open') {
+        if (tab) activateCreatorTrackingTab(tab.id);
+        else openCreatorTrackingForSummary(resolveAiCreatorSummary(target, section || galleryCreatorSummarySection));
+        return { success: true, message: `Creator Trackingで「${target}」を開きました。` };
+      }
+      if (!tab) return { success: false, message: `Creator Trackingタブ「${target}」が見つかりません。` };
+      if (operation === 'activate') activateCreatorTrackingTab(tab.id);
+      else if (operation === 'close') closeCreatorTrackingTab(new MouseEvent('click'), tab.id);
+      else return { success: false, message: `未対応のタブ操作です: ${operation}` };
+      return { success: true, message: `Creator Trackingタブ「${target}」を${operation === 'close' ? '閉じました' : '選択しました'}。` };
+    }
+
+    return { success: false, message: `未対応のタブ領域です: ${area}` };
+  }
+
+  function executeAiConciergeAttributeEditor(argumentsValue: Record<string, unknown>) {
+    if (activeView !== 'library' || selectedGalleryWorkIds.size === 0) {
+      return {
+        success: false,
+        message: 'Galleryで対象作品を1件以上選択してから属性画面を開いてください。'
+      };
+    }
+    const attribute = readAiActionString(argumentsValue, 'attribute');
+    if (attribute === 'title') openGalleryTitleAssignment();
+    else if (attribute === 'character') openGalleryCharacterAssignment();
+    else if (attribute === 'tag') openGalleryTagAssignment();
+    else return { success: false, message: `未対応の属性です: ${attribute}` };
+    return { success: true, message: `${attribute}属性の登録・解除画面を開きました。` };
+  }
+
+  function executeAiConciergeCreatorTrackingUpdate(argumentsValue: Record<string, unknown>) {
+    if (activeView !== 'creatorTracking' || creatorTrackingIndexActive || !creatorTracking) {
+      return {
+        success: false,
+        message: '変更対象のCreator Trackingページを開いてください。'
+      };
+    }
+
+    const patch: Partial<CreatorTracking> = {};
+    const stringFields: (keyof Pick<CreatorTracking,
+      'displayName' | 'alternateName' | 'followUpStatus' | 'lastCheckedOn' |
+      'lastActivityOn' | 'activitySummary' | 'evaluationMemo' | 'supportMemo'>)[] = [
+        'displayName',
+        'alternateName',
+        'followUpStatus',
+        'lastCheckedOn',
+        'lastActivityOn',
+        'activitySummary',
+        'evaluationMemo',
+        'supportMemo'
+      ];
+    for (const field of stringFields) {
+      if (typeof argumentsValue[field] === 'string') {
+        patch[field] = argumentsValue[field] as never;
+      }
+    }
+    for (const dateField of ['lastCheckedOn', 'lastActivityOn'] as const) {
+      const value = patch[dateField];
+      if (typeof value === 'string' && value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        return { success: false, message: `${dateField}はYYYY-MM-DD形式で指定してください。` };
+      }
+    }
+    if (Object.keys(patch).length === 0) {
+      return { success: false, message: '変更するCreator Tracking項目が指定されていません。' };
+    }
+
+    creatorTracking = { ...creatorTracking, ...patch };
+    markCreatorTrackingDirty();
+    const saveRequestId = saveCreatorTracking();
+    return {
+      success: true,
+      message: saveRequestId
+        ? `Creator「${creatorTracking.creator}」の変更を反映し、保存要求を送信しました。`
+        : `Creator「${creatorTracking.creator}」の変更を反映しました。`
+    };
+  }
+
+  function executeAiConciergeAction(eventData: Record<string, unknown>) {
+    const requestId = typeof eventData.requestId === 'string' ? eventData.requestId : '';
+    const tool = typeof eventData.tool === 'string' ? eventData.tool : '';
+    const argumentsValue = eventData.arguments && typeof eventData.arguments === 'object' && !Array.isArray(eventData.arguments)
+      ? eventData.arguments as Record<string, unknown>
+      : {};
+    if (!requestId) return;
+
+    try {
+      const result = tool === 'gallerybrowser_navigate'
+        ? executeAiConciergeNavigation(argumentsValue)
+        : tool === 'gallerybrowser_set_gallery_filters'
+          ? executeAiConciergeGalleryFilters(argumentsValue)
+          : tool === 'gallerybrowser_search'
+            ? executeAiConciergeSearch(argumentsValue)
+            : tool === 'gallerybrowser_refresh'
+              ? executeAiConciergeRefresh(argumentsValue)
+              : tool === 'gallerybrowser_manage_tab'
+                ? executeAiConciergeTabAction(argumentsValue)
+                : tool === 'gallerybrowser_open_attribute_editor'
+                  ? executeAiConciergeAttributeEditor(argumentsValue)
+                  : tool === 'gallerybrowser_update_creator_tracking'
+                    ? executeAiConciergeCreatorTrackingUpdate(argumentsValue)
+                    : { success: false, message: `未対応のAI操作です: ${tool}` };
+      completeAiConciergeAction(requestId, result.success, result.message);
+    }
+    catch (error) {
+      completeAiConciergeAction(
+        requestId,
+        false,
+        error instanceof Error ? error.message : String(error));
+    }
+  }
 
   onMount(() => {
     applyThemeToDocument(appliedThemeSettings);
@@ -2336,6 +3233,10 @@
         hostStatus = `${event.data.appName} ${event.data.version}`;
       }
 
+      if (event.data?.type === 'ai.concierge.action.execute') {
+        executeAiConciergeAction(event.data);
+      }
+
       if (event.data?.type === 'external.fileDrag.error') {
         showExplorerToast(event.data.message ?? '外部アプリへのドラッグを開始できませんでした。', 'error');
       }
@@ -2351,24 +3252,26 @@
       if (event.data?.type === 'gallery.works.result' && event.data.requestId === galleryRequestId) {
         const page = event.data.page;
         const nextItems: GalleryWork[] = page?.items ?? [];
-        applyCachedGalleryThumbnailUris(event.data.thumbnailUris);
-        if ((event.data.offset ?? 0) === 0) {
-          galleryWorks = nextItems;
+        if (event.data.itemsAlreadySent !== true) {
+          applyGalleryWorkItems(nextItems, Number(event.data.offset ?? 0));
         }
-        else {
-          const currentIds = new Set(galleryWorks.map((item) => item.id));
-          galleryWorks = [...galleryWorks, ...nextItems.filter((item) => !currentIds.has(item.id))];
-        }
-        galleryTotal = page?.total ?? 0;
+        galleryTotal = Number(event.data.total ?? page?.total ?? 0);
         galleryIsLoading = false;
         continueGalleryBookmarkScrollRestore();
+      }
+
+      if (event.data?.type === 'gallery.works.items.result' && event.data.requestId === galleryRequestId) {
+        applyGalleryWorkItems(event.data.items ?? [], Number(event.data.offset ?? 0));
       }
 
       if (event.data?.type === 'gallery.randomPick.result' && event.data.requestId === galleryRandomPickRequestId) {
         const result = event.data.result;
         const nextItems: GalleryWork[] = result?.items ?? [];
-        applyCachedGalleryThumbnailUris(event.data.thumbnailUris);
         galleryWorks = nextItems;
+        galleryWorkIndexes.clear();
+        for (let index = 0; index < nextItems.length; index++) {
+          galleryWorkIndexes.set(nextItems[index].id, index);
+        }
         galleryTotal = nextItems.length;
         galleryRandomPickSummary = {
           selectedCount: nextItems.length,
@@ -2461,16 +3364,22 @@
               followAlertFlg: item.followAlertFlg === true,
               trackingDays: Number(item.trackingDays ?? -1),
               totalSpend: Number(item.totalSpend ?? 0),
+              videoFileCount: Number(item.videoFileCount ?? 0),
+              totalDurationSeconds: Number(item.totalDurationSeconds ?? 0),
+              averageDurationSeconds: Number(item.averageDurationSeconds ?? 0),
               spendCurrency: String(item.spendCurrency ?? 'JPY'),
               trackingSites: Array.isArray(item.trackingSites) ? item.trackingSites : [],
               evaluationMetrics: item.evaluationMetrics ?? {} as Record<CreatorTrackingMetricKey, number>,
               personalRating: Number(item.personalRating ?? 0)
             } as GalleryCreatorSummary))
           : [];
-        applyCachedGalleryThumbnailUris(event.data.thumbnailUris);
-        galleryCreatorSummaries = event.data.reset === true
-          ? incomingItems
-          : [...galleryCreatorSummaries, ...incomingItems];
+        if (event.data.reset === true) {
+          galleryCreatorSummaries = incomingItems;
+        }
+        else if (incomingItems.length > 0) {
+          galleryCreatorSummaries.push(...incomingItems);
+          galleryCreatorSummaries = galleryCreatorSummaries;
+        }
         galleryCreatorSummaryError = '';
         galleryCreatorSummaryIsLoading = event.data.isLast === false;
         if (incomingItems.length > 0 && creatorTrackingTabs.length > 0) {
@@ -2614,7 +3523,9 @@
               lastCheckedOn: String(item.lastCheckedOn ?? '').trim(),
               sinceLastCheckDays: Number(item.sinceLastCheckDays ?? -1),
               followWarnFlg: item.followWarnFlg === true,
-              followAlertFlg: item.followAlertFlg === true
+              followAlertFlg: item.followAlertFlg === true,
+              isNewAfterScheduledScan: item.isNewAfterScheduledScan === true,
+              wishlist: item.wishlist === true
             })).filter((item: CreatorTrackingIndexItem) => item.creator)
           : [];
         creatorTrackingIndexIsLoading = false;
@@ -2635,7 +3546,9 @@
             creatorTrackingRefreshRequestIds = new Set(
               [...creatorTrackingRefreshRequestIds].filter(requestId => requestId !== event.data.requestId));
           }
-          const tracking = normalizeCreatorTracking(event.data.tracking as CreatorTracking);
+          const tracking = normalizeCreatorTracking(
+            event.data.tracking as CreatorTracking,
+            resultTab.summary.category);
           const dashboard = event.data.dashboard as CreatorTrackingDashboard ?? null;
           const summary = event.data.summary
             ? event.data.summary as GalleryCreatorSummary
@@ -2647,9 +3560,8 @@
           creatorTrackingTabs = creatorTrackingTabs.map(tab => tab.id === resultTab.id
             ? { ...tab, summary, tracking, dashboardContext, dashboard, isLoading: false, isSaving: false, dirty: false, error: '' }
             : tab);
-          if (event.data.summary) {
-            galleryCreatorSummaries = galleryCreatorSummaries.map(item => item.id === summary.id ? summary : item);
-          }
+          if (event.data.summary) upsertGalleryCreatorSummary(summary);
+          if (refreshed) queueCreatorTrackingSummaryThumbnail(summary, true);
           if (resultTab.id === activeCreatorTrackingTabId) {
             creatorTrackingSummary = summary;
             creatorTrackingDashboardContext = dashboardContext;
@@ -2666,6 +3578,7 @@
           }
           else if (refreshed) {
             const scanMessage = String(event.data.scanMessage ?? '').trim();
+            loadGalleryWorks(false, galleryRatingFilters, true);
             showExplorerToast(
               scanMessage
                 ? `${tracking.displayName || tracking.creator}の最新データを反映しました。${scanMessage}`
@@ -2684,7 +3597,9 @@
             creatorTrackingRefreshRequestIds = new Set(
               [...creatorTrackingRefreshRequestIds].filter(requestId => requestId !== event.data.requestId));
           }
-          const tracking = normalizeCreatorTracking(event.data.tracking as CreatorTracking);
+          const tracking = normalizeCreatorTracking(
+            event.data.tracking as CreatorTracking,
+            savedTab.summary.category);
           const dashboard = event.data.dashboard as CreatorTrackingDashboard ?? null;
           const summary = event.data.summary
             ? event.data.summary as GalleryCreatorSummary
@@ -2706,9 +3621,8 @@
                 error: ''
               }
             : tab);
-          if (event.data.summary) {
-            galleryCreatorSummaries = galleryCreatorSummaries.map(item => item.id === summary.id ? summary : item);
-          }
+          if (event.data.summary) upsertGalleryCreatorSummary(summary);
+          if (refreshed) queueCreatorTrackingSummaryThumbnail(summary, true);
           if (savedTab.id === activeCreatorTrackingTabId) {
             creatorTrackingSummary = summary;
             creatorTrackingDashboardContext = dashboardContext;
@@ -2724,6 +3638,9 @@
               ? `${tracking.displayName || tracking.creator}の変更内容を保存し、最新データを反映しました。${String(event.data.scanMessage ?? '').trim()}`
               : `${tracking.displayName || tracking.creator}のCreator Trackingを保存しました。`,
             'success');
+          if (refreshed) {
+            loadGalleryWorks(false, galleryRatingFilters, true);
+          }
           if (preserveNewerDraft) {
             queueMicrotask(() => {
               const nextRequestId = saveCreatorTrackingTab(savedTab.id);
@@ -2741,6 +3658,28 @@
           creatorTrackingIndexPendingSaveRequestId = '';
           loadCreatorTrackingIndex();
         }
+      }
+
+      if (event.data?.type === 'creator.tracking.dashboard.result'
+          && event.data.requestId === creatorTrackingDashboardCategoryRequestId) {
+        creatorTrackingDashboard = event.data.dashboard as CreatorTrackingDashboard ?? null;
+        creatorTrackingDashboardContext = event.data.dashboardContext as CreatorTrackingDashboardContext
+          ?? creatorTrackingDashboardContext;
+        creatorTrackingDashboardCategoryRequestId = '';
+        creatorTrackingDashboardSwitching = false;
+        creatorTrackingIsLoading = false;
+        syncActiveCreatorTrackingTab();
+        queueMicrotask(scrollCreatorTrackingArchiveToEnd);
+      }
+
+      if (event.data?.type === 'creator.tracking.dashboard.error'
+          && event.data.requestId === creatorTrackingDashboardCategoryRequestId) {
+        creatorTrackingDashboardCategoryRequestId = '';
+        creatorTrackingDashboardSwitching = false;
+        creatorTrackingIsLoading = false;
+        creatorTrackingError = event.data.message ?? '選択した区分のSUMMARYを読み込めませんでした。';
+        syncActiveCreatorTrackingTab();
+        showExplorerToast(creatorTrackingError, 'error');
       }
 
       if (event.data?.type === 'creator.tracking.deleted') {
@@ -2814,20 +3753,27 @@
         const followPolicyOptions = Array.isArray(event.data.followPolicyOptions)
           ? event.data.followPolicyOptions.map((value: unknown) => String(value ?? '').trim()).filter(Boolean)
           : defaultCreatorTrackingSettingsDraft.followPolicyOptions;
-        const receivedMetrics = Array.isArray(event.data.metrics) ? event.data.metrics : [];
-        const metrics = creatorTrackingMetricDefinitions.map((definition) => {
-          const received = receivedMetrics.find(
-            (candidate: Partial<CreatorTrackingSettingsMetricDraft>) => candidate.key === definition.key);
-          const weightPercent = received?.weightPercent === null || received?.weightPercent === undefined
-            ? null
-            : Math.max(0, Math.min(100, Number(received.weightPercent) || 0));
-          return {
-            ...definition,
-            label: String(received?.label ?? ''),
-            weight: (weightPercent ?? 0) / 100,
-            weightPercent
-          };
-        });
+        const taskCategories = Array.isArray(event.data.taskCategories)
+          ? event.data.taskCategories.map((value: unknown) => String(value ?? '').trim()).filter(Boolean)
+          : defaultCreatorTrackingSettingsDraft.taskCategories;
+        const metrics = normalizeCreatorTrackingSettingsMetrics(event.data.metrics);
+        const receivedCategorySettings = Array.isArray(event.data.metricSettingsByCategory)
+          ? event.data.metricSettingsByCategory
+          : [];
+        const metricSettingsByCategory = Object.fromEntries(gallerySections.map(section => {
+          const received = receivedCategorySettings.find(
+            (candidate: { category?: unknown }) =>
+              String(candidate?.category ?? '').localeCompare(section.id, 'ja-JP', { sensitivity: 'base' }) === 0);
+          return [
+            section.id,
+            normalizeCreatorTrackingSettingsMetrics(
+              (received as { metrics?: unknown } | undefined)?.metrics,
+              metrics)
+          ];
+        }));
+        if (!gallerySections.some(section => section.id === creatorTrackingSettingsCategory)) {
+          creatorTrackingSettingsCategory = gallerySections[0]?.id ?? defaultGallerySectionId;
+        }
         if (event.data.updated !== true) {
           const activityPlaces = Array.isArray(event.data.activityPlaces)
             ? event.data.activityPlaces.map((place: Partial<CreatorTrackingActivityPlaceSetting>) => ({
@@ -2839,17 +3785,21 @@
           creatorTrackingSettingsDraft = {
             ...creatorTrackingSettingsDraft,
             metrics,
+            metricSettingsByCategory,
             activityPlaces,
             compositionLabelLimit,
-            followPolicyOptions
+            followPolicyOptions,
+            taskCategories
           };
         }
         else {
           creatorTrackingSettingsDraft = {
             ...creatorTrackingSettingsDraft,
             metrics,
+            metricSettingsByCategory,
             compositionLabelLimit,
-            followPolicyOptions
+            followPolicyOptions,
+            taskCategories
           };
           if (creatorTrackingCompositionRefreshPending) {
             creatorTrackingCompositionRefreshPending = false;
@@ -2858,11 +3808,32 @@
             }
           }
         }
+        refreshOpenCreatorTrackingRatings();
       }
 
       if (event.data?.type === 'settings.creatorTracking.error') {
         creatorTrackingCompositionRefreshPending = false;
         showExplorerToast(event.data.message ?? 'Creator Tracking設定を保存できませんでした。', 'error');
+      }
+
+      if (event.data?.type === 'settings.creatorBlacklist.result') {
+        creatorBlacklistBusy = false;
+        creatorBlacklistItems = Array.isArray(event.data.items)
+          ? event.data.items.map((item: Partial<CreatorBlacklistItem>) => ({
+              creator: String(item.creator ?? ''),
+              reason: String(item.reason ?? ''),
+              registeredOn: String(item.registeredOn ?? ''),
+              originalCreator: String(item.creator ?? ''),
+              dirty: false
+            }))
+          : [];
+        if (event.data.updated === true) showExplorerToast('Blacklistを更新しました。', 'success');
+        if (event.data.deleted === true) showExplorerToast('Blacklistから削除しました。', 'success');
+      }
+
+      if (event.data?.type === 'settings.creatorBlacklist.error') {
+        creatorBlacklistBusy = false;
+        showExplorerToast(event.data.message ?? 'Blacklistを更新できませんでした。', 'error');
       }
 
       if (event.data?.type === 'settings.creatorTracking.icon.result') {
@@ -2951,6 +3922,20 @@
         showExplorerToast(event.data.message ?? 'Tagを更新できませんでした。', 'error');
       }
 
+      if (event.data?.type === 'ai.attributeReview.result') {
+        setAiAttributeReviewItems(event.data.items ?? []);
+      }
+
+      if (event.data?.type === 'ai.attributeReview.resolved') {
+        setAiAttributeReviewItems(event.data.items ?? []);
+        showExplorerToast('要確認リストから完了にしました。', 'success');
+      }
+
+      if (event.data?.type === 'ai.attributeReview.error') {
+        aiAttributeReviewLoading = false;
+        showExplorerToast(event.data.message ?? '属性推論の要確認リストを更新できませんでした。', 'error');
+      }
+
       if (event.data?.type === 'gallery.titleAssignment.options.result' && event.data.requestId === galleryTitleAssignment?.requestId) {
         const commonAssignedTitles: GalleryTitleAssignmentOption[] = event.data.commonAssignedTitles ?? [];
         const commonTitleIds = new Set(commonAssignedTitles.map((option) => option.id));
@@ -3021,6 +4006,7 @@
       }
 
       if (event.data?.type === 'gallery.titleAssignment.applied' && galleryTitleAssignment) {
+        const appliedReviewPath = aiAttributeReviewEditingPath;
         const selectedTitle = [...galleryTitleAssignment.creatorTitles, ...galleryTitleAssignment.availableTitles]
           .find((option) => option.id === galleryTitleAssignment?.selectedTitleId);
         const selectedCharacterIds = new Set(galleryTitleAssignment.selectedCharacterIds);
@@ -3045,6 +4031,10 @@
         if (skippedCount > 0) resultParts.push(`${skippedCount} 件は既に登録済みのためスキップしました。`);
         const message = resultParts.join('');
         showExplorerToast(message, 'success');
+        if (appliedReviewPath) {
+          aiAttributeReviewEditingPath = '';
+          requestAiAttributeReviews();
+        }
         loadGalleryWorks(false, galleryRatingFilters, true);
       }
 
@@ -3189,12 +4179,38 @@
 
       if (event.data?.type === 'gallery.work.thumbnail.result') {
         requestedGalleryThumbnailIds.delete(event.data.id);
+        requestedGalleryThumbnailPriorities.delete(event.data.id);
         if (event.data.thumbnailUri) {
           unavailableGalleryThumbnailIds.delete(event.data.id);
-          galleryThumbnails = { ...galleryThumbnails, [event.data.id]: event.data.thumbnailUri };
+          queueGalleryThumbnailResults({ [event.data.id]: event.data.thumbnailUri });
         }
         else {
           unavailableGalleryThumbnailIds.add(event.data.id);
+        }
+      }
+
+      if (event.data?.type === 'gallery.work.thumbnail.batch.result') {
+        const thumbnailUris = event.data.thumbnailUris &&
+          typeof event.data.thumbnailUris === 'object' &&
+          !Array.isArray(event.data.thumbnailUris)
+          ? event.data.thumbnailUris as Record<string, string>
+          : {};
+        const unavailableIds = Array.isArray(event.data.unavailableIds)
+          ? event.data.unavailableIds.filter((id: unknown): id is string => typeof id === 'string')
+          : [];
+        const availableIds = Object.keys(thumbnailUris);
+        for (const id of availableIds) {
+          requestedGalleryThumbnailIds.delete(id);
+          requestedGalleryThumbnailPriorities.delete(id);
+          unavailableGalleryThumbnailIds.delete(id);
+        }
+        for (const id of unavailableIds) {
+          requestedGalleryThumbnailIds.delete(id);
+          requestedGalleryThumbnailPriorities.delete(id);
+          unavailableGalleryThumbnailIds.add(id);
+        }
+        if (availableIds.length > 0) {
+          queueGalleryThumbnailResults(thumbnailUris);
         }
       }
 
@@ -3212,7 +4228,11 @@
         if (rating > baseline) nextLitIds.add(id);
         else nextLitIds.delete(id);
         galleryRatingLitIds = nextLitIds;
-        galleryWorks = galleryWorks.map((work) => work.id === id ? { ...work, rating } : work);
+        const workIndex = galleryWorkIndexes.get(id);
+        if (workIndex !== undefined && galleryWorks[workIndex]?.id === id) {
+          galleryWorks[workIndex] = { ...galleryWorks[workIndex], rating };
+          galleryWorks = galleryWorks;
+        }
         window.setTimeout(() => loadGalleryWorks(), 560);
       }
 
@@ -3224,6 +4244,10 @@
         const { [id]: _, ...remainingDeltas } = pendingGalleryRatingDeltas;
         pendingGalleryRatingDeltas = remainingDeltas;
         showExplorerToast(event.data.message ?? '評価を更新できませんでした。', 'error');
+      }
+
+      if (event.data?.type === 'gallery.work.open.error') {
+        showExplorerToast(event.data.message ?? '作品を開けませんでした。', 'error');
       }
 
       if (event.data?.type === 'thumbnail.result') {
@@ -3440,16 +4464,101 @@
       }
 
       if (event.data?.type === 'settings.searchEngine.result' && event.data.settings) {
+        const previousYahooClientId = searchEngineSettings.yahooClientId;
         searchEngineSettings = {
           provider: event.data.settings.provider ?? 'google',
           googleSearchUrlTemplate: event.data.settings.googleSearchUrlTemplate ?? 'https://www.google.com/search?q={query}',
           braveApiKey: event.data.settings.braveApiKey ?? '',
-          geminiApiKey: event.data.settings.geminiApiKey ?? ''
+          geminiApiKey: event.data.settings.geminiApiKey ?? '',
+          yahooClientId: event.data.settings.yahooClientId ?? ''
         };
+        if (previousYahooClientId !== searchEngineSettings.yahooClientId) {
+          romanizedSearchRequested.clear();
+          romanizedSearchConsecutiveFailures = 0;
+          invalidateRomanizedSearchFilters();
+          scheduleRomanizedSearchRequest();
+        }
       }
 
       if (event.data?.type === 'settings.searchEngine.error') {
         showExplorerToast(event.data.message ?? '検索エンジン設定を保存できませんでした。', 'error');
+      }
+
+      if (event.data?.type === 'search.romanize.result') {
+        for (const item of event.data.items ?? []) {
+          const source = String(item.source ?? '').trim();
+          const romanized = String(item.romanized ?? '').trim();
+          if (source) {
+            romanizedSearchCache.set(source, romanized);
+          }
+        }
+        romanizedSearchRequestInFlight = false;
+        romanizedSearchActiveValues = [];
+        romanizedSearchConsecutiveFailures = 0;
+        invalidateRomanizedSearchFilters();
+        scheduleRomanizedSearchRequest();
+      }
+
+      if (event.data?.type === 'search.romanize.error') {
+        const failedValues = [...romanizedSearchActiveValues];
+        romanizedSearchRequestInFlight = false;
+        for (const value of failedValues) {
+          romanizedSearchRequested.delete(value);
+        }
+        romanizedSearchActiveValues = [];
+        romanizedSearchConsecutiveFailures += 1;
+        const message = event.data.message ?? 'ローマ字検索用の読みを取得できませんでした。';
+        if (romanizedSearchConsecutiveFailures < 3) {
+          for (const value of failedValues) {
+            romanizedSearchPending.add(value);
+          }
+          const retryDelay = romanizedSearchConsecutiveFailures === 1 ? 1_500 : 4_000;
+          showExplorerToast(
+            `${message}\n${Math.ceil(retryDelay / 1_000)}秒後に再試行します（${romanizedSearchConsecutiveFailures}/2）。`,
+            'error',
+            12_000
+          );
+          scheduleRomanizedSearchRequest(retryDelay);
+        }
+        else {
+          romanizedSearchPending.clear();
+          showExplorerToast(
+            `${message}\n自動再試行にも失敗しました。検索文字を変更すると再試行できます。`,
+            'error',
+            20_000
+          );
+        }
+      }
+
+      if (event.data?.type === 'search.romanize.cache.result') {
+        for (const item of event.data.items ?? []) {
+          const source = String(item.source ?? '').trim();
+          if (source) {
+            romanizedSearchCache.set(source, String(item.romanized ?? '').trim());
+          }
+        }
+        for (const value of romanizedSearchCacheLookupActiveValues) {
+          romanizedSearchCacheLookupRequested.delete(value);
+          if (!romanizedSearchCache.has(value)) {
+            romanizedSearchPending.add(value);
+          }
+        }
+        romanizedSearchCacheLookupInFlight = false;
+        romanizedSearchCacheLookupActiveValues = [];
+        invalidateRomanizedSearchFilters();
+        scheduleRomanizedSearchCacheLookup();
+        scheduleRomanizedSearchRequest();
+      }
+
+      if (event.data?.type === 'search.romanize.cache.error') {
+        for (const value of romanizedSearchCacheLookupActiveValues) {
+          romanizedSearchCacheLookupRequested.delete(value);
+          romanizedSearchPending.add(value);
+        }
+        romanizedSearchCacheLookupInFlight = false;
+        romanizedSearchCacheLookupActiveValues = [];
+        scheduleRomanizedSearchCacheLookup();
+        scheduleRomanizedSearchRequest();
       }
 
       if (event.data?.type === 'settings.gid.result' && event.data.settings) {
@@ -3551,6 +4660,26 @@
         showExplorerToast(event.data.message ?? 'NConvert設定を保存できませんでした。', 'error');
       }
 
+      if (event.data?.type === 'settings.aiConcierge.result') {
+        aiConciergeDataDirectory = event.data.settings?.dataDirectory ?? '';
+        aiConciergeDataDirectoryDraft = aiConciergeDataDirectory;
+        aiConciergeRuntimeDataDirectory = event.data.settings?.currentRuntimeDataDirectory ?? '';
+        aiConciergeLearningDatabasePath = event.data.settings?.learningDatabasePath ?? '';
+        aiConciergeRestartRequired = Boolean(event.data.restartRequired);
+        aiConciergeSettingsBusy = false;
+        aiConciergeSettingsStatus = event.data.message ?? '';
+      }
+
+      if (event.data?.type === 'settings.aiConcierge.pickDirectory.result' && typeof event.data.path === 'string') {
+        aiConciergeDataDirectoryDraft = event.data.path;
+      }
+
+      if (event.data?.type === 'settings.aiConcierge.operation.error') {
+        aiConciergeSettingsBusy = false;
+        aiConciergeSettingsStatus = event.data.message ?? 'AIコンシェルジュ設定を保存できませんでした。';
+        showExplorerToast(aiConciergeSettingsStatus, 'error');
+      }
+
       if (event.data?.type === 'settings.thumbnailCache.result') {
         thumbnailCacheTargets = event.data.targets ?? [];
         thumbnailCacheRoot = event.data.cacheRoot ?? '';
@@ -3614,6 +4743,7 @@
           5_000);
         loadGalleryWorks();
         if (activeView === 'creators') loadGalleryCreatorSummaries(true);
+        if (creatorTrackingIndexOpen) loadCreatorTrackingIndex();
       }
 
       if (event.data?.type === 'settings.sqliteDatabase.schedule.error') {
@@ -3729,6 +4859,7 @@
         discordNotifyCreatorFollowAlert = event.data.settings?.notifyCreatorFollowAlert !== false;
         discordNotifySubscriptionEnding = event.data.settings?.notifySubscriptionEnding !== false;
         discordNotifySubscriptionReminder = event.data.settings?.notifySubscriptionReminder !== false;
+        discordNotifyCreatorTasks = event.data.settings?.notifyCreatorTasks !== false;
         discordNotifyScheduledScanStarted = event.data.settings?.notifyScheduledScanStarted !== false;
         discordNotifyScheduledScanCompleted = event.data.settings?.notifyScheduledScanCompleted !== false;
         discordWebhookUrlDraft = '';
@@ -3754,6 +4885,7 @@
         lineNotifyCreatorFollowAlert = event.data.settings?.notifyCreatorFollowAlert !== false;
         lineNotifySubscriptionEnding = event.data.settings?.notifySubscriptionEnding !== false;
         lineNotifySubscriptionReminder = event.data.settings?.notifySubscriptionReminder !== false;
+        lineNotifyCreatorTasks = event.data.settings?.notifyCreatorTasks !== false;
         lineNotifyScheduledScanStarted = event.data.settings?.notifyScheduledScanStarted !== false;
         lineNotifyScheduledScanCompleted = event.data.settings?.notifyScheduledScanCompleted !== false;
         lineChannelAccessTokenDraft = '';
@@ -3867,8 +4999,10 @@
         thumbnailCropAdjustments = event.data.adjustments ?? [];
         selectThumbnailAdjustmentCategory(thumbnailAdjustmentCategory);
         if (event.data.updated) {
+          clearPendingGalleryThumbnailResults();
           galleryThumbnails = {};
           requestedGalleryThumbnailIds.clear();
+          requestedGalleryThumbnailPriorities.clear();
           unavailableGalleryThumbnailIds.clear();
           galleryThumbnailRevision += 1;
           loadGalleryWorks();
@@ -3886,9 +5020,14 @@
       if (event.data?.type === 'settings.thumbnailCache.operation.result') {
         thumbnailCacheStatus = event.data.message ?? '';
         if (event.data.action === 'rebuild' || event.data.action === 'moveRoot') {
+          clearPendingExplorerThumbnailResults();
           explorerThumbnails = {};
           requestedExplorerThumbnailPaths.clear();
           unavailableExplorerThumbnailPaths.clear();
+          pendingExplorerThumbnailRequests.clear();
+          explorerThumbnailRequestTokens.clear();
+          explorerThumbnailEntrySignatures.clear();
+          explorerThumbnailRetriedUris.clear();
           if (explorerPath) {
             loadExplorer(explorerPath);
           }
@@ -4050,13 +5189,24 @@
       }
 
         if (event.data?.type === 'explorer.list.result') {
+          const incomingEntries = Array.isArray(event.data.entries)
+            ? event.data.entries as ExplorerEntry[]
+            : [];
+          reconcileExplorerThumbnailEntries(incomingEntries);
+          rememberExplorerDirectorySnapshot({
+            path: event.data.path ?? '',
+            parentPath: event.data.parentPath ?? null,
+            roots: event.data.roots ?? [],
+            entries: incomingEntries,
+            isTruncated: event.data.isTruncated ?? false
+          });
           if (event.data.pane === 'split-right' && explorerSplit) {
           const rightTabId = explorerSplit.rightTabId;
             explorerSplit = {
             ...explorerSplit,
             rightPath: event.data.path ?? '',
             rightParentPath: event.data.parentPath ?? null,
-            rightEntries: event.data.entries ?? [],
+            rightEntries: incomingEntries,
             rightSelectedPaths: [],
             rightIsLoading: false,
               rightIsTruncated: event.data.isTruncated ?? false
@@ -4067,7 +5217,9 @@
           syncExplorerTabById(rightTabId, event.data.path ?? '');
           persistNavigationState();
           rememberExplorerHistory(event.data.path ?? '', 'right');
-            prefetchExplorerThumbnails(explorerSplit.rightEntries, 'right');
+            if (explorerSplit.rightViewMode !== 'details') {
+              prefetchExplorerThumbnails(explorerSplit.rightEntries, 'right');
+            }
             continueRenameAfterRefresh('right', explorerSplit.rightEntries);
             finishExplorerPaste('right', event.data.path ?? '');
             finishPendingMoveRefresh('right', event.data.path ?? '');
@@ -4082,14 +5234,16 @@
         explorerPathDraft = explorerPath;
         explorerParentPath = event.data.parentPath ?? null;
         explorerRoots = event.data.roots ?? [];
-        explorerEntries = event.data.entries ?? [];
+        explorerEntries = incomingEntries;
         explorerIsTruncated = event.data.isTruncated ?? false;
         if (event.data.message) {
           showExplorerToast(event.data.message, 'success');
         }
         explorerIsLoading = false;
         selectedPaths = [];
-        prefetchExplorerThumbnails(explorerEntries, 'left');
+        if (!explorerDetailOnly && (!explorerSplit || explorerSplit.leftViewMode !== 'details')) {
+          prefetchExplorerThumbnails(explorerEntries, 'left');
+        }
         syncExplorerTab(explorerPath);
         if (explorerSplit) persistNavigationState();
         rememberExplorerHistory(explorerPath, 'left');
@@ -4103,20 +5257,100 @@
           focusPastedExplorerEntries(event.data.focusPaths ?? [], 'left');
         }
 
-      if (event.data?.type === 'explorer.thumbnail.result') {
-        requestedExplorerThumbnailPaths.delete(event.data.path);
-        if (event.data.thumbnailUri) {
-          unavailableExplorerThumbnailPaths.delete(event.data.path);
-          explorerThumbnails = { ...explorerThumbnails, [event.data.path]: event.data.thumbnailUri };
+      if (event.data?.type === 'explorer.metadata.result') {
+        const pageCounts = event.data.pageCounts &&
+          typeof event.data.pageCounts === 'object' &&
+          !Array.isArray(event.data.pageCounts)
+          ? event.data.pageCounts as Record<string, number | null>
+          : {};
+        let updatedVisibleEntries: ExplorerEntry[] | undefined;
+        if (event.data.pane === 'split-right' && explorerSplit?.rightPath === event.data.path) {
+          updatedVisibleEntries = applyExplorerPageCounts(explorerSplit.rightEntries, pageCounts);
+          explorerSplit = {
+            ...explorerSplit,
+            rightEntries: updatedVisibleEntries
+          };
+        }
+        else if (explorerPath === event.data.path) {
+          updatedVisibleEntries = applyExplorerPageCounts(explorerEntries, pageCounts);
+          explorerEntries = updatedVisibleEntries;
+        }
+        updateExplorerDirectorySnapshotMetadata(
+          event.data.path ?? '',
+          pageCounts,
+          updatedVisibleEntries
+        );
+      }
+
+      if (event.data?.type === 'explorer.list.error') {
+        if (event.data.pane === 'split-right' && explorerSplit) {
+          explorerSplit = { ...explorerSplit, rightIsLoading: false };
         }
         else {
-          unavailableExplorerThumbnailPaths.add(event.data.path);
+          explorerIsLoading = false;
+        }
+        showExplorerToast(event.data.message ?? 'フォルダを読み込めませんでした。', 'error');
+      }
+
+      if (event.data?.type === 'explorer.thumbnail.result') {
+        const path = typeof event.data.path === 'string' ? event.data.path : '';
+        const requestToken = Number(event.data.requestToken ?? 0);
+        if (!isCurrentExplorerThumbnailResponse(path, requestToken)) {
+          return;
+        }
+        explorerThumbnailRequestTokens.delete(path);
+        requestedExplorerThumbnailPaths.delete(path);
+        if (event.data.thumbnailUri) {
+          unavailableExplorerThumbnailPaths.delete(path);
+          queueExplorerThumbnailResults({ [path]: event.data.thumbnailUri });
+        }
+        else {
+          unavailableExplorerThumbnailPaths.add(path);
+        }
+      }
+
+      if (event.data?.type === 'explorer.thumbnail.batch.result') {
+        const resultItems = Array.isArray(event.data.items)
+          ? event.data.items as Array<{ path?: unknown; thumbnailUri?: unknown; requestToken?: unknown }>
+          : [];
+        const thumbnailUris: Record<string, string> = {};
+        for (const item of resultItems) {
+          const path = typeof item.path === 'string' ? item.path : '';
+          const requestToken = Number(item.requestToken ?? 0);
+          if (!isCurrentExplorerThumbnailResponse(path, requestToken)) {
+            continue;
+          }
+          explorerThumbnailRequestTokens.delete(path);
+          requestedExplorerThumbnailPaths.delete(path);
+          if (typeof item.thumbnailUri === 'string' && item.thumbnailUri) {
+            unavailableExplorerThumbnailPaths.delete(path);
+            thumbnailUris[path] = item.thumbnailUri;
+          }
+          else {
+            unavailableExplorerThumbnailPaths.add(path);
+          }
+        }
+        if (Object.keys(thumbnailUris).length > 0) {
+          queueExplorerThumbnailResults(thumbnailUris);
         }
       }
 
       if (event.data?.type === 'explorer.thumbnail.action.result') {
         showExplorerToast(event.data.message ?? '', 'success');
         refreshExplorerThumbnail(event.data.thumbnailPath ?? '');
+      }
+
+      if (event.data?.type === 'explorer.folderThumbnails.assigned') {
+        invalidateExplorerThumbnailPaths([
+          ...explorerEntries.map((entry) => entry.path),
+          ...(explorerSplit?.rightEntries ?? []).map((entry) => entry.path)
+        ]);
+        if (currentView === 'explorer') {
+          loadExplorer(explorerPath, true);
+          if (explorerSplit?.rightPath) {
+            loadSplitExplorer(explorerSplit.rightPath);
+          }
+        }
       }
 
       if (event.data?.type === 'explorer.bookmarks.result') {
@@ -4436,31 +5670,44 @@
     loadGalleryPins(gallerySection);
     loadGalleryWorks();
     postHostMessage({ type: 'settings.externalApps.list' });
-    postHostMessage({ type: 'settings.gid.list' });
-    postHostMessage({ type: 'filters.editor.list' });
-    postHostMessage({ type: 'tags.manager.list' });
-    postHostMessage({ type: 'settings.winrar.list' });
-    postHostMessage({ type: 'settings.ffmpeg.list' });
-    postHostMessage({ type: 'settings.nconvert.list' });
-    postHostMessage({ type: 'settings.searchEngine.list' });
-    postHostMessage({ type: 'settings.thumbnailCache.list' });
-    postHostMessage({ type: 'settings.sqliteDatabase.list' });
-    postHostMessage({ type: 'settings.pcloud.list' });
-    postHostMessage({ type: 'settings.notifications.list' });
-    postHostMessage({ type: 'settings.discord.list' });
-    postHostMessage({ type: 'settings.line.list' });
     postHostMessage({ type: 'settings.galleryTargets.list' });
-    postHostMessage({ type: 'settings.thumbnailAdjustments.list' });
     postHostMessage({ type: 'settings.newTabCandidates.list' });
-    postHostMessage({ type: 'settings.creatorTracking.list' });
     postHostMessage({ type: 'settings.theme.load' });
     postHostMessage({ type: 'settings.language.load' });
-    postHostMessage({ type: 'settings.calendar.load' });
     postHostMessage({ type: 'ui.navigation.load' });
-    postHostMessage({ type: 'view.bookmarks.list' });
     postHostMessage({ type: 'stickyNotes.list' });
     postHostMessage({ type: 'explorer.bookmarks.list' });
     postHostMessage({ type: 'explorer.tabs.list' });
+    postHostMessage({ type: 'ai.attributeReview.list' });
+    const deferredInitialLoadTimers = [
+      window.setTimeout(() => {
+        [
+          'settings.gid.list',
+          'filters.editor.list',
+          'tags.manager.list',
+          'settings.searchEngine.list',
+          'settings.creatorTracking.list',
+          'settings.creatorBlacklist.list',
+          'view.bookmarks.list'
+        ].forEach((type) => postHostMessage({ type }));
+      }, 500),
+      window.setTimeout(() => {
+        [
+          'settings.winrar.list',
+          'settings.ffmpeg.list',
+          'settings.nconvert.list',
+          'settings.aiConcierge.list',
+          'settings.thumbnailCache.list',
+          'settings.sqliteDatabase.list',
+          'settings.pcloud.list',
+          'settings.notifications.list',
+          'settings.discord.list',
+          'settings.line.list',
+          'settings.thumbnailAdjustments.list',
+          'settings.calendar.load'
+        ].forEach((type) => postHostMessage({ type }));
+      }, 1_500)
+    ];
 
     const onKeydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && nConvertZipConfirmation && !nConvertZipBatchInProgress) {
@@ -4503,6 +5750,12 @@
       if (event.key === 'Escape' && galleryTitleAssignment) {
         event.preventDefault();
         closeGalleryTitleAssignment();
+        return;
+      }
+
+      if (event.key === 'Escape' && aiAttributeReviewOpen) {
+        event.preventDefault();
+        closeAiAttributeReview();
         return;
       }
 
@@ -4604,6 +5857,9 @@
     return () => {
       finishGidMigrationProgressTimer();
       stopSystemLocalization();
+      if (romanizedSearchRequestTimer) window.clearTimeout(romanizedSearchRequestTimer);
+      if (romanizedSearchCacheLookupTimer) window.clearTimeout(romanizedSearchCacheLookupTimer);
+      deferredInitialLoadTimers.forEach((timer) => window.clearTimeout(timer));
       delete window.galleryBrowserFlushCreatorTracking;
       window.removeEventListener('keydown', onKeydown);
       window.removeEventListener('keydown', reportUserActivity);
@@ -4620,26 +5876,231 @@
     };
   });
 
-  function filterItems(sourceItems: GalleryItem[], text: string) {
-    const normalized = text.trim().toLowerCase();
-    if (!normalized) {
-      return sourceItems;
-    }
+  function normalizeLocalSearchText(value: unknown) {
+    return String(value ?? '').normalize('NFKC').toLocaleLowerCase('ja-JP');
+  }
 
-    return sourceItems.filter((item) => {
-      const tags = item.tags.join(' ');
-      return `${item.title} ${item.path} ${tags}`.toLowerCase().includes(normalized);
+  function normalizeRomanSearchText(value: unknown) {
+    return normalizeLocalSearchText(value)
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+  }
+
+  function getRomanizableSearchSegments(values: readonly unknown[]) {
+    const segments = new Set<string>();
+    for (const value of values) {
+      for (const segment of String(value ?? '').split(/[\\/\r\n]+/)) {
+        const normalized = segment.trim();
+        if (
+          normalized &&
+          normalized.length <= 900 &&
+          /[\u3040-\u30ff\u3400-\u9fff\uff66-\uff9f]/u.test(normalized)
+        ) {
+          segments.add(normalized);
+        }
+      }
+    }
+    return [...segments];
+  }
+
+  function queueRomanizedSearchValues(values: readonly unknown[]) {
+    for (const segment of getRomanizableSearchSegments(values)) {
+      if (
+        romanizedSearchCache.has(segment) ||
+        romanizedSearchPending.has(segment) ||
+        romanizedSearchRequested.has(segment) ||
+        romanizedSearchCacheLookupPending.has(segment) ||
+        romanizedSearchCacheLookupRequested.has(segment)
+      ) {
+        continue;
+      }
+      romanizedSearchCacheLookupPending.add(segment);
+    }
+    scheduleRomanizedSearchCacheLookup();
+  }
+
+  function scheduleRomanizedSearchCacheLookup() {
+    if (
+      romanizedSearchCacheLookupInFlight ||
+      romanizedSearchCacheLookupPending.size === 0 ||
+      romanizedSearchCacheLookupTimer
+    ) {
+      return;
+    }
+    romanizedSearchCacheLookupTimer = setTimeout(() => {
+      romanizedSearchCacheLookupTimer = undefined;
+      flushRomanizedSearchCacheLookup();
+    }, 40);
+  }
+
+  function flushRomanizedSearchCacheLookup() {
+    if (romanizedSearchCacheLookupInFlight || romanizedSearchCacheLookupPending.size === 0) {
+      return;
+    }
+    const values = [...romanizedSearchCacheLookupPending].slice(0, 500);
+    for (const value of values) {
+      romanizedSearchCacheLookupPending.delete(value);
+      romanizedSearchCacheLookupRequested.add(value);
+    }
+    romanizedSearchCacheLookupInFlight = true;
+    romanizedSearchCacheLookupActiveValues = values;
+    postHostMessage({
+      type: 'search.romanize.cache.request',
+      requestId: `search-romanize-cache-${nextRomanizedSearchCacheLookupRequestId++}`,
+      values
     });
   }
 
+  function primeRomanizedSearchValues(query: string, values: readonly unknown[]) {
+    const romanQuery = normalizeRomanSearchText(query);
+    if (!romanQuery || !/[a-z]/.test(romanQuery)) {
+      return;
+    }
+    queueRomanizedSearchValues(values);
+  }
+
+  function scheduleRomanizedSearchRequest(delay = 160) {
+    if (
+      romanizedSearchRequestInFlight ||
+      romanizedSearchPending.size === 0 ||
+      !searchEngineSettings.yahooClientId.trim() ||
+      romanizedSearchRequestTimer
+    ) {
+      return;
+    }
+    romanizedSearchRequestTimer = setTimeout(() => {
+      romanizedSearchRequestTimer = undefined;
+      flushRomanizedSearchRequest();
+    }, Math.max(0, delay));
+  }
+
+  function flushRomanizedSearchRequest() {
+    if (romanizedSearchRequestInFlight || romanizedSearchPending.size === 0) {
+      return;
+    }
+    const values = [...romanizedSearchPending].slice(0, 80);
+    for (const value of values) {
+      romanizedSearchPending.delete(value);
+      romanizedSearchRequested.add(value);
+    }
+    romanizedSearchRequestInFlight = true;
+    romanizedSearchActiveValues = values;
+    postHostMessage({
+      type: 'search.romanize.request',
+      requestId: `search-romanize-${nextRomanizedSearchRequestId++}`,
+      values
+    });
+  }
+
+  function matchesSearchValues(values: readonly unknown[], query: string) {
+    const terms = normalizeLocalSearchText(query).split(/\s+/).filter(Boolean);
+    if (terms.length === 0) {
+      return true;
+    }
+
+    const normalizedValues = values.map(normalizeLocalSearchText);
+    const directText = normalizedValues.join('\n');
+    const romanTerms = terms.map(normalizeRomanSearchText);
+    const needsRomanizedSearch = romanTerms.some((term, index) =>
+      term.length > 0 && /[a-z]/.test(term) && !directText.includes(terms[index]));
+    if (needsRomanizedSearch) {
+      queueRomanizedSearchValues(values);
+    }
+    const segments = getRomanizableSearchSegments(values);
+
+    return terms.every((term, index) => {
+      if (directText.includes(term)) {
+        return true;
+      }
+      const romanTerm = romanTerms[index];
+      if (!romanTerm || !/[a-z]/.test(romanTerm)) {
+        return false;
+      }
+      const compactRomanTerm = romanTerm.replace(/\s+/g, '');
+      return segments.some((segment) => {
+        const romanized = normalizeRomanSearchText(romanizedSearchCache.get(segment) ?? '');
+        return romanized.includes(romanTerm) ||
+          romanized.replace(/\s+/g, '').includes(compactRomanTerm);
+      });
+    });
+  }
+
+  function invalidateRomanizedSearchFilters() {
+    galleryTagAssignmentCreatorFilterCache = undefined;
+    galleryTagAssignmentAvailableFilterCache = undefined;
+    galleryTitleAssignmentCreatorFilterCache = undefined;
+    galleryTitleAssignmentAvailableFilterCache = undefined;
+    galleryTitleAssignmentCharacterCreatorFilterCache = undefined;
+    galleryTitleAssignmentCharacterAvailableFilterCache = undefined;
+    galleryCharacterAssignmentCreatorFilterCache = undefined;
+    galleryCharacterAssignmentAvailableFilterCache = undefined;
+
+    items = [...items];
+    galleryWorks = [...galleryWorks];
+    galleryCreatorSummaries = [...galleryCreatorSummaries];
+    creatorTrackingIndexItems = [...creatorTrackingIndexItems];
+    explorerEntries = [...explorerEntries];
+    if (explorerSplit) {
+      explorerSplit = {
+        ...explorerSplit,
+        rightEntries: [...explorerSplit.rightEntries]
+      };
+    }
+    filterEditorCategories = [...filterEditorCategories];
+    filterEditorTitles = [...filterEditorTitles];
+    filterEditorCharacters = [...filterEditorCharacters];
+    tagManagementTags = [...tagManagementTags];
+    galleryTags = [...galleryTags];
+    if (galleryTagAssignment) galleryTagAssignment = { ...galleryTagAssignment };
+    if (galleryTitleAssignment) galleryTitleAssignment = { ...galleryTitleAssignment };
+    if (galleryCharacterAssignment) galleryCharacterAssignment = { ...galleryCharacterAssignment };
+  }
+
+  function filterItems(sourceItems: GalleryItem[], text: string) {
+    if (!text.trim()) {
+      return sourceItems;
+    }
+
+    return sourceItems.filter((item) => matchesSearchValues(
+      [item.title, item.path, ...item.tags],
+      text));
+  }
+
+  const explorerEntryPathIndexCache = new WeakMap<ExplorerEntry[], Map<string, number>>();
+  const explorerEntryNamePartsCache = new WeakMap<ExplorerEntry, EntryNameParts>();
+  const explorerEntryModifiedTimeCache = new WeakMap<ExplorerEntry, number>();
+  type ExplorerSortCacheEntry = {
+    result: ExplorerEntry[];
+    pathIndices: Map<string, number>;
+  };
+  const explorerEntrySortCache = new WeakMap<
+    ExplorerEntry[],
+    Map<string, ExplorerSortCacheEntry>
+  >();
+  const explorerEntryDetailValueCache = new WeakMap<
+    ExplorerEntry,
+    Partial<Record<ExplorerDetailColumnId, string>>
+  >();
+  const galleryWorkDisplayNameCache = new WeakMap<GalleryWork, string>();
+  const galleryWorkSearchTextCache = new WeakMap<GalleryWork, string>();
+  const galleryCreatorTrackingSitesCache = new WeakMap<GalleryCreatorSummary, Set<string>>();
+  const emptyGalleryFilterValues: string[] = [];
+  const galleryFilterOrderingCache = new WeakMap<GalleryFilterOption[], {
+    pinnedValues: string[];
+    promotedValues: string[];
+    result: GalleryFilterOption[];
+  }>();
+
   function filterExplorerEntries(sourceEntries: ExplorerEntry[], text: string) {
-    const normalized = text.trim().toLowerCase();
-    return normalized
-      ? sourceEntries.filter((entry) =>
-        entry.name.toLowerCase().includes(normalized) ||
-        (entry.romanizedName ?? '').toLowerCase().includes(normalized))
+    return text.trim()
+      ? sourceEntries.filter((entry) => matchesSearchValues(
+          [entry.name, entry.romanizedName ?? ''],
+          text))
       : sourceEntries;
   }
+
+  const explorerNameCollator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
+  const explorerTypeCollator = new Intl.Collator('ja', { sensitivity: 'base' });
 
   function getExplorerBreadcrumbs(path: string): Array<{ label: string; path: string }> {
     const normalized = path.replace(/\//g, '\\').replace(/\\+$/, '');
@@ -4684,27 +6145,36 @@
   }
 
   function getEntryNameParts(entry: ExplorerEntry): EntryNameParts {
+    const cached = explorerEntryNamePartsCache.get(entry);
+    if (cached) {
+      return cached;
+    }
+
     const match = /\{gid=([^{}]+)\}/i.exec(entry.name);
     if (!match || match.index === undefined) {
       const extension = getEntryExtension(entry.name, entry.isDirectory);
-      return {
+      const parts = {
         displayName: extension ? entry.name.slice(0, -extension.length) : entry.name,
         identifier: '',
         extension,
         tagBeforeExtension: false
       };
+      explorerEntryNamePartsCache.set(entry, parts);
+      return parts;
     }
 
     const nameWithoutTag = `${entry.name.slice(0, match.index)}${entry.name.slice(match.index + match[0].length)}`.trim();
     const extension = getEntryExtension(nameWithoutTag, entry.isDirectory);
     const displayName = extension ? nameWithoutTag.slice(0, -extension.length) : nameWithoutTag;
     const extensionIndex = entry.name.lastIndexOf('.');
-    return {
+    const parts = {
       displayName,
       identifier: match[1],
       extension,
       tagBeforeExtension: !entry.isDirectory && extensionIndex > match.index
     };
+    explorerEntryNamePartsCache.set(entry, parts);
+    return parts;
   }
 
   function getEntryExtension(name: string, isDirectory: boolean) {
@@ -4742,28 +6212,75 @@
       : `${normalizedBaseName}${extension}${tag}`;
   }
 
+  function getExplorerEntryModifiedTime(entry: ExplorerEntry) {
+    const cached = explorerEntryModifiedTimeCache.get(entry);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const modifiedTime = Date.parse(entry.modifiedAt);
+    explorerEntryModifiedTimeCache.set(entry, modifiedTime);
+    return modifiedTime;
+  }
+
   function sortExplorerEntries(sourceEntries: ExplorerEntry[], sort: string, direction: 'asc' | 'desc') {
-    return [...sourceEntries].sort((left, right) => {
+    const cacheKey = `${sort}:${direction}`;
+    const cached = explorerEntrySortCache.get(sourceEntries)?.get(cacheKey);
+    if (cached) {
+      return cached.result;
+    }
+
+    const result = [...sourceEntries].sort((left, right) => {
       if (left.isDirectory !== right.isDirectory) {
         return left.isDirectory ? -1 : 1;
       }
 
       let comparison: number;
-      if (sort === 'modified') {
-        comparison = new Date(left.modifiedAt).getTime() - new Date(right.modifiedAt).getTime();
+      if (sort === 'pages' || sort === 'averageImageSize') {
+        const leftValue = sort === 'pages'
+          ? left.pageCount
+          : left.size !== null && left.pageCount !== null && left.pageCount > 0
+            ? left.size / left.pageCount
+            : null;
+        const rightValue = sort === 'pages'
+          ? right.pageCount
+          : right.size !== null && right.pageCount !== null && right.pageCount > 0
+            ? right.size / right.pageCount
+            : null;
+        if (leftValue === null || rightValue === null) {
+          if (leftValue === rightValue) {
+            const nameComparison = explorerNameCollator.compare(left.name, right.name);
+            return direction === 'asc' ? nameComparison : -nameComparison;
+          }
+          return leftValue === null ? 1 : -1;
+        }
+        comparison = leftValue - rightValue;
+      }
+      else if (sort === 'modified') {
+        comparison = getExplorerEntryModifiedTime(left) - getExplorerEntryModifiedTime(right);
       }
       else if (sort === 'size') {
         comparison = (left.size ?? -1) - (right.size ?? -1);
       }
       else if (sort === 'type') {
-        comparison = (left.extension || 'folder').localeCompare(right.extension || 'folder', 'ja');
+        comparison = explorerTypeCollator.compare(left.extension || 'folder', right.extension || 'folder');
       }
       else {
-        comparison = left.name.localeCompare(right.name, 'ja', { numeric: true, sensitivity: 'base' });
+        comparison = explorerNameCollator.compare(left.name, right.name);
       }
 
       return direction === 'asc' ? comparison : -comparison;
     });
+    let sourceCache = explorerEntrySortCache.get(sourceEntries);
+    if (!sourceCache) {
+      sourceCache = new Map();
+      explorerEntrySortCache.set(sourceEntries, sourceCache);
+    }
+    sourceCache.set(cacheKey, {
+      result,
+      pathIndices: new Map(result.map((entry, index) => [entry.path, index]))
+    });
+    return result;
   }
 
   function requestThumbnail(item: GalleryItem) {
@@ -4775,26 +6292,6 @@
     postHostMessage({ type: 'thumbnail.request', id: item.id });
   }
 
-  function observeThumbnail(node: HTMLElement, item: GalleryItem) {
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          requestThumbnail(item);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: '700px' }
-    );
-
-    observer.observe(node);
-
-    return {
-      destroy() {
-        observer.disconnect();
-      }
-    };
-  }
-
   function requestExplorerThumbnail(entry: ExplorerEntry, pane: 'left' | 'right' = 'left') {
     if (explorerThumbnails[entry.path] || requestedExplorerThumbnailPaths.has(entry.path) || unavailableExplorerThumbnailPaths.has(entry.path)) {
       return;
@@ -4802,29 +6299,171 @@
 
     requestedExplorerThumbnailPaths.add(entry.path);
     const priority = explorerThumbnailPriority + (explorerSplit && splitFocusedPane === pane ? 1 : 0);
-    postHostMessage({ type: 'explorer.thumbnail', path: entry.path, priority });
+    const requestToken = createExplorerThumbnailRequestToken(entry.path);
+    pendingExplorerThumbnailRequests.set(entry.path, { path: entry.path, priority, requestToken });
+    if (!explorerThumbnailFlushFrame) {
+      explorerThumbnailFlushFrame = window.requestAnimationFrame(flushExplorerThumbnailRequests);
+    }
+  }
+
+  function createExplorerThumbnailRequestToken(path: string) {
+    const requestToken = nextExplorerThumbnailRequestToken++;
+    explorerThumbnailRequestTokens.set(path, requestToken);
+    return requestToken;
+  }
+
+  function isCurrentExplorerThumbnailResponse(path: string, requestToken: number) {
+    return path.length > 0 &&
+      Number.isFinite(requestToken) &&
+      requestToken > 0 &&
+      explorerThumbnailRequestTokens.get(path) === requestToken;
+  }
+
+  function getExplorerThumbnailEntrySignature(entry: ExplorerEntry) {
+    return [
+      entry.isDirectory ? 'directory' : 'file',
+      entry.size ?? '',
+      entry.modifiedAt ?? ''
+    ].join('|');
+  }
+
+  function reconcileExplorerThumbnailEntries(entries: ExplorerEntry[]) {
+    const changedPaths: string[] = [];
+    for (const entry of entries) {
+      const signature = getExplorerThumbnailEntrySignature(entry);
+      const previousSignature = explorerThumbnailEntrySignatures.get(entry.path);
+      explorerThumbnailEntrySignatures.set(entry.path, signature);
+      if (previousSignature !== undefined && previousSignature !== signature) {
+        changedPaths.push(entry.path);
+      }
+    }
+    invalidateExplorerThumbnailPaths(changedPaths);
+  }
+
+  function invalidateExplorerThumbnailPaths(paths: Iterable<string>) {
+    const pathSet = new Set(paths);
+    if (pathSet.size === 0) return;
+
+    explorerThumbnails = Object.fromEntries(
+      Object.entries(explorerThumbnails).filter(([path]) => !pathSet.has(path))
+    );
+    for (const path of pathSet) {
+      delete pendingExplorerThumbnailUris[path];
+      requestedExplorerThumbnailPaths.delete(path);
+      unavailableExplorerThumbnailPaths.delete(path);
+      pendingExplorerThumbnailRequests.delete(path);
+      explorerThumbnailRequestTokens.delete(path);
+      explorerThumbnailRetriedUris.delete(path);
+    }
+  }
+
+  function flushExplorerThumbnailRequests() {
+    explorerThumbnailFlushFrame = 0;
+    const requests = [...pendingExplorerThumbnailRequests.values()];
+    pendingExplorerThumbnailRequests.clear();
+    for (let offset = 0; offset < requests.length; offset += explorerThumbnailRequestBatchSize) {
+      postHostMessage({
+        type: 'explorer.thumbnail.batch',
+        items: requests.slice(offset, offset + explorerThumbnailRequestBatchSize)
+      });
+    }
+  }
+
+  function queueExplorerThumbnailResults(thumbnailUris: Record<string, string>) {
+    Object.assign(pendingExplorerThumbnailUris, thumbnailUris);
+    if (explorerThumbnailResultFrame) return;
+    explorerThumbnailResultFrame = window.requestAnimationFrame(() => {
+      explorerThumbnailResultFrame = 0;
+      const batch = pendingExplorerThumbnailUris;
+      pendingExplorerThumbnailUris = {};
+      explorerThumbnails = Object.assign(explorerThumbnails, batch);
+    });
+  }
+
+  function clearPendingExplorerThumbnailResults() {
+    if (explorerThumbnailResultFrame) {
+      window.cancelAnimationFrame(explorerThumbnailResultFrame);
+      explorerThumbnailResultFrame = 0;
+    }
+    pendingExplorerThumbnailUris = {};
+  }
+
+  function handleExplorerThumbnailLoad(path: string, event: Event) {
+    const image = event.currentTarget as HTMLImageElement | null;
+    const loadedUri = image?.currentSrc || image?.getAttribute('src') || '';
+    if (loadedUri && explorerThumbnails[path] === loadedUri) {
+      explorerThumbnailRetriedUris.delete(path);
+    }
+  }
+
+  function handleExplorerThumbnailError(path: string, event: Event) {
+    const image = event.currentTarget as HTMLImageElement | null;
+    const failedUri = image?.currentSrc || image?.getAttribute('src') || '';
+    if (!failedUri || explorerThumbnails[path] !== failedUri) {
+      return;
+    }
+
+    if (explorerThumbnailRetriedUris.has(path)) {
+      invalidateExplorerThumbnailPaths([path]);
+      unavailableExplorerThumbnailPaths.add(path);
+      return;
+    }
+
+    explorerThumbnailRetriedUris.set(path, failedUri);
+    refreshExplorerThumbnail(path, true);
   }
 
   function prefetchExplorerThumbnails(entries: ExplorerEntry[], pane: 'left' | 'right') {
     entries.slice(0, 14).forEach((entry) => requestExplorerThumbnail(entry, pane));
   }
 
-  function observeExplorerThumbnail(node: HTMLElement, request: { entry: ExplorerEntry; pane: 'left' | 'right' }) {
-    const observer = new IntersectionObserver(
-      ([entryState]) => {
-        if (entryState.isIntersecting) {
-          requestExplorerThumbnail(request.entry, request.pane);
-          observer.disconnect();
-        }
-      },
-      { root: node.closest('.explorer-grid-pane, .split-grid-pane'), rootMargin: '220px' }
-    );
+  function getExplorerThumbnailObserver(root: Element | null) {
+    let shared = explorerThumbnailObservers.get(root);
+    if (!shared) {
+      const observer = new IntersectionObserver(
+        (entries) => {
+          for (const entryState of entries) {
+            if (!entryState.isIntersecting) continue;
+            const state = explorerThumbnailObserverTargets.get(entryState.target);
+            if (!state) continue;
+            requestExplorerThumbnail(state.request.entry, state.request.pane);
+            state.observed = false;
+            observer.unobserve(entryState.target);
+          }
+        },
+        { root, rootMargin: '220px' }
+      );
+      shared = { observer, mountedCount: 0 };
+      explorerThumbnailObservers.set(root, shared);
+    }
+    return shared;
+  }
 
-    observer.observe(node);
+  function observeExplorerThumbnail(node: HTMLElement, request: ExplorerThumbnailRequest) {
+    const root = node.closest('.explorer-grid-pane, .split-grid-pane');
+    const shared = getExplorerThumbnailObserver(root);
+    const state: ExplorerThumbnailObserverState = { request, observed: true };
+    explorerThumbnailObserverTargets.set(node, state);
+    shared.mountedCount += 1;
+    shared.observer.observe(node);
 
     return {
+      update(nextRequest: ExplorerThumbnailRequest) {
+        const pathChanged = state.request.entry.path !== nextRequest.entry.path;
+        state.request = nextRequest;
+        if (pathChanged && !state.observed) {
+          state.observed = true;
+          shared.observer.observe(node);
+        }
+      },
       destroy() {
-        observer.disconnect();
+        shared.observer.unobserve(node);
+        explorerThumbnailObserverTargets.delete(node);
+        shared.mountedCount -= 1;
+        if (shared.mountedCount <= 0) {
+          shared.observer.disconnect();
+          explorerThumbnailObservers.delete(root);
+        }
       }
     };
   }
@@ -4886,6 +6525,31 @@
     }
   }
 
+  function applyGalleryWorkItems(nextItems: GalleryWork[], offset: number) {
+    if (offset === 0) {
+      galleryWorks = nextItems;
+      galleryWorkIndexes.clear();
+      for (let index = 0; index < nextItems.length; index++) {
+        galleryWorkIndexes.set(nextItems[index].id, index);
+      }
+      return;
+    }
+
+    let appended = false;
+    for (const item of nextItems) {
+      if (galleryWorkIndexes.has(item.id)) continue;
+      galleryWorkIndexes.set(item.id, galleryWorks.length);
+      galleryWorks.push(item);
+      appended = true;
+    }
+    if (appended) galleryWorks = galleryWorks;
+  }
+
+  function clearGalleryWorkItems() {
+    galleryWorks = [];
+    galleryWorkIndexes.clear();
+  }
+
   function commitGalleryFilterConfiguration() {
     if (galleryFilterCommitInProgress) {
       return;
@@ -4915,9 +6579,11 @@
     galleryPromotedCharacters = [];
     galleryPromotedTags = [];
     selectedGalleryWorkIds = new Set();
-    galleryWorks = [];
+    clearGalleryWorkItems();
+    clearPendingGalleryThumbnailResults();
     galleryThumbnails = {};
     requestedGalleryThumbnailIds.clear();
+    requestedGalleryThumbnailPriorities.clear();
     unavailableGalleryThumbnailIds.clear();
     activateView('library');
     loadGalleryWorks(false, galleryRatingFilters, true);
@@ -5042,7 +6708,7 @@
 
   function syncGoogleCalendar() {
     googleCalendarBusy = true;
-    googleCalendarStatus = 'Google Calendarへサブスク予定を同期しています...';
+    googleCalendarStatus = 'Google Calendarへ予定を同期しています...';
     postHostMessage({ type: 'calendar.google.sync' });
   }
 
@@ -5076,18 +6742,33 @@
   }
 
   function normalizeCalendarEvent(value: Partial<CalendarSubscriptionEvent> | null | undefined): CalendarSubscriptionEvent | null {
-    if (!value?.creator || !value.renewalOn) return null;
+    const eventType = value?.eventType === 'creator-check' || value?.eventType === 'task'
+      ? value.eventType
+      : 'subscription';
+    const startOn = String(value?.startOn ?? value?.renewalOn ?? '').trim();
+    const endOn = String(value?.endOn ?? startOn).trim() || startOn;
+    if (!value?.creator || !startOn) return null;
     return {
-      id: String(value.id ?? `${value.creator}-${value.renewalOn}`),
+      id: String(value.id ?? `${value.creator}-${eventType}-${startOn}`),
       creator: String(value.creator ?? '').trim(),
       displayName: String(value.displayName ?? value.creator ?? '').trim(),
       platform: String(value.platform ?? '').trim(),
       plan: String(value.plan ?? '').trim(),
       currency: String(value.currency ?? '').trim(),
       amount: Number(value.amount ?? 0),
-      renewalOn: String(value.renewalOn ?? '').trim(),
+      renewalOn: String(value.renewalOn ?? startOn).trim(),
       endingPlanned: value.endingPlanned === true,
-      reminder: value.reminder === true
+      reminder: value.reminder === true,
+      eventType,
+      severity: value.severity === 'warning' || value.severity === 'alert' ? value.severity : 'normal',
+      startOn,
+      endOn,
+      title: String(value.title ?? '').trim(),
+      detail: String(value.detail ?? '').trim(),
+      taskCategory: String(value.taskCategory ?? '').trim(),
+      alertFrequency: value.alertFrequency === 'daily' || value.alertFrequency === 'end'
+        ? value.alertFrequency
+        : 'none'
     };
   }
 
@@ -5155,10 +6836,68 @@
 
   function calendarEventsForDate(date: string) {
     return calendarEvents
-      .filter((event) => event.renewalOn === date)
+      .filter((event) =>
+        calendarEventVisible(event) &&
+        event.startOn <= date &&
+        event.endOn >= date)
       .sort((left, right) =>
+        calendarEventSeverityOrder(left) - calendarEventSeverityOrder(right) ||
+        calendarEventTypeOrder(left) - calendarEventTypeOrder(right) ||
         left.displayName.localeCompare(right.displayName, 'ja-JP') ||
         left.platform.localeCompare(right.platform, 'ja-JP'));
+  }
+
+  function calendarEventVisible(event: CalendarSubscriptionEvent) {
+    if (event.eventType === 'subscription') return calendarShowSubscriptions;
+    if (event.eventType === 'creator-check') return calendarShowCreatorChecks;
+    return calendarShowTasks;
+  }
+
+  function calendarEventSeverityOrder(event: CalendarSubscriptionEvent) {
+    return event.severity === 'alert' ? 0 : event.severity === 'warning' ? 1 : 2;
+  }
+
+  function calendarEventTypeOrder(event: CalendarSubscriptionEvent) {
+    return event.eventType === 'subscription' ? 0 : event.eventType === 'creator-check' ? 1 : 2;
+  }
+
+  function getVisibleCalendarEvents() {
+    return calendarEvents.filter(calendarEventVisible);
+  }
+
+  function getCalendarEventTitle(event: CalendarSubscriptionEvent) {
+    if (event.title) return event.title;
+    if (event.eventType === 'creator-check') return 'Creator確認';
+    if (event.eventType === 'task') return event.taskCategory || 'タスク';
+    return event.endingPlanned ? 'サブスク終了予定' : 'サブスク更新予定';
+  }
+
+  function getCalendarEventSecondaryText(event: CalendarSubscriptionEvent) {
+    if (event.eventType === 'task') {
+      return event.taskCategory || event.detail || '分類なし';
+    }
+    if (event.eventType === 'creator-check') {
+      return event.detail || (event.severity === 'alert' ? '確認アラート' : '確認警告');
+    }
+    return `${event.platform}${event.plan ? ` / ${event.plan}` : ''}` || event.detail;
+  }
+
+  function getCalendarEventAccessibleLabel(event: CalendarSubscriptionEvent) {
+    return [
+      event.displayName,
+      getCalendarEventTitle(event),
+      getCalendarEventSecondaryText(event)
+    ].filter(Boolean).join(' / ');
+  }
+
+  function openCalendarDayDetail(date: string, events: CalendarSubscriptionEvent[]) {
+    calendarDetailDate = date;
+    calendarDetailEvents = [...events];
+  }
+
+  function closeCalendarDayDetail() {
+    calendarDetailDate = '';
+    calendarDetailEvents = [];
   }
 
   function getCalendarWeekdayLabels() {
@@ -5311,26 +7050,19 @@
   }
 
   function getGalleryCreatorRatingBucketCount(ratingBucket: string) {
-    return galleryCreatorSummaries.filter((item) =>
-      item.category === galleryCreatorSummarySection && item.ratingBucket === ratingBucket).length;
+    return galleryCreatorSummaryFilterIndex.ratingCounts.get(ratingBucket) ?? 0;
   }
 
   function getGalleryCreatorSummarySiteCount(site: string) {
-    return galleryCreatorSummaries.filter((item) =>
-      item.category === galleryCreatorSummarySection &&
-      item.trackingSites.some((candidate) => candidate.localeCompare(site, 'ja-JP', { sensitivity: 'base' }) === 0)).length;
+    return galleryCreatorSummaryFilterIndex.siteCounts.get(site.toLocaleLowerCase('ja-JP')) ?? 0;
   }
 
   function getGalleryCreatorSummaryOverallRatingCount(score: number) {
-    return galleryCreatorSummaries.filter((item) =>
-      item.category === galleryCreatorSummarySection &&
-      item.hasCreatorTracking &&
-      Math.floor(item.personalRating) === score).length;
+    return galleryCreatorSummaryFilterIndex.overallRatingCounts.get(score) ?? 0;
   }
 
   function getGalleryCreatorSummaryMetricScoreCount(key: CreatorTrackingMetricKey, score: number) {
-    return galleryCreatorSummaries.filter((item) =>
-      item.category === galleryCreatorSummarySection && Number(item.evaluationMetrics?.[key] ?? 0) === score).length;
+    return galleryCreatorSummaryFilterIndex.metricScoreCounts[key].get(score) ?? 0;
   }
 
   function toggleGalleryCreatorSummaryReminderFilter(filter: Exclude<GalleryCreatorSummaryReminderFilter, ''>) {
@@ -5349,26 +7081,36 @@
     reminderFilter: GalleryCreatorSummaryReminderFilter,
     query: string,
     sorts: GalleryCreatorSummarySortCriterion[]) {
-    const normalizedQuery = query.trim().toLocaleLowerCase('ja-JP');
     const selectedRatings = new Set(ratings);
     const selectedCoreTitles = new Set(coreTitles);
     const selectedCoreTags = new Set(coreTags);
     const selectedSites = new Set(sites.map((site) => site.toLocaleLowerCase('ja-JP')));
     const selectedOverallRatings = new Set(overallRatings);
+    const selectedMetricScores = Object.fromEntries(
+      creatorTrackingMetricDefinitions.map((metric) => [metric.key, new Set(metricScores[metric.key])])
+    ) as Record<CreatorTrackingMetricKey, Set<number>>;
     const items = summaries.filter((item) => {
       if (item.category !== section) return false;
       if (selectedRatings.size > 0 && !selectedRatings.has(item.ratingBucket)) return false;
       if (selectedCoreTitles.size > 0 && !item.coreTitles.some((title) => selectedCoreTitles.has(title))) return false;
       if (selectedCoreTags.size > 0 && !item.coreTags.some((tag) => selectedCoreTags.has(tag))) return false;
-      if (selectedSites.size > 0 && !item.trackingSites.some((site) => selectedSites.has(site.toLocaleLowerCase('ja-JP')))) return false;
+      if (selectedSites.size > 0) {
+        let hasSelectedSite = false;
+        for (const site of getNormalizedGalleryCreatorSites(item)) {
+          if (!selectedSites.has(site)) continue;
+          hasSelectedSite = true;
+          break;
+        }
+        if (!hasSelectedSite) return false;
+      }
       if (selectedOverallRatings.size > 0 && !selectedOverallRatings.has(Math.floor(item.personalRating))) return false;
       if (reminderFilter === 'warning' && !item.followWarnFlg) return false;
       if (reminderFilter === 'alert' && !item.followAlertFlg) return false;
       for (const metric of creatorTrackingMetricDefinitions) {
-        const selectedScores = metricScores[metric.key];
-        if (selectedScores.length > 0 && !selectedScores.includes(Number(item.evaluationMetrics?.[metric.key] ?? 0))) return false;
+        const selectedScores = selectedMetricScores[metric.key];
+        if (selectedScores.size > 0 && !selectedScores.has(Number(item.evaluationMetrics?.[metric.key] ?? 0))) return false;
       }
-      return !normalizedQuery || item.searchText.includes(normalizedQuery);
+      return matchesSearchValues([item.searchText], query);
     });
 
     return items.sort((left, right) => {
@@ -5381,10 +7123,14 @@
 
         let comparison = 0;
         if (sort.key === 'name') {
-          comparison = left.creator.localeCompare(right.creator, 'ja-JP');
+          comparison = galleryCreatorNameCollator.compare(left.creator, right.creator);
         }
         else if (sort.key === 'updated') {
-          comparison = left.trackingLastActivityOn.localeCompare(right.trackingLastActivityOn, 'ja-JP');
+          comparison = left.trackingLastActivityOn < right.trackingLastActivityOn
+            ? -1
+            : left.trackingLastActivityOn > right.trackingLastActivityOn
+              ? 1
+              : 0;
         }
         else {
           const leftValue = sort.key === 'files'
@@ -5416,27 +7162,74 @@
           return sort.direction === 'asc' ? comparison : -comparison;
         }
       }
-      return left.creator.localeCompare(right.creator, 'ja-JP');
+      return galleryCreatorNameCollator.compare(left.creator, right.creator);
     });
   }
 
-  function getGalleryCreatorCoreFilterOptions(
+  const galleryCreatorNameCollator = new Intl.Collator('ja-JP', { numeric: true, sensitivity: 'base' });
+
+  function getNormalizedGalleryCreatorSites(item: GalleryCreatorSummary) {
+    let sites = galleryCreatorTrackingSitesCache.get(item);
+    if (!sites) {
+      sites = new Set(item.trackingSites.map((value) => value.toLocaleLowerCase('ja-JP')));
+      galleryCreatorTrackingSitesCache.set(item, sites);
+    }
+    return sites;
+  }
+
+  function buildGalleryCreatorSummaryFilterIndex(
     summaries: GalleryCreatorSummary[],
-    section: string,
-    property: 'coreTitles' | 'coreTags'): GalleryCreatorCoreFilterOption[] {
-    const creatorsByValue = new Map<string, Set<string>>();
+    section: string): GalleryCreatorSummaryFilterIndex {
+    const ratingCounts = new Map<string, number>();
+    const siteCounts = new Map<string, number>();
+    const overallRatingCounts = new Map<number, number>();
+    const metricScoreCounts = Object.fromEntries(
+      creatorTrackingMetricDefinitions.map((metric) => [metric.key, new Map<number, number>()])
+    ) as Record<CreatorTrackingMetricKey, Map<number, number>>;
+    const creatorsByCoreTitle = new Map<string, Set<string>>();
+    const creatorsByCoreTag = new Map<string, Set<string>>();
+
     for (const item of summaries) {
       if (item.category !== section) continue;
-      for (const value of new Set(item[property])) {
-        const creators = creatorsByValue.get(value) ?? new Set<string>();
+
+      ratingCounts.set(item.ratingBucket, (ratingCounts.get(item.ratingBucket) ?? 0) + 1);
+      if (item.hasCreatorTracking) {
+        const score = Math.floor(item.personalRating);
+        overallRatingCounts.set(score, (overallRatingCounts.get(score) ?? 0) + 1);
+      }
+      for (const site of getNormalizedGalleryCreatorSites(item)) {
+        siteCounts.set(site, (siteCounts.get(site) ?? 0) + 1);
+      }
+      for (const metric of creatorTrackingMetricDefinitions) {
+        const score = Number(item.evaluationMetrics?.[metric.key] ?? 0);
+        const counts = metricScoreCounts[metric.key];
+        counts.set(score, (counts.get(score) ?? 0) + 1);
+      }
+      for (const value of new Set(item.coreTitles)) {
+        const creators = creatorsByCoreTitle.get(value) ?? new Set<string>();
         creators.add(item.creator);
-        creatorsByValue.set(value, creators);
+        creatorsByCoreTitle.set(value, creators);
+      }
+      for (const value of new Set(item.coreTags)) {
+        const creators = creatorsByCoreTag.get(value) ?? new Set<string>();
+        creators.add(item.creator);
+        creatorsByCoreTag.set(value, creators);
       }
     }
 
-    return [...creatorsByValue.entries()]
-      .map(([value, creators]) => ({ value, count: creators.size }))
-      .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value, 'ja-JP'));
+    const toOptions = (source: Map<string, Set<string>>) =>
+      [...source.entries()]
+        .map(([value, creators]) => ({ value, count: creators.size }))
+        .sort((left, right) => right.count - left.count || galleryCreatorNameCollator.compare(left.value, right.value));
+
+    return {
+      ratingCounts,
+      siteCounts,
+      overallRatingCounts,
+      metricScoreCounts,
+      coreTitleOptions: toOptions(creatorsByCoreTitle),
+      coreTagOptions: toOptions(creatorsByCoreTag)
+    };
   }
 
   function flushGalleryThumbnailRequests() {
@@ -5451,69 +7244,99 @@
     }
   }
 
-  function applyCachedGalleryThumbnailUris(value: unknown) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return;
-    }
-
-    const thumbnailUris = Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0));
-    const ids = Object.keys(thumbnailUris);
-    if (ids.length === 0) {
-      return;
-    }
-
-    for (const id of ids) {
-      requestedGalleryThumbnailIds.delete(id);
-      unavailableGalleryThumbnailIds.delete(id);
-    }
-    galleryThumbnails = { ...galleryThumbnails, ...thumbnailUris };
+  function queueGalleryThumbnailResults(thumbnailUris: Record<string, string>) {
+    Object.assign(pendingGalleryThumbnailUris, thumbnailUris);
+    if (galleryThumbnailResultFrame) return;
+    galleryThumbnailResultFrame = window.requestAnimationFrame(() => {
+      galleryThumbnailResultFrame = 0;
+      const batch = pendingGalleryThumbnailUris;
+      pendingGalleryThumbnailUris = {};
+      galleryThumbnails = Object.assign(galleryThumbnails, batch);
+    });
   }
 
-  function queueGalleryThumbnailRequest(id: string, path: string, category: string) {
-    if (galleryThumbnails[id] || requestedGalleryThumbnailIds.has(id) || unavailableGalleryThumbnailIds.has(id)) {
+  function clearPendingGalleryThumbnailResults() {
+    if (galleryThumbnailResultFrame) {
+      window.cancelAnimationFrame(galleryThumbnailResultFrame);
+      galleryThumbnailResultFrame = 0;
+    }
+    pendingGalleryThumbnailUris = {};
+  }
+
+  function queueGalleryThumbnailRequest(id: string, path: string, category: string, priority = 10) {
+    const pendingRequest = pendingGalleryThumbnailRequests.get(id);
+    if (pendingRequest) {
+      if (priority > pendingRequest.priority) {
+        pendingGalleryThumbnailRequests.set(id, { ...pendingRequest, priority });
+      }
       return;
+    }
+    if (galleryThumbnails[id] || unavailableGalleryThumbnailIds.has(id)) {
+      return;
+    }
+
+    if (requestedGalleryThumbnailIds.has(id)) {
+      const previousPriority = requestedGalleryThumbnailPriorities.get(id) ?? 0;
+      if (priority <= previousPriority) {
+        return;
+      }
     }
 
     requestedGalleryThumbnailIds.add(id);
-    pendingGalleryThumbnailRequests.set(id, { id, path, category });
+    requestedGalleryThumbnailPriorities.set(id, priority);
+    pendingGalleryThumbnailRequests.set(id, { id, path, category, priority });
     if (!galleryThumbnailFlushFrame) {
       galleryThumbnailFlushFrame = window.requestAnimationFrame(flushGalleryThumbnailRequests);
     }
   }
 
-  function getGalleryThumbnailObserver() {
-    if (!galleryThumbnailObserver) {
-      galleryThumbnailObserver = new IntersectionObserver((entries) => {
+  function getGalleryThumbnailPrefetchObserver() {
+    if (!galleryThumbnailPrefetchObserver) {
+      galleryThumbnailPrefetchObserver = new IntersectionObserver((entries) => {
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
-          galleryThumbnailObserverCallbacks.get(entry.target)?.();
-          galleryThumbnailObserver?.unobserve(entry.target);
-          galleryThumbnailObserverCallbacks.delete(entry.target);
+          galleryThumbnailObserverCallbacks.get(entry.target)?.(10);
+          galleryThumbnailPrefetchObserver?.unobserve(entry.target);
         }
       }, { rootMargin: '700px' });
     }
-    return galleryThumbnailObserver;
+    return galleryThumbnailPrefetchObserver;
+  }
+
+  function getGalleryThumbnailViewportObserver() {
+    if (!galleryThumbnailViewportObserver) {
+      galleryThumbnailViewportObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          galleryThumbnailObserverCallbacks.get(entry.target)?.(100);
+          galleryThumbnailPrefetchObserver?.unobserve(entry.target);
+          galleryThumbnailViewportObserver?.unobserve(entry.target);
+          galleryThumbnailObserverCallbacks.delete(entry.target);
+        }
+      });
+    }
+    return galleryThumbnailViewportObserver;
   }
 
   function observeGalleryThumbnailSource(
     node: HTMLElement,
     getRequest: () => { id: string; path: string; category: string }) {
-    galleryThumbnailObserverCallbacks.set(node, () => {
+    galleryThumbnailObserverCallbacks.set(node, (priority) => {
       const request = getRequest();
-      queueGalleryThumbnailRequest(request.id, request.path, request.category);
+      queueGalleryThumbnailRequest(request.id, request.path, request.category, priority);
     });
-    getGalleryThumbnailObserver().observe(node);
+    getGalleryThumbnailPrefetchObserver().observe(node);
+    getGalleryThumbnailViewportObserver().observe(node);
     return {
       update() {
-        galleryThumbnailObserverCallbacks.set(node, () => {
+        galleryThumbnailObserverCallbacks.set(node, (priority) => {
           const request = getRequest();
-          queueGalleryThumbnailRequest(request.id, request.path, request.category);
+          queueGalleryThumbnailRequest(request.id, request.path, request.category, priority);
         });
       },
       destroy() {
-        galleryThumbnailObserver?.unobserve(node);
+        galleryThumbnailPrefetchObserver?.unobserve(node);
+        galleryThumbnailViewportObserver?.unobserve(node);
         galleryThumbnailObserverCallbacks.delete(node);
       }
     };
@@ -5545,10 +7368,12 @@
     galleryPromotedCharacters = [];
     galleryPromotedTags = [];
     selectedGalleryWorkIds = new Set();
-    galleryWorks = [];
+    clearGalleryWorkItems();
     galleryTotal = 0;
+    clearPendingGalleryThumbnailResults();
     galleryThumbnails = {};
     requestedGalleryThumbnailIds.clear();
+    requestedGalleryThumbnailPriorities.clear();
     unavailableGalleryThumbnailIds.clear();
     activateView('library');
     loadGalleryWorks(false, galleryRatingFilters, true);
@@ -5606,33 +7431,6 @@
     persistNavigationState();
   }
 
-  function closeCreatorTrackingIndexTab(event: MouseEvent) {
-    event.stopPropagation();
-    const wasActive = creatorTrackingIndexActive;
-    creatorTrackingIndexOpen = false;
-    creatorTrackingIndexPendingSaveRequestId = '';
-    creatorTrackingIndexIsLoading = false;
-    if (!wasActive) {
-      persistNavigationState();
-      return;
-    }
-
-    const nextTab = creatorTrackingTabs[0];
-    if (nextTab) {
-      applyCreatorTrackingTab(nextTab);
-      persistNavigationState();
-      return;
-    }
-
-    activeCreatorTrackingTabId = '';
-    creatorTrackingSummary = null;
-    creatorTracking = null;
-    creatorTrackingDashboard = null;
-    creatorTrackingDashboardContext = null;
-    activateView('creators');
-    persistNavigationState();
-  }
-
   function getCreatorTrackingIndexAlertRank(item: CreatorTrackingIndexItem) {
     return item.followAlertFlg ? 2 : item.followWarnFlg ? 1 : 0;
   }
@@ -5645,6 +7443,8 @@
   function getVisibleCreatorTrackingIndexItems(
     items: CreatorTrackingIndexItem[],
     section: string,
+    query: string,
+    wishlistOnly: boolean,
     sortKey: CreatorTrackingIndexSortKey,
     sortDirection: CreatorTrackingIndexSortDirection) {
     const sectionItems = section === 'all'
@@ -5654,8 +7454,20 @@
             section,
             'ja-JP',
             { sensitivity: 'base' }) === 0));
+    const wishlistItems = wishlistOnly
+      ? sectionItems.filter(item => item.wishlist)
+      : sectionItems;
+    const filteredItems = query.trim()
+      ? wishlistItems.filter(item =>
+          matchesSearchValues([
+            item.creator,
+            item.displayName,
+            item.alternateName,
+            formatCreatorTrackingIndexName(item)
+          ], query))
+      : wishlistItems;
     const direction = sortDirection === 'asc' ? 1 : -1;
-    return [...sectionItems].sort((left, right) => {
+    return [...filteredItems].sort((left, right) => {
       let compared = 0;
       if (sortKey === 'lastChecked') {
         if (!left.lastCheckedOn && right.lastCheckedOn) return 1;
@@ -5664,6 +7476,9 @@
       }
       else if (sortKey === 'alert') {
         compared = getCreatorTrackingIndexAlertRank(left) - getCreatorTrackingIndexAlertRank(right);
+      }
+      else if (sortKey === 'new') {
+        compared = Number(left.isNewAfterScheduledScan) - Number(right.isNewAfterScheduledScan);
       }
       else {
         compared = (left.displayName || left.creator).localeCompare(
@@ -5700,6 +7515,17 @@
     persistNavigationState();
   }
 
+  function toggleCreatorTrackingIndexWishlist() {
+    creatorTrackingIndexWishlistOnly = !creatorTrackingIndexWishlistOnly;
+    persistNavigationState();
+  }
+
+  async function focusCreatorTrackingIndexSearch() {
+    await tick();
+    creatorTrackingIndexSearchElement?.focus();
+    creatorTrackingIndexSearchElement?.select();
+  }
+
   function openCreatorTrackingFromIndex(item: CreatorTrackingIndexItem) {
     const selectedCategory = creatorTrackingIndexSection !== 'all'
       && item.categories.includes(creatorTrackingIndexSection)
@@ -5732,6 +7558,7 @@
       indexSection: creatorTrackingIndexSection,
       indexSortKey: creatorTrackingIndexSortKey,
       indexSortDirection: creatorTrackingIndexSortDirection,
+      indexWishlistOnly: creatorTrackingIndexWishlistOnly,
       stickyNotes: []
     };
     return JSON.stringify(state);
@@ -5750,6 +7577,7 @@
     creatorTrackingBillingView = tab.billingView;
     creatorTrackingArchiveScale = tab.archiveScale;
     creatorTrackingRequestId = tab.requestId;
+    queueCreatorTrackingSummaryThumbnail(tab.summary);
   }
 
   function activateCreatorTrackingTab(tabId: string) {
@@ -5849,6 +7677,22 @@
 
   function handleGlobalShortcut(event: KeyboardEvent) {
     if (matchesKeyboardShortcut(event, 'openGlobalSearch')) {
+      if (activeView === 'explorer') {
+        event.preventDefault();
+        focusExplorerFilter();
+        return true;
+      }
+      if (activeView === 'creatorTracking') {
+        if (creatorTrackingIndexActive) {
+          event.preventDefault();
+          void focusCreatorTrackingIndexSearch();
+          return true;
+        }
+
+        // Leave Ctrl+F unhandled so WebView2 opens its standard in-page search.
+        return false;
+      }
+
       event.preventDefault();
       void openGlobalSearchDialog();
       return true;
@@ -6021,6 +7865,229 @@
     openCreatorTrackingForSummary(createCreatorTrackingTemplateSummary(creator, category, ''));
   }
 
+  function getActiveCreatorTrackingCategory() {
+    return activeCreatorTrackingCategoryId;
+  }
+
+  function getActiveCreatorTrackingCategoryProfile() {
+    return activeCreatorTrackingCategoryProfile;
+  }
+
+  function normalizeCreatorTrackingSettingsMetrics(
+    value: unknown,
+    fallback = defaultCreatorTrackingSettingsDraft.metrics) {
+    const receivedMetrics = Array.isArray(value) ? value : [];
+    return creatorTrackingMetricDefinitions.map((definition) => {
+      const received = receivedMetrics.find(
+        (candidate: Partial<CreatorTrackingSettingsMetricDraft>) => candidate?.key === definition.key);
+      const fallbackMetric = fallback.find(candidate => candidate.key === definition.key);
+      const weightPercent = received?.weightPercent === null || received?.weightPercent === undefined
+        ? fallbackMetric?.weightPercent ?? null
+        : Math.max(0, Math.min(100, Number(received.weightPercent) || 0));
+      return {
+        ...definition,
+        label: String(received?.label ?? fallbackMetric?.label ?? ''),
+        weight: (weightPercent ?? 0) / 100,
+        weightPercent
+      };
+    });
+  }
+
+  function getCreatorTrackingSettingsMetrics(
+    category: string,
+    settings = creatorTrackingSettingsDraft) {
+    const normalizedCategory = category?.trim() ?? '';
+    const key = Object.keys(settings.metricSettingsByCategory)
+      .find(candidate => candidate.localeCompare(normalizedCategory, 'ja-JP', { sensitivity: 'base' }) === 0);
+    return key
+      ? settings.metricSettingsByCategory[key]
+      : settings.metrics;
+  }
+
+  function getActiveCreatorTrackingMetricSettings() {
+    return activeCreatorTrackingMetricSettings;
+  }
+
+  function selectCreatorTrackingSettingsCategory(category: string) {
+    const normalizedCategory = category.trim();
+    if (!normalizedCategory) return;
+    const hasCategory = Object.keys(creatorTrackingSettingsDraft.metricSettingsByCategory)
+      .some(candidate => candidate.localeCompare(normalizedCategory, 'ja-JP', { sensitivity: 'base' }) === 0);
+    if (!hasCategory) {
+      creatorTrackingSettingsDraft = {
+        ...creatorTrackingSettingsDraft,
+        metricSettingsByCategory: {
+          ...creatorTrackingSettingsDraft.metricSettingsByCategory,
+          [normalizedCategory]: normalizeCreatorTrackingSettingsMetrics(
+            creatorTrackingSettingsDraft.metrics,
+            creatorTrackingSettingsDraft.metrics)
+        }
+      };
+    }
+    creatorTrackingSettingsCategory = normalizedCategory;
+  }
+
+  function recalculateCreatorTrackingProfileRatings(tracking: CreatorTracking | null) {
+    if (!tracking) return null;
+    const categoryProfiles = tracking.categoryProfiles.map(profile => ({
+      ...profile,
+      personalRating: calculateCreatorTrackingRating(profile.evaluationMetrics, profile.category)
+    }));
+    return {
+      ...tracking,
+      personalRating: categoryProfiles[0]?.personalRating ?? tracking.personalRating,
+      categoryProfiles
+    };
+  }
+
+  function refreshOpenCreatorTrackingRatings() {
+    creatorTracking = recalculateCreatorTrackingProfileRatings(creatorTracking);
+    creatorTrackingTabs = creatorTrackingTabs.map(tab => ({
+      ...tab,
+      tracking: tab.id === activeCreatorTrackingTabId
+        ? creatorTracking
+        : recalculateCreatorTrackingProfileRatings(tab.tracking)
+    }));
+  }
+
+  function buildCreatorTrackingCategoryProfileLabels(
+    profiles: CreatorTrackingCategoryProfile[],
+    sections: GallerySectionDefinition[]) {
+    return profiles
+      .map(profile => profile.category)
+      .map(category => ({
+        category,
+        label: sections.find(section => section.id === category)?.label ?? category
+      }))
+      .sort((left, right) => {
+        const leftIndex = sections.findIndex(section => section.id === left.category);
+        const rightIndex = sections.findIndex(section => section.id === right.category);
+        return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex)
+          - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
+      });
+  }
+
+  function buildUnusedCreatorTrackingCategories(
+    profiles: CreatorTrackingCategoryProfile[],
+    sections: GallerySectionDefinition[]) {
+    const used = new Set(
+      profiles
+        .map(profile => profile.category.toLocaleLowerCase('ja-JP')));
+    return sections.filter(section => !used.has(section.id.toLocaleLowerCase('ja-JP')));
+  }
+
+  function toggleCreatorTrackingCategoryPicker() {
+    creatorTrackingCategoryPicker = creatorTrackingCategoryPicker === 'toolbar' ? '' : 'toolbar';
+  }
+
+  async function addCreatorTrackingCategory(category: string) {
+    if (!creatorTracking || !category.trim()) return;
+    const normalizedCategory = category.trim();
+    if (!creatorTracking.categoryProfiles.some(profile =>
+      profile.category.localeCompare(normalizedCategory, 'ja-JP', { sensitivity: 'base' }) === 0)) {
+      creatorTracking = {
+        ...creatorTracking,
+        categoryProfiles: [
+          ...creatorTracking.categoryProfiles,
+          createCreatorTrackingCategoryProfile(normalizedCategory)
+        ]
+      };
+      markCreatorTrackingDirty();
+      syncActiveCreatorTrackingTab();
+    }
+    creatorTrackingCategoryPicker = '';
+    await tick();
+    switchCreatorTrackingCategory(normalizedCategory);
+  }
+
+  function requestCreatorTrackingCategoryDelete(category: string) {
+    if (!creatorTracking || !category.trim()) return;
+    if (creatorTracking.categoryProfiles.length <= 1) {
+      showExplorerToast('最後の区分は削除できません。', 'error');
+      return;
+    }
+    creatorTrackingCategoryDeleteTarget = category.trim();
+    creatorTrackingCategoryPicker = '';
+  }
+
+  function cancelCreatorTrackingCategoryDelete() {
+    creatorTrackingCategoryDeleteTarget = '';
+  }
+
+  function confirmCreatorTrackingCategoryDelete() {
+    if (!creatorTracking || !creatorTrackingCategoryDeleteTarget) return;
+    const targetCategory = creatorTrackingCategoryDeleteTarget;
+    const remainingProfiles = creatorTracking.categoryProfiles.filter(profile =>
+      profile.category.localeCompare(targetCategory, 'ja-JP', { sensitivity: 'base' }) !== 0);
+    if (remainingProfiles.length === 0) {
+      cancelCreatorTrackingCategoryDelete();
+      showExplorerToast('最後の区分は削除できません。', 'error');
+      return;
+    }
+
+    const wasActive = activeCreatorTrackingCategoryId.localeCompare(
+      targetCategory,
+      'ja-JP',
+      { sensitivity: 'base' }) === 0;
+    creatorTracking = {
+      ...creatorTracking,
+      categoryProfiles: remainingProfiles
+    };
+    creatorTrackingCategoryDeleteTarget = '';
+    markCreatorTrackingDirty();
+    if (wasActive) {
+      switchCreatorTrackingCategory(remainingProfiles[0].category);
+    }
+    saveCreatorTracking();
+    showExplorerToast(
+      `${getGallerySectionLabel(targetCategory)}をCreator Trackingから削除しました。`,
+      'success');
+  }
+
+  function switchCreatorTrackingCategory(category: string) {
+    if (!creatorTracking || !category.trim()) return;
+    const normalizedCategory = category.trim();
+    if (!creatorTracking.categoryProfiles.some(profile =>
+      profile.category.localeCompare(normalizedCategory, 'ja-JP', { sensitivity: 'base' }) === 0)) {
+      return;
+    }
+    if (getActiveCreatorTrackingCategory().localeCompare(
+      normalizedCategory,
+      'ja-JP',
+      { sensitivity: 'base' }) === 0
+      && creatorTrackingDashboard?.category.localeCompare(
+        normalizedCategory,
+        'ja-JP',
+        { sensitivity: 'base' }) === 0
+      && !creatorTrackingDashboardSwitching) {
+      return;
+    }
+    const creator = creatorTracking.creator;
+    const summary = galleryCreatorSummaries.find(item =>
+      item.category.localeCompare(normalizedCategory, 'ja-JP', { sensitivity: 'base' }) === 0
+      && item.creator.localeCompare(creator, 'ja-JP', { sensitivity: 'base' }) === 0)
+      ?? createCreatorTrackingTemplateSummary(
+        creator,
+        normalizedCategory,
+        creatorTracking.storageLocations.find(location => location.usage === 'Gallery')?.path ?? '');
+    const dashboardContext = buildCreatorTrackingDashboardContext(summary);
+    creatorTrackingSummary = summary;
+    creatorTrackingDashboardContext = dashboardContext;
+    creatorTrackingDashboardSwitching = creatorTrackingDashboard !== null;
+    creatorTrackingSummaryEditMode = false;
+    creatorTrackingCategoryPicker = '';
+    creatorTrackingError = '';
+    creatorTrackingDashboardCategoryRequestId = `creator-tracking-dashboard-${nextCreatorTrackingRequestId++}`;
+    syncActiveCreatorTrackingTab();
+    postHostMessage({
+      type: 'creator.tracking.dashboard.get',
+      requestId: creatorTrackingDashboardCategoryRequestId,
+      creator,
+      tracking: creatorTracking,
+      dashboardContext
+    });
+  }
+
   function openCreatorTracking(event: MouseEvent, item: GalleryCreatorSummary) {
     event.preventDefault();
     event.stopPropagation();
@@ -6029,10 +8096,12 @@
 
   function openCreatorTrackingForSummary(item: GalleryCreatorSummary) {
     const existingTab = creatorTrackingTabs.find(tab =>
-      tab.summary.category === item.category &&
       tab.creator.trim().localeCompare(item.creator.trim(), 'ja-JP', { sensitivity: 'base' }) === 0);
     if (existingTab) {
       activateCreatorTrackingTab(existingTab.id);
+      if (existingTab.summary.category !== item.category) {
+        switchCreatorTrackingCategory(item.category);
+      }
       return;
     }
 
@@ -6042,6 +8111,35 @@
     applyCreatorTrackingTab(tab);
     activateView('creatorTracking');
     persistNavigationState();
+  }
+
+  function upsertGalleryCreatorSummary(summary: GalleryCreatorSummary) {
+    const existingIndex = galleryCreatorSummaries.findIndex(item => item.id === summary.id);
+    galleryCreatorSummaries = existingIndex >= 0
+      ? galleryCreatorSummaries.map(item => item.id === summary.id ? summary : item)
+      : [...galleryCreatorSummaries, summary];
+  }
+
+  function queueCreatorTrackingSummaryThumbnail(
+    summary: GalleryCreatorSummary | null | undefined,
+    forceRefresh = false) {
+    if (!summary?.id || !summary.creatorFolder?.trim()) return;
+    if (forceRefresh) {
+      if (galleryThumbnails[summary.id]) {
+        const nextThumbnails = { ...galleryThumbnails };
+        delete nextThumbnails[summary.id];
+        galleryThumbnails = nextThumbnails;
+      }
+      pendingGalleryThumbnailRequests.delete(summary.id);
+      requestedGalleryThumbnailIds.delete(summary.id);
+      requestedGalleryThumbnailPriorities.delete(summary.id);
+      unavailableGalleryThumbnailIds.delete(summary.id);
+    }
+    queueGalleryThumbnailRequest(
+      summary.id,
+      summary.creatorFolder,
+      summary.category,
+      100);
   }
 
   function openSelectedGalleryCreatorTracking() {
@@ -6221,6 +8319,9 @@
       zipFileCount: 0,
       totalImageCount: 0,
       averageImageCount: 0,
+      videoFileCount: 0,
+      totalDurationSeconds: 0,
+      averageDurationSeconds: 0,
       ratedFileCount: 0,
       maxRating: 0,
       lastAccessTime: '',
@@ -6578,6 +8679,52 @@
     markCreatorTrackingDirty();
   }
 
+  function addCreatorTrackingTask() {
+    if (!creatorTracking) return;
+    const today = formatCreatorTrackingInputDate(new Date());
+    creatorTracking = {
+      ...creatorTracking,
+      tasks: [
+        ...creatorTracking.tasks,
+        {
+          id: createCreatorTrackingHistoryId('task'),
+          category: creatorTrackingSettingsDraft.taskCategories[0] ?? '',
+          name: '',
+          startedOn: today,
+          endedOn: today,
+          alertFrequency: 'none'
+        }
+      ]
+    };
+    markCreatorTrackingDirty();
+  }
+
+  function updateCreatorTrackingTask(index: number, patch: Partial<CreatorTrackingTask>) {
+    if (!creatorTracking) return;
+    creatorTracking = {
+      ...creatorTracking,
+      tasks: creatorTracking.tasks.map((task, candidateIndex) =>
+        candidateIndex === index ? { ...task, ...patch } : task)
+    };
+    markCreatorTrackingDirty();
+  }
+
+  function setCreatorTrackingTaskEndToStart(index: number) {
+    if (!creatorTracking) return;
+    const task = creatorTracking.tasks[index];
+    if (!task) return;
+    updateCreatorTrackingTask(index, { endedOn: task.startedOn });
+  }
+
+  function removeCreatorTrackingTask(index: number) {
+    if (!creatorTracking) return;
+    creatorTracking = {
+      ...creatorTracking,
+      tasks: creatorTracking.tasks.filter((_, candidateIndex) => candidateIndex !== index)
+    };
+    markCreatorTrackingDirty();
+  }
+
   function addCreatorTrackingPurchase() {
     if (!creatorTracking) return;
     creatorTracking = {
@@ -6685,8 +8832,8 @@
       const usage = location.usage === 'Gallery' || location.usage === 'Stockroom' || location.usage === 'Temporary'
         ? location.usage
         : null;
-      if (!usage || (usage !== 'Temporary' && usedSingletons.has(usage))) continue;
-      if (usage !== 'Temporary') usedSingletons.add(usage);
+      if (!usage || (usage === 'Stockroom' && usedSingletons.has(usage))) continue;
+      if (usage === 'Stockroom') usedSingletons.add(usage);
       result.push({
         id: String(location.id ?? '').trim() || createCreatorTrackingHistoryId('storage'),
         usage,
@@ -6711,11 +8858,17 @@
   }
 
   function getCreatorTrackingStorageUsageOptions(locationId: string) {
-    const used = new Set((creatorTracking?.storageLocations ?? [])
-      .filter(location => location.id !== locationId && location.usage !== 'Temporary')
-      .map(location => location.usage));
+    const currentLocation = creatorTracking?.storageLocations.find(location => location.id === locationId);
+    const otherLocations = (creatorTracking?.storageLocations ?? [])
+      .filter(location => location.id !== locationId);
+    const galleryLimit = Math.max(1, creatorTracking?.categoryProfiles.length ?? 1);
+    const galleryCount = otherLocations.filter(location => location.usage === 'Gallery').length;
+    const stockroomUsed = otherLocations.some(location => location.usage === 'Stockroom');
     return (['Gallery', 'Stockroom', 'Temporary'] as CreatorTrackingStorageUsage[])
-      .filter(usage => usage === 'Temporary' || !used.has(usage));
+      .filter(usage =>
+        usage === 'Temporary'
+        || (usage === 'Gallery' && (currentLocation?.usage === 'Gallery' || galleryCount < galleryLimit))
+        || (usage === 'Stockroom' && (currentLocation?.usage === 'Stockroom' || !stockroomUsed)));
   }
 
   function addCreatorTrackingStorageLocation() {
@@ -6735,8 +8888,17 @@
   }
 
   function removeCreatorTrackingStorageLocation(location: CreatorTrackingStorageLocation) {
-    if (!creatorTracking || location.usage !== 'Temporary') return;
+    if (!creatorTracking || !canRemoveCreatorTrackingStorageLocation(location)) return;
     applyCreatorTrackingStorageLocations(creatorTracking.storageLocations.filter(candidate => candidate.id !== location.id));
+  }
+
+  function canRemoveCreatorTrackingStorageLocation(location: CreatorTrackingStorageLocation) {
+    if (!creatorTracking) return false;
+    if (location.usage === 'Temporary') return true;
+    if (location.usage === 'Gallery') {
+      return creatorTracking.storageLocations.filter(candidate => candidate.usage === 'Gallery').length > 1;
+    }
+    return false;
   }
 
   function openCreatorTrackingStorageLocation(location: CreatorTrackingStorageLocation) {
@@ -6752,9 +8914,17 @@
     return usages.has('Gallery') && usages.has('Stockroom');
   }
 
+  function getActiveCreatorTrackingGalleryStorageLocation() {
+    const galleryLocations = (creatorTracking?.storageLocations ?? [])
+      .filter(location => location.usage === 'Gallery');
+    return galleryLocations.find(location =>
+      getGalleryCategoryForExplorerPath(location.path) === activeCreatorTrackingCategoryId)
+      ?? galleryLocations[0];
+  }
+
   function openCreatorTrackingStorageSplit() {
     if (!creatorTracking || !canOpenCreatorTrackingStorageSplit()) return;
-    const gallery = creatorTracking.storageLocations.find(location => location.usage === 'Gallery');
+    const gallery = getActiveCreatorTrackingGalleryStorageLocation();
     const stockroom = creatorTracking.storageLocations.find(location => location.usage === 'Stockroom');
     if (!gallery?.path.trim() || !stockroom?.path.trim()) {
       showExplorerToast('GalleryとStockroomの両方にフォルダパスを入力してください。', 'error');
@@ -6767,7 +8937,39 @@
       'GalleryとStockroomの両方のフォルダを確認できないため、分割表示を開けませんでした。');
   }
 
-  function normalizeCreatorTracking(tracking: CreatorTracking): CreatorTracking {
+  function normalizeCreatorTrackingSummaryCardIds(value: unknown): CreatorTrackingSummaryCardId[] {
+    const allowed = new Set(creatorTrackingSummaryCardOptions.map(option => option.id));
+    const normalized = Array.isArray(value)
+      ? value.map(item => String(item) as CreatorTrackingSummaryCardId)
+          .filter((item, index, items) => allowed.has(item) && items.indexOf(item) === index)
+      : [];
+    for (const fallback of defaultCreatorTrackingSummaryCardIds) {
+      if (normalized.length >= 6) break;
+      if (!normalized.includes(fallback)) normalized.push(fallback);
+    }
+    return normalized.slice(0, 6);
+  }
+
+  function createCreatorTrackingCategoryProfile(
+    category: string,
+    sourceMetrics?: Partial<Record<CreatorTrackingMetricKey, number>>,
+    evaluationMemo = ''): CreatorTrackingCategoryProfile {
+    const metrics = {} as Record<CreatorTrackingMetricKey, number>;
+    for (const metric of creatorTrackingMetricDefinitions) {
+      metrics[metric.key] = normalizeCreatorTrackingMetric(sourceMetrics?.[metric.key], 1);
+    }
+    return {
+      category,
+      evaluationMetrics: metrics,
+      personalRating: calculateCreatorTrackingRating(metrics, category),
+      evaluationMemo,
+      summaryCardIds: [...defaultCreatorTrackingSummaryCardIds]
+    };
+  }
+
+  function normalizeCreatorTracking(
+    tracking: CreatorTracking,
+    fallbackCategory = ''): CreatorTracking {
     const legacyFallback = tracking.personalRating > 0
       ? Math.max(1, Math.min(4, Math.round(tracking.personalRating / 1.25)))
       : 1;
@@ -6775,6 +8977,29 @@
     const evaluationMetrics = {} as Record<CreatorTrackingMetricKey, number>;
     for (const metric of creatorTrackingMetricDefinitions) {
       evaluationMetrics[metric.key] = normalizeCreatorTrackingMetric(sourceMetrics[metric.key], legacyFallback);
+    }
+    const categoryProfiles = (Array.isArray(tracking.categoryProfiles) ? tracking.categoryProfiles : [])
+      .map(profile => {
+        const category = String(profile?.category ?? '').trim();
+        if (!category) return null;
+        const normalizedProfile = createCreatorTrackingCategoryProfile(
+          category,
+          profile.evaluationMetrics,
+          String(profile.evaluationMemo ?? ''));
+        return {
+          ...normalizedProfile,
+          summaryCardIds: normalizeCreatorTrackingSummaryCardIds(profile.summaryCardIds)
+        };
+      })
+      .filter((profile): profile is CreatorTrackingCategoryProfile => profile !== null);
+    if (categoryProfiles.length === 0 && fallbackCategory.trim()) {
+      categoryProfiles.push({
+        ...createCreatorTrackingCategoryProfile(
+          fallbackCategory.trim(),
+          evaluationMetrics,
+          tracking.evaluationMemo ?? ''),
+        personalRating: calculateCreatorTrackingRating(evaluationMetrics, fallbackCategory.trim())
+      });
     }
 
     const storageLocations = normalizeCreatorTrackingStorageLocations(
@@ -6802,11 +9027,24 @@
           }))
         : [],
       purchaseHistory: Array.isArray(tracking.purchaseHistory) ? tracking.purchaseHistory : [],
+      tasks: Array.isArray(tracking.tasks)
+        ? tracking.tasks.map(task => ({
+            id: String(task.id ?? createCreatorTrackingHistoryId('task')),
+            category: String(task.category ?? ''),
+            name: String(task.name ?? ''),
+            startedOn: String(task.startedOn ?? ''),
+            endedOn: String(task.endedOn ?? ''),
+            alertFrequency: task.alertFrequency === 'daily' || task.alertFrequency === 'end'
+              ? task.alertFrequency
+              : 'none'
+          }))
+        : [],
       storageLocations,
       mainStoragePath: storageLocations.find(location => location.usage === 'Gallery')?.path ?? '',
       workStoragePath: storageLocations.find(location => location.usage === 'Stockroom')?.path ?? '',
       evaluationMetrics,
-      personalRating: calculateCreatorTrackingRating(evaluationMetrics)
+      personalRating: calculateCreatorTrackingRating(evaluationMetrics, fallbackCategory),
+      categoryProfiles
     };
   }
 
@@ -7138,8 +9376,10 @@
     }).join(' ');
   }
 
-  function calculateCreatorTrackingRating(metrics: Record<CreatorTrackingMetricKey, number>) {
-    const weightedRating = creatorTrackingSettingsDraft.metrics.reduce(
+  function calculateCreatorTrackingRating(
+    metrics: Record<CreatorTrackingMetricKey, number>,
+    category = getActiveCreatorTrackingCategory()) {
+    const weightedRating = getCreatorTrackingSettingsMetrics(category).reduce(
       (total, metric) => total + normalizeCreatorTrackingMetric(metrics[metric.key]) * Number(metric.weightPercent ?? 0) / 100,
       0);
     return Math.floor((weightedRating * 1.25 + 1e-9) * 10) / 10;
@@ -7147,21 +9387,147 @@
 
   function setCreatorTrackingMetric(key: CreatorTrackingMetricKey, value: number) {
     if (!creatorTracking) return;
+    const activeCategory = getActiveCreatorTrackingCategory();
+    const activeProfile = getActiveCreatorTrackingCategoryProfile();
+    if (!activeProfile) return;
     const evaluationMetrics = {
-      ...creatorTracking.evaluationMetrics,
+      ...activeProfile.evaluationMetrics,
       [key]: normalizeCreatorTrackingMetric(value)
     };
+    const personalRating = calculateCreatorTrackingRating(evaluationMetrics, activeCategory);
     creatorTracking = {
       ...creatorTracking,
-      evaluationMetrics,
-      personalRating: calculateCreatorTrackingRating(evaluationMetrics)
+      categoryProfiles: creatorTracking.categoryProfiles.map(profile =>
+        profile.category.localeCompare(activeCategory, 'ja-JP', { sensitivity: 'base' }) === 0
+          ? { ...profile, evaluationMetrics, personalRating }
+          : profile)
     };
     markCreatorTrackingDirty();
   }
 
   function getCreatorTrackingStarFill(starIndex: number) {
-    if (!creatorTracking) return 0;
-    return Math.max(0, Math.min(1, creatorTracking.personalRating - starIndex)) * 100;
+    const profile = getActiveCreatorTrackingCategoryProfile();
+    if (!profile) return 0;
+    return Math.max(0, Math.min(1, profile.personalRating - starIndex)) * 100;
+  }
+
+  function setCreatorTrackingSummaryCard(index: number, cardId: CreatorTrackingSummaryCardId) {
+    if (!creatorTracking) return;
+    const activeCategory = getActiveCreatorTrackingCategory();
+    const activeProfile = getActiveCreatorTrackingCategoryProfile();
+    if (!activeProfile) return;
+    const cards = [...activeProfile.summaryCardIds];
+    const previousIndex = cards.indexOf(cardId);
+    if (previousIndex >= 0 && previousIndex !== index) {
+      [cards[index], cards[previousIndex]] = [cards[previousIndex], cards[index]];
+    }
+    else {
+      cards[index] = cardId;
+    }
+    creatorTracking = {
+      ...creatorTracking,
+      categoryProfiles: creatorTracking.categoryProfiles.map(profile =>
+        profile.category.localeCompare(activeCategory, 'ja-JP', { sensitivity: 'base' }) === 0
+          ? { ...profile, summaryCardIds: normalizeCreatorTrackingSummaryCardIds(cards) }
+          : profile)
+    };
+    markCreatorTrackingDirty();
+  }
+
+  function resetCreatorTrackingSummaryCards() {
+    if (!creatorTracking) return;
+    const activeCategory = getActiveCreatorTrackingCategory();
+    creatorTracking = {
+      ...creatorTracking,
+      categoryProfiles: creatorTracking.categoryProfiles.map(profile =>
+        profile.category.localeCompare(activeCategory, 'ja-JP', { sensitivity: 'base' }) === 0
+          ? { ...profile, summaryCardIds: [...defaultCreatorTrackingSummaryCardIds] }
+          : profile)
+    };
+    markCreatorTrackingDirty();
+  }
+
+  function formatCreatorTrackingDurationParts(seconds: number): CreatorTrackingCardValuePart[] {
+    const safeSeconds = Math.max(0, Math.round(Number(seconds) || 0));
+    const hours = Math.floor(safeSeconds / 3600);
+    const minutes = Math.floor((safeSeconds % 3600) / 60);
+    if (hours > 0) {
+      return [
+        { text: hours.toLocaleString('ja-JP') },
+        { text: '時間', unit: true },
+        { text: ` ${minutes.toLocaleString('ja-JP')}` },
+        { text: '分', unit: true }
+      ];
+    }
+    return [
+      { text: minutes.toLocaleString('ja-JP') },
+      { text: '分', unit: true }
+    ];
+  }
+
+  function getCreatorTrackingLatestAddedTime() {
+    const creator = creatorTracking?.creator?.trim();
+    if (!creator) return '';
+    return galleryCreatorSummaries
+      .filter(summary => summary.creator.localeCompare(creator, 'ja-JP', { sensitivity: 'base' }) === 0)
+      .map(summary => summary.lastUpdatedTime)
+      .filter(Boolean)
+      .sort((left, right) => right.localeCompare(left))[0] ?? '';
+  }
+
+  function getCreatorTrackingCardLabel(cardId: CreatorTrackingSummaryCardId) {
+    return creatorTrackingSummaryCardOptions.find(option => option.id === cardId)?.label ?? cardId;
+  }
+
+  function getCreatorTrackingCardValueParts(
+    cardId: CreatorTrackingSummaryCardId
+  ): CreatorTrackingCardValuePart[] {
+    const dashboard = creatorTrackingDashboard;
+    const summary = creatorTrackingSummary;
+    const value = (text: string): CreatorTrackingCardValuePart[] => [{ text }];
+    if (!dashboard || !summary) return value('-');
+    if (cardId === 'totalFiles') return value(dashboard.fileCount.toLocaleString('ja-JP'));
+    if (cardId === 'totalImages') return value(dashboard.totalImageCount.toLocaleString('ja-JP'));
+    if (cardId === 'totalRating') return value(dashboard.totalRating.toLocaleString('ja-JP'));
+    if (cardId === 'trackingDays') {
+      return [
+        { text: dashboard.trackingDays.toLocaleString('ja-JP') },
+        { text: '日', unit: true }
+      ];
+    }
+    if (cardId === 'totalSpend' || cardId === 'recentSpend') {
+      const amount = cardId === 'totalSpend'
+        ? dashboard.totalSpend
+        : dashboard.recentThreeMonthSpend;
+      return [
+        { text: formatCreatorTrackingSpendAmount(amount, dashboard.currency) },
+        { text: dashboard.currency, unit: true }
+      ];
+    }
+    if (cardId === 'videoFiles') return value(summary.videoFileCount.toLocaleString('ja-JP'));
+    if (cardId === 'totalDuration') {
+      return formatCreatorTrackingDurationParts(summary.totalDurationSeconds);
+    }
+    if (cardId === 'averageDuration') {
+      return formatCreatorTrackingDurationParts(summary.averageDurationSeconds);
+    }
+    if (cardId === 'averageImages') return value(summary.averageImageCount.toLocaleString('ja-JP'));
+    if (cardId === 'ratedFiles') return value(summary.ratedFileCount.toLocaleString('ja-JP'));
+    if (cardId === 'maxRating') return value(summary.maxRating.toLocaleString('ja-JP'));
+    if (cardId === 'lastAdded') return value(formatGalleryDate(getCreatorTrackingLatestAddedTime()));
+    return value('-');
+  }
+
+  function getCreatorTrackingCardRank(cardId: CreatorTrackingSummaryCardId) {
+    const dashboard = creatorTrackingDashboard;
+    if (!dashboard) return null;
+    if (cardId === 'totalFiles') return { rank: dashboard.fileRank, total: dashboard.creatorCount };
+    if (cardId === 'totalImages') return { rank: dashboard.totalImageCountRank, total: dashboard.creatorCount };
+    if (cardId === 'totalRating') return { rank: dashboard.totalRatingRank, total: dashboard.creatorCount };
+    if (cardId === 'trackingDays') return { rank: dashboard.trackingDaysRank, total: dashboard.creatorCount };
+    if (cardId === 'totalSpend') return { rank: dashboard.totalSpendRank, total: dashboard.creatorCount };
+    if (cardId === 'recentSpend') return { rank: dashboard.recentThreeMonthSpendRank, total: dashboard.creatorCount };
+    return null;
   }
 
   function getCreatorTrackingRadarPoint(index: number, value: number, radius = 84) {
@@ -7302,7 +9668,7 @@
     }
 
     const result = query
-      ? assignment.creatorTitleTags.filter((option) => option.searchText.includes(query))
+      ? assignment.creatorTitleTags.filter((option) => matchesSearchValues([option.searchText], query))
       : assignment.creatorTitleTags;
     galleryTagAssignmentCreatorFilterCache = { source: assignment.creatorTitleTags, query, result };
     return result;
@@ -7316,7 +9682,7 @@
     }
 
     const result = query
-      ? assignment.availableTags.filter((option) => option.searchText.includes(query))
+      ? assignment.availableTags.filter((option) => matchesSearchValues([option.searchText], query))
       : assignment.availableTags;
     galleryTagAssignmentAvailableFilterCache = { source: assignment.availableTags, query, result };
     return result;
@@ -7404,10 +9770,159 @@
     galleryTagAssignmentReturnPending = false;
   }
 
-  function openGalleryTitleAssignment(sourceWork: GalleryWork | null = galleryContextTargetWork ?? galleryContextMenu?.work ?? null) {
+  function getVisibleAiAttributeReviewItems(
+    items: AiAttributeInferenceReviewItem[],
+    queryText: string
+  ) {
+    const query = queryText.trim();
+    if (!query) {
+      return items;
+    }
+    return items.filter((item) => matchesSearchValues(
+      [item.name, item.creator, item.category, item.path, item.reason],
+      query));
+  }
+
+  function requestAiAttributeReviews() {
+    aiAttributeReviewLoading = true;
+    postHostMessage({ type: 'ai.attributeReview.list' });
+  }
+
+  function setAiAttributeReviewItems(items: AiAttributeInferenceReviewItem[]) {
+    const previousIndex = Math.max(
+      0,
+      aiAttributeReviewItems.findIndex((item) => item.gid === aiAttributeReviewSelectedGid));
+    aiAttributeReviewItems = items;
+    if (!items.some((item) => item.gid === aiAttributeReviewSelectedGid)) {
+      aiAttributeReviewSelectedGid =
+        items[Math.min(previousIndex, Math.max(0, items.length - 1))]?.gid ?? '';
+    }
+    const selected = items.find((item) => item.gid === aiAttributeReviewSelectedGid)
+      ?? items[0];
+    if (selected) {
+      queueGalleryThumbnailRequest(
+        `ai-review:${selected.gid}`,
+        selected.path,
+        selected.category,
+        1_500);
+    }
+    aiAttributeReviewLoading = false;
+  }
+
+  function openAiAttributeReview() {
+    aiAttributeReviewOpen = true;
+    aiAttributeReviewRenderLimit = 200;
+    requestAiAttributeReviews();
+  }
+
+  function beginAiAttributeReviewMove(event: PointerEvent) {
+    if (event.button !== 0 ||
+        (event.target as HTMLElement).closest('button, input, select, textarea')) {
+      return;
+    }
+
+    event.preventDefault();
+    const owner = event.currentTarget as HTMLElement;
+    const modal = owner.closest<HTMLElement>('.ai-attribute-review-modal');
+    if (!modal) {
+      return;
+    }
+
+    owner.setPointerCapture(event.pointerId);
+    const startPointer = { x: event.clientX, y: event.clientY };
+    const startPosition = aiAttributeReviewPosition;
+    const startRect = modal.getBoundingClientRect();
+    const move = (moveEvent: PointerEvent) => {
+      const deltaX = Math.min(
+        window.innerWidth - 8 - startRect.right,
+        Math.max(8 - startRect.left, moveEvent.clientX - startPointer.x));
+      const deltaY = Math.min(
+        window.innerHeight - 8 - startRect.bottom,
+        Math.max(8 - startRect.top, moveEvent.clientY - startPointer.y));
+      aiAttributeReviewPosition = {
+        x: startPosition.x + deltaX,
+        y: startPosition.y + deltaY
+      };
+    };
+    const finish = () => {
+      owner.removeEventListener('pointermove', move);
+      owner.removeEventListener('pointerup', finish);
+      owner.removeEventListener('pointercancel', finish);
+      if (owner.hasPointerCapture(event.pointerId)) {
+        owner.releasePointerCapture(event.pointerId);
+      }
+    };
+    owner.addEventListener('pointermove', move);
+    owner.addEventListener('pointerup', finish);
+    owner.addEventListener('pointercancel', finish);
+  }
+
+  function showMoreAiAttributeReviews() {
+    aiAttributeReviewRenderLimit = Math.min(
+      visibleAiAttributeReviewItems.length,
+      aiAttributeReviewRenderLimit + 200);
+  }
+
+  function closeAiAttributeReview() {
+    if (galleryTitleAssignment || aiAttributeReviewEditingPath) {
+      return;
+    }
+    aiAttributeReviewOpen = false;
+  }
+
+  function selectAiAttributeReview(item: AiAttributeInferenceReviewItem) {
+    aiAttributeReviewSelectedGid = item.gid;
+    queueGalleryThumbnailRequest(`ai-review:${item.gid}`, item.path, item.category, 1_500);
+  }
+
+  function createGalleryWorkFromReview(item: AiAttributeInferenceReviewItem): GalleryWork {
+    return {
+      id: item.gid,
+      path: item.path,
+      name: item.name,
+      category: item.category,
+      topFolder: '',
+      creator: item.creator,
+      title: '',
+      character: '',
+      rating: 0,
+      imageCount: item.imageCount,
+      durationSeconds: null,
+      lastAccessTime: '',
+      lastWriteTime: '',
+      tags: []
+    };
+  }
+
+  function editSelectedAiAttributeReview() {
+    if (!selectedAiAttributeReviewItem) {
+      return;
+    }
+    aiAttributeReviewEditingPath = selectedAiAttributeReviewItem.path;
+    openGalleryTitleAssignment(
+      createGalleryWorkFromReview(selectedAiAttributeReviewItem),
+      true);
+  }
+
+  function resolveSelectedAiAttributeReview() {
+    if (!selectedAiAttributeReviewItem || aiAttributeReviewLoading) {
+      return;
+    }
+    aiAttributeReviewLoading = true;
+    postHostMessage({
+      type: 'ai.attributeReview.resolve',
+      paths: [selectedAiAttributeReviewItem.path]
+    });
+  }
+
+  function openGalleryTitleAssignment(
+    sourceWork: GalleryWork | null = galleryContextTargetWork ?? galleryContextMenu?.work ?? null,
+    forceSingleWork = false) {
     try {
       closeGalleryContextMenu();
-      let works = galleryWorks.filter((work) => selectedGalleryWorkIds.has(work.id));
+      let works = forceSingleWork && sourceWork
+        ? [sourceWork]
+        : galleryWorks.filter((work) => selectedGalleryWorkIds.has(work.id));
       if (works.length === 0 && sourceWork) {
         works = [sourceWork];
       }
@@ -7497,7 +10012,7 @@
 
     const result = assignment.availableTitles.filter((option) =>
       (!assignment.categoryFilter || option.categoryName === assignment.categoryFilter) &&
-      (!query || option.searchText.includes(query)));
+      (!query || matchesSearchValues([option.searchText], query)));
     galleryTitleAssignmentAvailableFilterCache = {
       source: assignment.availableTitles,
       query,
@@ -7515,7 +10030,7 @@
     }
 
     const result = query
-      ? assignment.creatorTitles.filter((option) => option.searchText.includes(query))
+      ? assignment.creatorTitles.filter((option) => matchesSearchValues([option.searchText], query))
       : assignment.creatorTitles;
     galleryTitleAssignmentCreatorFilterCache = { source: assignment.creatorTitles, query, result };
     return result;
@@ -7578,7 +10093,7 @@
     }
 
     const result = query
-      ? assignment.creatorTitleCharacters.filter((option) => option.searchText.includes(query))
+      ? assignment.creatorTitleCharacters.filter((option) => matchesSearchValues([option.searchText], query))
       : assignment.creatorTitleCharacters;
     galleryTitleAssignmentCharacterCreatorFilterCache = { source: assignment.creatorTitleCharacters, query, result };
     return result;
@@ -7592,7 +10107,7 @@
     }
 
     const result = query
-      ? assignment.availableCharacters.filter((option) => option.searchText.includes(query))
+      ? assignment.availableCharacters.filter((option) => matchesSearchValues([option.searchText], query))
       : assignment.availableCharacters;
     galleryTitleAssignmentCharacterAvailableFilterCache = { source: assignment.availableCharacters, query, result };
     return result;
@@ -7723,6 +10238,7 @@
     pendingGalleryTitleAssignmentSelectedTitleId = null;
     pendingGalleryTitleAssignmentSelectedCharacterId = null;
     pendingGalleryTitleAssignmentCharacterParentTitleId = null;
+    aiAttributeReviewEditingPath = '';
   }
 
   function openGalleryCharacterAssignment(sourceWork: GalleryWork | null = galleryContextTargetWork ?? galleryContextMenu?.work ?? null) {
@@ -7808,7 +10324,7 @@
     }
 
     const result = query
-      ? assignment.creatorTitleCharacters.filter((option) => option.searchText.includes(query))
+      ? assignment.creatorTitleCharacters.filter((option) => matchesSearchValues([option.searchText], query))
       : assignment.creatorTitleCharacters;
     galleryCharacterAssignmentCreatorFilterCache = { source: assignment.creatorTitleCharacters, query, result };
     return result;
@@ -7822,7 +10338,7 @@
     }
 
     const result = query
-      ? assignment.availableCharacters.filter((option) => option.searchText.includes(query))
+      ? assignment.availableCharacters.filter((option) => matchesSearchValues([option.searchText], query))
       : assignment.availableCharacters;
     galleryCharacterAssignmentAvailableFilterCache = { source: assignment.availableCharacters, query, result };
     return result;
@@ -8204,20 +10720,29 @@
 
   function getGalleryFilterOptions(
     options: GalleryFilterOption[],
-    pinnedValues: string[] = [],
-    promotedValues: string[] = []
+    pinnedValues = emptyGalleryFilterValues,
+    promotedValues = emptyGalleryFilterValues
   ) {
     if (pinnedValues.length === 0 && promotedValues.length === 0) return options;
 
-    return [...options].sort((left, right) => {
-      const leftPinned = pinnedValues.includes(left.value);
-      const rightPinned = pinnedValues.includes(right.value);
+    const cached = galleryFilterOrderingCache.get(options);
+    if (cached?.pinnedValues === pinnedValues && cached.promotedValues === promotedValues) {
+      return cached.result;
+    }
+
+    const pinnedSet = new Set(pinnedValues);
+    const promotedSet = new Set(promotedValues);
+    const result = [...options].sort((left, right) => {
+      const leftPinned = pinnedSet.has(left.value);
+      const rightPinned = pinnedSet.has(right.value);
       if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
-      const leftPromoted = promotedValues.includes(left.value);
-      const rightPromoted = promotedValues.includes(right.value);
+      const leftPromoted = promotedSet.has(left.value);
+      const rightPromoted = promotedSet.has(right.value);
       if (leftPromoted !== rightPromoted) return leftPromoted ? -1 : 1;
       return 0;
     });
+    galleryFilterOrderingCache.set(options, { pinnedValues, promotedValues, result });
+    return result;
   }
 
   function isHiddenWhenCollapsed(event: MouseEvent) {
@@ -8294,7 +10819,7 @@
   }
 
   function requestGalleryThumbnail(work: GalleryWork) {
-    queueGalleryThumbnailRequest(work.id, work.path, work.category);
+    queueGalleryThumbnailRequest(work.id, work.path, work.category, 100);
   }
 
   function observeGalleryThumbnail(node: HTMLElement, work: GalleryWork) {
@@ -8306,27 +10831,37 @@
   }
 
   function getGalleryDisplayName(work: GalleryWork) {
-    return work.name
+    const cached = galleryWorkDisplayNameCache.get(work);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const displayName = work.name
       .replace(/\{gid=[^{}]+\}/gi, '')
       .replace(/\{zpi[^{}]*\}/gi, '')
       .replace(/\.zip$/i, '')
       .replace(/\s{2,}/g, ' ')
       .trim();
+    galleryWorkDisplayNameCache.set(work, displayName);
+    return displayName;
   }
 
   function filterGalleryWorks(works: GalleryWork[], query: string) {
-    const terms = query.trim().toLocaleLowerCase('ja-JP').split(/\s+/).filter(Boolean);
-    if (terms.length === 0) return works;
+    if (!query.trim()) return works;
     return works.filter((work) => {
-      const searchableText = [
-        getGalleryDisplayName(work),
-        work.path,
-        work.creator,
-        work.title,
-        work.character,
-        ...work.tags
-      ].join('\n').toLocaleLowerCase('ja-JP');
-      return terms.every((term) => searchableText.includes(term));
+      let searchableText = galleryWorkSearchTextCache.get(work);
+      if (searchableText === undefined) {
+        searchableText = [
+          getGalleryDisplayName(work),
+          work.path,
+          work.creator,
+          work.title,
+          work.character,
+          ...work.tags
+        ].join('\n').toLocaleLowerCase('ja-JP');
+        galleryWorkSearchTextCache.set(work, searchableText);
+      }
+      return matchesSearchValues([searchableText], query);
     });
   }
 
@@ -8342,9 +10877,10 @@
   }
 
   function getGalleryRandomPickTagOptions() {
-    const query = galleryRandomPickTagQuery.trim().toLocaleLowerCase('ja-JP');
     return galleryTags
-      .filter(option => !query || `${option.label ?? option.value} ${option.value}`.toLocaleLowerCase('ja-JP').includes(query))
+      .filter(option => matchesSearchValues(
+        [option.label ?? option.value, option.value],
+        galleryRandomPickTagQuery))
       .slice(0, 100);
   }
 
@@ -8513,7 +11049,7 @@
     event.preventDefault();
     event.stopPropagation();
     closeGalleryContextMenu();
-    if (!hasGallerySingleClickLaunchRule(work) && hasGalleryLaunchRule(work, 'double')) {
+    if (!hasGallerySingleClickLaunchRule(work)) {
       openGalleryWork(work, 'double');
     }
   }
@@ -9474,6 +12010,7 @@
       indexSection: creatorTrackingIndexSection,
       indexSortKey: creatorTrackingIndexSortKey,
       indexSortDirection: creatorTrackingIndexSortDirection,
+      indexWishlistOnly: creatorTrackingIndexWishlistOnly,
       stickyNotes: captureStickyNotesForCurrentContext()
     };
     const activeCreator = creatorTrackingIndexActive ? 'Index' : state.tabs[activeIndex]?.creator || '作者';
@@ -9668,10 +12205,11 @@
         indexOpen: state.indexOpen === true,
         indexActive: state.indexActive === true,
         indexSection: String(state.indexSection ?? 'all').trim() || 'all',
-        indexSortKey: state.indexSortKey === 'lastChecked' || state.indexSortKey === 'alert'
+        indexSortKey: state.indexSortKey === 'lastChecked' || state.indexSortKey === 'alert' || state.indexSortKey === 'new'
           ? state.indexSortKey
           : 'creator',
         indexSortDirection: state.indexSortDirection === 'desc' ? 'desc' : 'asc',
+        indexWishlistOnly: state.indexWishlistOnly === true,
         stickyNotes: []
       };
     }
@@ -9774,7 +12312,7 @@
     const requestId = `bookmark-gallery-${nextGalleryRequestId++}`;
     galleryRequestId = requestId;
     galleryIsLoading = true;
-    galleryWorks = [];
+    clearGalleryWorkItems();
     galleryTotal = 0;
     pendingGalleryBookmarkRestore = { bookmark, state: { ...state, section }, requestId };
     postHostMessage({
@@ -9862,9 +12400,11 @@
     galleryPromotedTitles = (state.promoted?.titles ?? []).filter((value) => galleryTitleFilters.includes(value));
     galleryPromotedCharacters = (state.promoted?.characters ?? []).filter((value) => galleryCharacterFilters.includes(value));
     galleryPromotedTags = (state.promoted?.tags ?? []).filter((value) => galleryTagFilters.includes(value));
-    galleryWorks = [];
+    clearGalleryWorkItems();
+    clearPendingGalleryThumbnailResults();
     galleryThumbnails = {};
     requestedGalleryThumbnailIds.clear();
+    requestedGalleryThumbnailPriorities.clear();
     unavailableGalleryThumbnailIds.clear();
     if ([5, 6, 7, 8, 9].includes(Number(state.cardColumns))) {
       setGalleryCardColumns(Number(state.cardColumns), state.section);
@@ -9907,7 +12447,7 @@
     explorerQuery = state.query ?? '';
     splitExplorerQuery = state.splitQuery ?? '';
     explorerDetailOnly = Boolean(state.detailOnly);
-    explorerSort = ['name', 'modified', 'size', 'type'].includes(state.sort) ? state.sort : 'name';
+    explorerSort = ['name', 'pages', 'modified', 'size', 'averageImageSize', 'type'].includes(state.sort) ? state.sort : 'name';
     explorerSortDirection = state.sortDirection === 'desc' ? 'desc' : 'asc';
     explorerCardColumns = [4, 5, 6, 7].includes(state.cardColumns) ? state.cardColumns : explorerCardColumns;
     explorerTabScrollPositions = Object.fromEntries(
@@ -10147,15 +12687,16 @@
   }
 
   function restoreCreatorTrackingIndexState(state: CreatorTrackingBookmarkState) {
-    creatorTrackingIndexOpen = state.indexOpen === true;
+    creatorTrackingIndexOpen = true;
     creatorTrackingIndexSection = state.indexSection === 'all'
       || gallerySections.some(section => section.id === state.indexSection)
       ? state.indexSection ?? 'all'
       : 'all';
-    creatorTrackingIndexSortKey = state.indexSortKey === 'lastChecked' || state.indexSortKey === 'alert'
+    creatorTrackingIndexSortKey = state.indexSortKey === 'lastChecked' || state.indexSortKey === 'alert' || state.indexSortKey === 'new'
       ? state.indexSortKey
       : 'creator';
     creatorTrackingIndexSortDirection = state.indexSortDirection === 'desc' ? 'desc' : 'asc';
+    creatorTrackingIndexWishlistOnly = state.indexWishlistOnly === true;
     if (creatorTrackingIndexOpen) loadCreatorTrackingIndex();
   }
 
@@ -10211,6 +12752,11 @@
     if (view !== activeView) recordNavigationHistory();
     if (activeView === 'creatorTracking' && view !== 'creatorTracking') {
       saveCreatorTracking();
+    }
+    if (view !== 'library' &&
+        !(view === 'filters' && galleryTitleAssignmentReturnPending)) {
+      aiAttributeReviewOpen = false;
+      aiAttributeReviewEditingPath = '';
     }
     if (view !== 'filters' && galleryTitleAssignmentReturnPending) {
       galleryTitleAssignmentReturnPending = false;
@@ -10379,10 +12925,9 @@
   }
 
   function getTagManagementListRows(tags: TagManagementDefinition[], query: string) {
-    const normalizedQuery = query.trim().toLocaleLowerCase('ja-JP');
     return [...tags]
       .sort((left, right) => left.position - right.position || left.tag.localeCompare(right.tag, 'ja-JP'))
-      .filter((tag) => !normalizedQuery || tag.tag.toLocaleLowerCase('ja-JP').includes(normalizedQuery));
+      .filter((tag) => matchesSearchValues([tag.tag], query));
   }
 
   function reorderTagManagementDefinition(event: DragEvent, target: TagManagementDefinition) {
@@ -10419,9 +12964,8 @@
     sortColumn: string,
     direction: 'asc' | 'desc'
   ) {
-    const normalizedQuery = query.trim().toLocaleLowerCase('ja-JP');
     return tags
-      .filter((tag) => !normalizedQuery || tag.tag.toLocaleLowerCase('ja-JP').includes(normalizedQuery))
+      .filter((tag) => matchesSearchValues([tag.tag], query))
       .sort((left, right) => {
         const leftValue = sortColumn === 'tag' ? left.tag : left.categories.includes(sortColumn);
         const rightValue = sortColumn === 'tag' ? right.tag : right.categories.includes(sortColumn);
@@ -10892,11 +13436,9 @@
     query: string,
     titles: FilterEditorDefinition[]
   ): AllocationRow[] {
-    const normalizedQuery = query.trim().toLocaleLowerCase('ja-JP');
     return titles
       .map((definition) => ({ ...definition, titleName: definition.canonicalName }))
-      .filter((row) => !normalizedQuery || [row.categoryName, row.titleName]
-        .some(value => value.toLocaleLowerCase('ja-JP').includes(normalizedQuery)));
+      .filter((row) => matchesSearchValues([row.categoryName, row.titleName], query));
   }
 
   function groupAllocationRows(rows: AllocationRow[], sortColumn: string, direction: 'asc' | 'desc'): AllocationCategoryGroup[] {
@@ -11261,13 +13803,11 @@
     titleSort: 'name' | 'characterCount',
     titleSortDirection: 'asc' | 'desc'
   ) {
-    const normalizedQuery = query.toLocaleLowerCase('ja-JP');
     const categoryFilter = new Set(selectedCategories);
     const options = definitions
       .filter((definition) => {
         const category = getFilterEditorCategory(definition);
-        const matchesQuery = definition.canonicalName.toLocaleLowerCase('ja-JP').includes(normalizedQuery) ||
-          category.toLocaleLowerCase('ja-JP').includes(normalizedQuery);
+        const matchesQuery = matchesSearchValues([definition.canonicalName, category], query);
         return matchesQuery && (categoryFilter.size === 0 || categoryFilter.has(category));
       });
     if (isTitleList && titleSort === 'characterCount') {
@@ -11328,7 +13868,7 @@
       .filter((option) => {
         const normalizedOption = option.canonicalName.replace(/[\s\-_・]/g, '').toLocaleLowerCase('ja-JP');
         if (normalizedSearch) {
-          return normalizedOption.includes(normalizedSearch);
+          return matchesSearchValues([option.canonicalName], search);
         }
         return normalizedSelected.length >= 2 &&
           (normalizedOption.includes(normalizedSelected) || normalizedSelected.includes(normalizedOption));
@@ -11478,7 +14018,123 @@
     }
     explorerIsLoading = true;
     explorerThumbnailPriority += 1;
+    applyCachedExplorerDirectory(path, 'left');
     postHostMessage({ type: 'explorer.list', path });
+  }
+
+  function getExplorerDirectorySnapshotKey(path: string) {
+    return path
+      .trim()
+      .replace(/\//g, '\\')
+      .replace(/\\+$/, '')
+      .toLocaleLowerCase('ja-JP');
+  }
+
+  function rememberExplorerDirectorySnapshot(snapshot: ExplorerDirectorySnapshot) {
+    if (!snapshot.path) return;
+    const key = getExplorerDirectorySnapshotKey(snapshot.path);
+    explorerDirectorySnapshotCache.delete(key);
+    explorerDirectorySnapshotCache.set(key, snapshot);
+    while (explorerDirectorySnapshotCache.size > explorerDirectorySnapshotCacheLimit) {
+      const oldestKey = explorerDirectorySnapshotCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      explorerDirectorySnapshotCache.delete(oldestKey);
+    }
+  }
+
+  function applyExplorerPageCounts(
+    entries: ExplorerEntry[],
+    pageCounts: Record<string, number | null>
+  ) {
+    let pathIndices = explorerEntryPathIndexCache.get(entries);
+    if (!pathIndices) {
+      pathIndices = new Map(entries.map((entry, index) => [entry.path, index]));
+      explorerEntryPathIndexCache.set(entries, pathIndices);
+    }
+
+    let updatedEntries: ExplorerEntry[] | null = null;
+    let updatedIndices: number[] | null = null;
+    for (const [path, pageCount] of Object.entries(pageCounts)) {
+      const index = pathIndices.get(path);
+      if (index === undefined || entries[index].pageCount === pageCount) continue;
+      updatedEntries ??= entries.slice();
+      updatedIndices ??= [];
+      updatedEntries[index] = { ...entries[index], pageCount };
+      updatedIndices.push(index);
+    }
+
+    if (!updatedEntries) return entries;
+    explorerEntryPathIndexCache.set(updatedEntries, pathIndices);
+    const sortedEntries = explorerEntrySortCache.get(entries);
+    if (sortedEntries && updatedIndices) {
+      const updatedSortCache = new Map<string, ExplorerSortCacheEntry>();
+      for (const [cacheKey, cached] of sortedEntries) {
+        if (cacheKey.startsWith('pages:') || cacheKey.startsWith('averageImageSize:')) {
+          continue;
+        }
+        const result = cached.result.slice();
+        for (const sourceIndex of updatedIndices) {
+          const sortedIndex = cached.pathIndices.get(entries[sourceIndex].path);
+          if (sortedIndex !== undefined) {
+            result[sortedIndex] = updatedEntries[sourceIndex];
+          }
+        }
+        updatedSortCache.set(cacheKey, {
+          result,
+          pathIndices: cached.pathIndices
+        });
+      }
+      explorerEntrySortCache.set(updatedEntries, updatedSortCache);
+    }
+    return updatedEntries;
+  }
+
+  function updateExplorerDirectorySnapshotMetadata(
+    path: string,
+    pageCounts: Record<string, number | null>,
+    updatedEntries?: ExplorerEntry[]
+  ) {
+    const key = getExplorerDirectorySnapshotKey(path);
+    const snapshot = explorerDirectorySnapshotCache.get(key);
+    if (!snapshot) return;
+    rememberExplorerDirectorySnapshot({
+      ...snapshot,
+      entries: updatedEntries ?? applyExplorerPageCounts(snapshot.entries, pageCounts)
+    });
+  }
+
+  function applyCachedExplorerDirectory(path: string, pane: 'left' | 'right') {
+    const snapshot = explorerDirectorySnapshotCache.get(getExplorerDirectorySnapshotKey(path));
+    if (!snapshot) return false;
+
+    if (pane === 'right') {
+      if (!explorerSplit) return false;
+      explorerSplit = {
+        ...explorerSplit,
+        rightPath: snapshot.path,
+        rightParentPath: snapshot.parentPath,
+        rightEntries: snapshot.entries,
+        rightSelectedPaths: [],
+        rightIsTruncated: snapshot.isTruncated,
+        rightIsLoading: true
+      };
+      if (explorerSplit.rightViewMode !== 'details') {
+        prefetchExplorerThumbnails(snapshot.entries, 'right');
+      }
+      return true;
+    }
+
+    explorerPath = snapshot.path;
+    explorerPathDraft = snapshot.path;
+    explorerParentPath = snapshot.parentPath;
+    explorerRoots = snapshot.roots;
+    explorerEntries = snapshot.entries;
+    explorerIsTruncated = snapshot.isTruncated;
+    selectedPaths = [];
+    if (!explorerDetailOnly && (!explorerSplit || explorerSplit.leftViewMode !== 'details')) {
+      prefetchExplorerThumbnails(snapshot.entries, 'left');
+    }
+    return true;
   }
 
   function saveExplorerTabScroll() {
@@ -11635,7 +14291,7 @@
     galleryPromotedCharacters = [];
     galleryPromotedTags = [];
     selectedGalleryWorkIds = new Set();
-    galleryWorks = [];
+    clearGalleryWorkItems();
     galleryTotal = 0;
     activateView('library');
     loadGalleryWorks(false, galleryRatingFilters, true);
@@ -11796,6 +14452,7 @@
     pendingSplitParentSelectionPath = selectAfterNavigation;
     explorerSplit = { ...explorerSplit, rightIsLoading: true };
     explorerThumbnailPriority += 1;
+    applyCachedExplorerDirectory(path, 'right');
     postHostMessage({ type: 'explorer.list', path, pane: 'split-right' });
   }
 
@@ -11921,6 +14578,9 @@
   function focusSplitPane(pane: 'left' | 'right') {
     if (splitFocusedPane === pane) return;
     splitFocusedPane = pane;
+    if (!explorerPathEditing) {
+      explorerPathDraft = pane === 'right' ? explorerSplit?.rightPath ?? '' : explorerPath;
+    }
     persistNavigationState();
   }
 
@@ -11940,6 +14600,7 @@
 
   function beginExplorerPathEdit() {
     explorerDriveMenuOpen = false;
+    explorerPathDraft = activeExplorerPath;
     explorerPathEditing = true;
     requestAnimationFrame(() => {
       explorerPathInputElement?.focus();
@@ -11950,7 +14611,7 @@
   function openExplorerBreadcrumb(path: string) {
     explorerDriveMenuOpen = false;
     explorerPathEditing = false;
-    loadExplorer(path, false, getImmediateExplorerChildPath(path, explorerPath));
+    loadFocusedExplorerPath(path, getImmediateExplorerChildPath(path, activeExplorerPath));
   }
 
   function toggleExplorerDriveMenu(event: MouseEvent) {
@@ -11966,7 +14627,16 @@
   function openExplorerDrive(root: string) {
     explorerDriveMenuOpen = false;
     explorerPathEditing = false;
-    loadExplorer(root);
+    loadFocusedExplorerPath(root);
+  }
+
+  function loadFocusedExplorerPath(path: string, selectAfterNavigation = '') {
+    if (explorerSplit && splitFocusedPane === 'right') {
+      loadSplitExplorer(path, selectAfterNavigation);
+      return;
+    }
+
+    loadExplorer(path, false, selectAfterNavigation);
   }
 
   function getExplorerDriveLabel(root: string) {
@@ -12629,13 +15299,65 @@
   }
 
   function revealExplorerSplitEntry(path: string, pane: 'left' | 'right') {
-    requestAnimationFrame(() => {
+    const entries = pane === 'right' ? splitRightEntries : filteredExplorerEntries;
+    const index = entries.findIndex((entry) => entry.path === path);
+    const isDetailView = pane === 'right'
+      ? explorerSplit?.rightViewMode === 'details'
+      : explorerSplit?.leftViewMode === 'details';
+    if (isDetailView && index >= 0) {
+      get(pane === 'right' ? explorerSplitRightDetailVirtualizer : explorerSplitLeftDetailVirtualizer)
+        .scrollToIndex(index, { align: 'auto' });
+      revealExplorerDetailRow(
+        path,
+        pane === 'right' ? explorerSplitRightPaneElement : explorerSplitLeftPaneElement,
+        true);
+      return;
+    }
+    requestAnimationFrame(() => requestAnimationFrame(() => {
       const paneElement = document.querySelector<HTMLElement>(pane === 'right' ? '.split-pane-right' : '.split-pane-left');
       const item = Array.from(paneElement?.querySelectorAll<HTMLElement>('[data-explorer-path]') ?? [])
         .find(element => element.dataset.explorerPath === path);
       item?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       item?.focus({ preventScroll: true });
-    });
+    }));
+  }
+
+  function revealExplorerDetailRow(path: string, container: HTMLElement | null, focus = false) {
+    if (!container) {
+      return;
+    }
+
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const item = Array.from(container.querySelectorAll<HTMLElement>('[data-explorer-path]'))
+        .find(element => element.dataset.explorerPath === path);
+      if (!item) {
+        return;
+      }
+
+      const containerBounds = container.getBoundingClientRect();
+      const headerBounds = container.querySelector<HTMLElement>(':scope > .file-header')?.getBoundingClientRect();
+      const viewportTop = containerBounds.top + container.clientTop;
+      const viewportBottom = viewportTop + container.clientHeight;
+      const visibleTop = Math.max(viewportTop, headerBounds?.bottom ?? viewportTop) + 4;
+      const visibleBottom = viewportBottom - 4;
+      const itemBounds = item.getBoundingClientRect();
+      const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+      let scrollAdjustment = 0;
+
+      if (itemBounds.height >= visibleHeight || itemBounds.top < visibleTop) {
+        scrollAdjustment = itemBounds.top - visibleTop;
+      }
+      else if (itemBounds.bottom > visibleBottom) {
+        scrollAdjustment = itemBounds.bottom - visibleBottom;
+      }
+
+      if (Math.abs(scrollAdjustment) >= 0.5) {
+        container.scrollTop += scrollAdjustment;
+      }
+      if (focus) {
+        item.focus({ preventScroll: true });
+      }
+    }));
   }
 
   function startExplorerDetailColumnDrag(event: DragEvent, columnId: ExplorerDetailColumnId) {
@@ -12780,6 +15502,62 @@
     saveCreatorTrackingSettings();
   }
 
+  function loadCreatorBlacklist() {
+    postHostMessage({ type: 'settings.creatorBlacklist.list' });
+  }
+
+  function openCreatorBlacklistSettings() {
+    settingsSection = 'creatorBlacklist';
+    loadCreatorBlacklist();
+  }
+
+  function addCreatorBlacklistItem() {
+    if (creatorBlacklistItems.some(item => !item.originalCreator && !item.creator.trim())) return;
+    creatorBlacklistItems = [
+      ...creatorBlacklistItems,
+      {
+        creator: '',
+        reason: '',
+        registeredOn: new Date().toLocaleDateString('sv-SE'),
+        originalCreator: '',
+        dirty: true
+      }
+    ];
+  }
+
+  function updateCreatorBlacklistItem(index: number, field: 'creator' | 'reason', value: string) {
+    creatorBlacklistItems = creatorBlacklistItems.map((item, candidateIndex) =>
+      candidateIndex === index ? { ...item, [field]: value, dirty: true } : item);
+  }
+
+  function saveCreatorBlacklistItem(index: number) {
+    const item = creatorBlacklistItems[index];
+    if (!item || !item.creator.trim()) return;
+    creatorBlacklistBusy = true;
+    postHostMessage({
+      type: 'settings.creatorBlacklist.upsert',
+      requestId: `creator-blacklist-${Date.now()}-${index}`,
+      originalCreator: item.originalCreator,
+      creator: item.creator.trim(),
+      reason: item.reason.trim()
+    });
+  }
+
+  function deleteCreatorBlacklistItem(index: number) {
+    const item = creatorBlacklistItems[index];
+    if (!item) return;
+    if (!item.originalCreator) {
+      creatorBlacklistItems = creatorBlacklistItems.filter((_, candidateIndex) => candidateIndex !== index);
+      return;
+    }
+    creatorBlacklistBusy = true;
+    postHostMessage({
+      type: 'settings.creatorBlacklist.delete',
+      requestId: `creator-blacklist-delete-${Date.now()}-${index}`,
+      creator: item.originalCreator
+    });
+  }
+
   function addCreatorTrackingActivityPlaceSetting() {
     creatorTrackingSettingsDraft = {
       ...creatorTrackingSettingsDraft,
@@ -12806,20 +15584,31 @@
   }
 
   function saveCreatorTrackingSettings() {
+    const defaultMetrics = getCreatorTrackingSettingsMetrics(
+      gallerySections[0]?.id ?? creatorTrackingSettingsCategory);
     postHostMessage({
       type: 'settings.creatorTracking.save',
       activityPlaces: creatorTrackingSettingsDraft.activityPlaces,
       compositionLabelLimit: creatorTrackingSettingsDraft.compositionLabelLimit,
       followPolicyOptions: creatorTrackingSettingsDraft.followPolicyOptions,
-      metrics: creatorTrackingSettingsDraft.metrics.map((metric) => ({
+      taskCategories: creatorTrackingSettingsDraft.taskCategories,
+      metrics: defaultMetrics.map((metric) => ({
         key: metric.key,
         label: metric.label,
         weightPercent: metric.weightPercent
+      })),
+      metricSettingsByCategory: gallerySections.map((section) => ({
+        category: section.id,
+        metrics: getCreatorTrackingSettingsMetrics(section.id).map((metric) => ({
+          key: metric.key,
+          label: metric.label,
+          weightPercent: metric.weightPercent
+        }))
       }))
     });
   }
 
-  function addCreatorTrackingStringOption(kind: 'followPolicyOptions') {
+  function addCreatorTrackingStringOption(kind: 'followPolicyOptions' | 'taskCategories') {
     creatorTrackingSettingsDraft = {
       ...creatorTrackingSettingsDraft,
       [kind]: [...creatorTrackingSettingsDraft[kind], '']
@@ -12827,7 +15616,7 @@
   }
 
   function updateCreatorTrackingStringOption(
-    kind: 'followPolicyOptions',
+    kind: 'followPolicyOptions' | 'taskCategories',
     index: number,
     value: string) {
     creatorTrackingSettingsDraft = {
@@ -12837,7 +15626,7 @@
     };
   }
 
-  function removeCreatorTrackingStringOption(kind: 'followPolicyOptions', index: number) {
+  function removeCreatorTrackingStringOption(kind: 'followPolicyOptions' | 'taskCategories', index: number) {
     creatorTrackingSettingsDraft = {
       ...creatorTrackingSettingsDraft,
       [kind]: creatorTrackingSettingsDraft[kind].filter((_, candidateIndex) => candidateIndex !== index)
@@ -12904,28 +15693,55 @@
   }
 
   function getExplorerDetailValue(entry: ExplorerEntry, column: ExplorerDetailColumnId) {
+    const cacheable = column !== 'pages' && column !== 'averageImageSize';
+    const cachedValues = cacheable
+      ? explorerEntryDetailValueCache.get(entry)
+      : undefined;
+    if (cachedValues && Object.prototype.hasOwnProperty.call(cachedValues, column)) {
+      return cachedValues[column]!;
+    }
+
+    let value: string;
     switch (column) {
       case 'pages':
-        return entry.pageCount?.toLocaleString('ja-JP') ?? '-';
+        value = entry.pageCount?.toLocaleString('ja-JP') ?? '-';
+        break;
       case 'gid':
-        return getEntryIdentifier(entry) || '-';
+        value = getEntryIdentifier(entry) || '-';
+        break;
       case 'type':
-        return entry.isDirectory ? 'フォルダ' : entry.extension || 'ファイル';
+        value = entry.isDirectory ? 'フォルダ' : entry.extension || 'ファイル';
+        break;
       case 'size':
-        return formatSize(entry.size);
+        value = formatSize(entry.size);
+        break;
       case 'averageImageSize':
-        return entry.size !== null && entry.pageCount !== null && entry.pageCount > 0
+        value = entry.size !== null && entry.pageCount !== null && entry.pageCount > 0
           ? formatSize(Math.round(entry.size / entry.pageCount))
           : '-';
+        break;
       case 'created':
-        return formatModifiedAt(entry.createdAt);
+        value = formatModifiedAt(entry.createdAt);
+        break;
       case 'accessed':
-        return formatModifiedAt(entry.accessedAt);
+        value = formatModifiedAt(entry.accessedAt);
+        break;
       case 'modified':
-        return formatModifiedAt(entry.modifiedAt);
+        value = formatModifiedAt(entry.modifiedAt);
+        break;
       default:
-        return '-';
+        value = '-';
+        break;
     }
+
+    if (cacheable) {
+      const values = cachedValues ?? {};
+      values[column] = value;
+      if (!cachedValues) {
+        explorerEntryDetailValueCache.set(entry, values);
+      }
+    }
+    return value;
   }
 
   function openContextMenuEntryInNewTab() {
@@ -13194,16 +16010,29 @@
     });
   }
 
-  function refreshExplorerThumbnail(path: string) {
+  function refreshExplorerThumbnail(path: string, preserveRetryMarker = false) {
     if (!path) {
       return;
     }
 
     const { [path]: _, ...remainingThumbnails } = explorerThumbnails;
     explorerThumbnails = remainingThumbnails;
+    delete pendingExplorerThumbnailUris[path];
     requestedExplorerThumbnailPaths.delete(path);
     unavailableExplorerThumbnailPaths.delete(path);
-    postHostMessage({ type: 'explorer.thumbnail', path, priority: explorerThumbnailPriority + 1, forceRefresh: true });
+    pendingExplorerThumbnailRequests.delete(path);
+    if (!preserveRetryMarker) {
+      explorerThumbnailRetriedUris.delete(path);
+    }
+    const requestToken = createExplorerThumbnailRequestToken(path);
+    requestedExplorerThumbnailPaths.add(path);
+    postHostMessage({
+      type: 'explorer.thumbnail',
+      path,
+      priority: explorerThumbnailPriority + 1,
+      forceRefresh: true,
+      requestToken
+    });
   }
 
   function beginExplorerGesture(event: PointerEvent) {
@@ -13469,6 +16298,14 @@
   }
 
   function revealExplorerEntry(path: string, target: 'grid' | 'list') {
+    if (target === 'list') {
+      const index = filteredExplorerEntries.findIndex((entry) => entry.path === path);
+      if (index >= 0) {
+        get(explorerDetailVirtualizer).scrollToIndex(index, { align: 'auto' });
+        revealExplorerDetailRow(path, explorerDetailPaneElement);
+      }
+      return;
+    }
     requestAnimationFrame(() => {
       const container = target === 'grid' ? explorerGridPaneElement : explorerDetailPaneElement;
       if (!container) {
@@ -13626,6 +16463,18 @@
     const currentIndex = explorerTabs.findIndex((tab) => tab.id === activeExplorerTabId);
     const nextIndex = (currentIndex + offset + explorerTabs.length) % explorerTabs.length;
     selectExplorerTab(explorerTabs[nextIndex]);
+  }
+
+  async function revealActiveExplorerTab(
+    strip: HTMLDivElement | null,
+    tabId: string,
+    _tabCount: number) {
+    if (!strip || !tabId) return;
+    await tick();
+    if (strip !== explorerTabStripElement || tabId !== activeExplorerTabId) return;
+    const activeTab = Array.from(strip.querySelectorAll<HTMLElement>('[data-explorer-tab-id]'))
+      .find(element => element.dataset.explorerTabId === tabId);
+    activeTab?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
   }
 
   function selectExplorerTab(tab: ExplorerTab) {
@@ -14293,18 +17142,38 @@
     });
   }
 
+  function saveAiConciergeSettings() {
+    aiConciergeSettingsBusy = true;
+    aiConciergeSettingsStatus = 'AIコンシェルジュの保存先を更新しています...';
+    postHostMessage({
+      type: 'settings.aiConcierge.save',
+      dataDirectory: aiConciergeDataDirectoryDraft.trim()
+    });
+  }
+
+  function resetAiConciergeDataDirectory() {
+    aiConciergeDataDirectoryDraft = '';
+    saveAiConciergeSettings();
+  }
+
   function saveThumbnailCacheTargets(targets: string[]) {
     thumbnailCacheTargets = targets;
     postHostMessage({ type: 'settings.thumbnailCache.saveTargets', targets });
   }
 
   function saveSearchEngineSettings() {
+    romanizedSearchRequested.clear();
+    romanizedSearchPending.clear();
+    romanizedSearchCacheLookupRequested.clear();
+    romanizedSearchCacheLookupPending.clear();
+    romanizedSearchConsecutiveFailures = 0;
     postHostMessage({
       type: 'settings.searchEngine.save',
       provider: searchEngineSettings.provider,
       googleSearchUrlTemplate: searchEngineSettings.googleSearchUrlTemplate,
       braveApiKey: searchEngineSettings.braveApiKey,
-      geminiApiKey: searchEngineSettings.geminiApiKey
+      geminiApiKey: searchEngineSettings.geminiApiKey,
+      yahooClientId: searchEngineSettings.yahooClientId
     });
   }
 
@@ -14368,7 +17237,21 @@
       splitSelectionAnchorPath = pastedPaths[0];
     }
 
-    requestAnimationFrame(() => {
+    const visibleEntries = pane === 'right' ? splitRightEntries : filteredExplorerEntries;
+    const index = visibleEntries.findIndex((entry) => entry.path === pastedPaths[0]);
+    const isDetailView = explorerSplit
+      ? (pane === 'right' ? explorerSplit.rightViewMode : explorerSplit.leftViewMode) === 'details'
+      : explorerDetailOnly;
+    if (isDetailView && index >= 0) {
+      get(pane === 'right'
+        ? explorerSplitRightDetailVirtualizer
+        : explorerSplit
+          ? explorerSplitLeftDetailVirtualizer
+          : explorerDetailVirtualizer)
+        .scrollToIndex(index, { align: 'auto' });
+    }
+
+    requestAnimationFrame(() => requestAnimationFrame(() => {
       const selector = `[data-explorer-path="${CSS.escape(pastedPaths[0])}"]`;
       const element = pane === 'left'
         ? document.querySelector<HTMLElement>(explorerSplit
@@ -14377,7 +17260,7 @@
         : document.querySelector<HTMLElement>(`.split-pane-right ${selector}`);
       element?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       element?.focus({ preventScroll: true });
-    });
+    }));
   }
 
   function selectGalleryTargetCategory(category: string) {
@@ -14829,6 +17712,7 @@
       notifyCreatorFollowAlert: discordNotifyCreatorFollowAlert,
       notifySubscriptionEnding: discordNotifySubscriptionEnding,
       notifySubscriptionReminder: discordNotifySubscriptionReminder,
+      notifyCreatorTasks: discordNotifyCreatorTasks,
       notifyScheduledScanStarted: discordNotifyScheduledScanStarted,
       notifyScheduledScanCompleted: discordNotifyScheduledScanCompleted
     };
@@ -14880,6 +17764,7 @@
       notifyCreatorFollowAlert: lineNotifyCreatorFollowAlert,
       notifySubscriptionEnding: lineNotifySubscriptionEnding,
       notifySubscriptionReminder: lineNotifySubscriptionReminder,
+      notifyCreatorTasks: lineNotifyCreatorTasks,
       notifyScheduledScanStarted: lineNotifyScheduledScanStarted,
       notifyScheduledScanCompleted: lineNotifyScheduledScanCompleted
     };
@@ -15604,6 +18489,9 @@
           <button class:settings-active={settingsSection === 'creatorTracking'} onclick={() => (settingsSection = 'creatorTracking')}>
             Creator Tracking
           </button>
+          <button class:settings-active={settingsSection === 'creatorBlacklist'} onclick={openCreatorBlacklistSettings}>
+            Blacklist
+          </button>
           <button class:settings-active={settingsSection === 'tabCandidates'} onclick={() => (settingsSection = 'tabCandidates')}>
             新規タブ候補
           </button>
@@ -15649,6 +18537,9 @@
       </button>
       {#if settingsAdvancedExpanded}
         <div class="settings-subnav">
+          <button class:settings-active={settingsSection === 'aiConcierge'} onclick={() => (settingsSection = 'aiConcierge')}>
+            AIコンシェルジュ
+          </button>
           <button class:settings-active={settingsSection === 'programs'} onclick={() => (settingsSection = 'programs')}>
             起動プログラム
           </button>
@@ -15705,10 +18596,10 @@
                 onkeydown={(event) => {
                   if (event.key === 'Enter') {
                     explorerPathEditing = false;
-                    loadExplorer();
+                    loadFocusedExplorerPath(explorerPathDraft);
                   }
                   else if (event.key === 'Escape') {
-                    explorerPathDraft = explorerPath;
+                    explorerPathDraft = activeExplorerPath;
                     explorerPathEditing = false;
                   }
                 }}
@@ -15742,7 +18633,7 @@
               </div>
             {/if}
           </div>
-          <button title="更新" onclick={() => loadExplorer(explorerPath)}><RefreshCw size={18} /></button>
+          <button title="更新" onclick={() => loadFocusedExplorerPath(activeExplorerPath)}><RefreshCw size={18} /></button>
           <button class="sticky-note-launch-button" title="Explorerに付箋を追加" onclick={createStickyNoteFromToolbar}><StickyNote size={18} /></button>
           <button class="view-bookmark-button" title="現在のExplorerをBookmark" onclick={captureViewBookmarkFromToolbar}><Bookmark size={18} /></button>
         </div>
@@ -15791,7 +18682,7 @@
         <div class="calendar-toolbar">
           <div class="filters-toolbar-heading">
             <strong>Calendar</strong>
-            <span>Creator Trackingの有効なサブスク更新予定を月・週ビューで確認します</span>
+            <span>サブスク・Creator確認・タスク予定を月・週ビューで確認します</span>
           </div>
           <div class="calendar-toolbar-actions">
             <button title="Calendarを更新" disabled={calendarIsLoading} onclick={loadCalendarSubscriptions}><RefreshCw size={18} /></button>
@@ -15821,11 +18712,52 @@
           <div class="creator-tracking-toolbar-actions">
             <button class:active={creatorTrackingIndexActive} class="creator-tracking-index-button" title="Creator Tracking Indexを開く" aria-label="Creator Tracking Indexを開く" onclick={activateCreatorTrackingIndex}><List size={18} /></button>
             <button class="creator-tracking-new-button" title="Creator Trackingを新規作成" aria-label="Creator Trackingを新規作成" onclick={openCreatorTrackingNewDialog}><UserPlus size={18} /></button>
+            <button
+              class:active={creatorTrackingCategoryPicker === 'toolbar'}
+              class="creator-tracking-category-add-button"
+              title="この作者へ区分を追加"
+              aria-label="この作者へ区分を追加"
+              aria-expanded={creatorTrackingCategoryPicker === 'toolbar'}
+              disabled={creatorTrackingIndexActive || !creatorTracking}
+              onclick={toggleCreatorTrackingCategoryPicker}><Plus size={18} /></button>
             <button class="creator-tracking-gallery-button" title="この作者をGalleryで表示" aria-label="この作者をGalleryで表示" disabled={creatorTrackingIndexActive || (!creatorTracking && !creatorTrackingSummary)} onclick={navigateCreatorTrackingToGallery}><LayoutGrid size={18} /></button>
             <button class="creator-tracking-refresh-button" title="この作者の最新データを反映" aria-label="この作者の最新データを反映" disabled={creatorTrackingIndexActive || !creatorTracking || creatorTrackingIsLoading || creatorTrackingIsSaving} onclick={refreshCreatorTracking}><RefreshCw size={18} /></button>
             <button class="creator-tracking-delete-button" title="作者データを削除" aria-label="作者データを削除" disabled={creatorTrackingIndexActive || (!creatorTracking && !creatorTrackingSummary) || creatorTrackingDeleteInProgress} onclick={requestCreatorTrackingDelete}><Trash2 size={18} /></button>
             <button class="sticky-note-launch-button" title="Creator Trackingに付箋を追加" disabled={creatorTrackingIndexActive} onclick={createStickyNoteFromToolbar}><StickyNote size={18} /></button>
-            <button class="view-bookmark-button" title="現在のCreator TrackingをBookmark" disabled={creatorTrackingIndexActive} onclick={captureViewBookmarkFromToolbar}><Bookmark size={18} /></button>
+            <button class="view-bookmark-button" title="現在のCreator TrackingをBookmark" disabled={creatorTrackingIndexActive} onclick={captureViewBookmarkFromToolbar}><Bookmark size={20} /></button>
+            {#if creatorTrackingCategoryPicker === 'toolbar' && creatorTracking}
+              <div class="creator-tracking-toolbar-category-picker">
+                <strong>追加する区分</strong>
+                <div class="creator-tracking-category-add-options">
+                  {#each unusedCreatorTrackingCategories as section}
+                    <button type="button" onclick={() => addCreatorTrackingCategory(section.id)}>{section.label}</button>
+                  {:else}
+                    <em>追加できる区分はありません</em>
+                  {/each}
+                </div>
+                <div class="creator-tracking-category-picker-divider"></div>
+                <strong>登録済み区分</strong>
+                <div class="creator-tracking-category-registered-list">
+                  {#each creatorTrackingCategoryProfileLabels as section}
+                    <div class="creator-tracking-category-registered-row">
+                      <span>{section.label}</span>
+                      <button
+                        type="button"
+                        class="creator-tracking-category-remove-button"
+                        title={creatorTracking.categoryProfiles.length <= 1
+                          ? '最後の区分は削除できません'
+                          : `${section.label}を削除`}
+                        aria-label={`${section.label}を削除`}
+                        disabled={creatorTracking.categoryProfiles.length <= 1}
+                        onclick={() => requestCreatorTrackingCategoryDelete(section.category)}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
           </div>
         </div>
       {:else if activeView === 'creators'}
@@ -15859,7 +18791,6 @@
                 <List size={14} />
                 <span class="creator-tracking-tab-label">Index</span>
               </button>
-              <button type="button" class="creator-tracking-tab-close" title="タブを閉じる" aria-label="Indexを閉じる" onclick={closeCreatorTrackingIndexTab}><X size={13} /></button>
             </div>
           {/if}
           {#each creatorTrackingTabs as tab (tab.id)}
@@ -15979,7 +18910,7 @@
             <header class="user-guide-section-heading"><span>06</span><div><h2>Creators・Creator Tracking</h2><p>作者単位の集計と継続的なフォローアップ</p></div></header>
             <div class="user-guide-two-column">
               <div><h3>Creators</h3><ul><li>Creators配下の区分を選ぶと、作者カードを一覧表示します。</li><li>Rating、Site、Core title、Core tags、作品傾向などで絞り込めます。</li><li>総評価、最終確認日、フォロー日数、課金額などを最大3条件で複合ソートできます。</li><li>作者カードの右クリックからCreator Trackingを開きます。</li></ul></div>
-              <div><h3>Creator Tracking</h3><ul><li>作者基本情報、作品の傾向、活動場所、ストレージ、課金・購入履歴を作者ごとに記録します。</li><li>複数作者をタブで開き、切り替え時やアプリ終了時に自動保存します。前回のタブ状態も再起動時に復元します。</li><li>Indexタブでは区分内の登録作者、最終確認日、Warning／Alert状態を一覧・並べ替えできます。</li><li>更新アイコンは、その作者のGallery用途フォルダを走査して最新情報を反映します。</li><li>SUMMARYではファイル数・画像枚数・評価・課金・構成比・書庫履歴を確認できます。</li><li>作者ページの新規作成と、ファイル本体を残したまま作者データだけを削除する操作に対応しています。</li></ul></div>
+              <div><h3>Creator Tracking</h3><ul><li>作者基本情報、作品の傾向、活動場所、ストレージ、課金・購入履歴、期間タスクを作者ごとに記録します。</li><li>複数作者をタブで開き、切り替え時やアプリ終了時に自動保存します。前回のタブ状態も再起動時に復元します。</li><li>Indexタブでは区分内の登録作者、最終確認日、Warning／Alert状態を一覧・並べ替えできます。</li><li>更新アイコンは、その作者のGallery用途フォルダを走査して最新情報を反映します。</li><li>SUMMARYではファイル数・画像枚数・評価・課金・構成比・書庫履歴を確認できます。</li><li>タスクスケジューラではSettingsで定義した分類、期間、通知頻度を設定できます。</li><li>作者ページの新規作成と、ファイル本体を残したまま作者データだけを削除する操作に対応しています。</li></ul></div>
             </div>
             <div class="user-guide-note"><Layers3 size={19} /><div><strong>Core title・Core tagsとは</strong><p>作者ごとにTitle／Tag別のファイル数を集計し、その作者の総ファイル数に対して30%以上を占めるTitleをCore title、TagをCore tagsとして扱います。作者の中心的な作品傾向を素早く把握するための指標です。</p></div></div>
             <div class="user-guide-note accent"><CalendarCheck size={19} /><div><strong>フォローアップ</strong><p>活動場所のフォローアップをONにして日数を設定すると、最終確認日からの経過日数に応じてCreatorsのWarning／Alertフィルタを利用できます。</p></div></div>
@@ -16008,10 +18939,10 @@
           </section>
 
           <section id="user-guide-calendar" class="user-guide-section">
-            <header class="user-guide-section-heading"><span>09</span><div><h2>Calendar</h2><p>有効なサブスクの更新予定を月・2週間で確認</p></div></header>
+            <header class="user-guide-section-heading"><span>09</span><div><h2>Calendar</h2><p>Creator Trackingの予定を月・2週間で確認</p></div></header>
             <div class="user-guide-two-column">
-              <div><h3>予定を確認する</h3><ul><li>Creator Trackingに登録したサブスクの更新予定日をカレンダーへ表示します。</li><li>Monthと2 Weeksを切り替え、当日はアクセントカラーの枠で確認できます。</li><li>終了予定のサブスクは警告スタイルで表示されます。</li><li>予定をクリックすると対象のCreator Trackingタブへ移動します。</li></ul></div>
-              <div><h3>Google Calendar同期</h3><ul><li>SettingsでGoogle Calendar APIのデスクトップアプリ用OAuth Client IDを設定し、連携します。</li><li>同期先カレンダーを選び、GalleryBrowserのサブスク予定をGoogle Calendarへ反映します。</li><li>現在の同期方向はGalleryBrowserからGoogle Calendarへの一方向です。</li><li>週の開始曜日はSettingsで変更できます。</li></ul></div>
+              <div><h3>予定を確認する</h3><ul><li>サブスクの更新・終了予定、Creator確認の警告・アラート、期間タスクを同時に表示します。</li><li>分類フィルタで表示を切り替え、Monthと2 Weeksの当日はアクセントカラーの枠で確認できます。</li><li>通常は青、警告は黄、重要な警告は赤で表示し、予定の種類はカード形状でも区別します。</li><li>1日6件を超える場合は日別内訳を開けます。予定をクリックすると対象のCreator Trackingタブへ移動します。</li></ul></div>
+              <div><h3>Google Calendar同期</h3><ul><li>SettingsでGoogle Calendar APIのデスクトップアプリ用OAuth Client IDを設定し、連携します。</li><li>同期先カレンダーを選び、GalleryBrowserのサブスク・Creator確認・タスク予定をGoogle Calendarへ反映します。</li><li>現在の同期方向はGalleryBrowserからGoogle Calendarへの一方向です。</li><li>週の開始曜日はSettingsで変更できます。</li></ul></div>
             </div>
           </section>
 
@@ -16020,7 +18951,7 @@
             <div class="user-guide-feature-grid compact">
               <article><h3>送信先</h3><p>Discord WebhookとLINE Messaging APIを片方だけ、または併用できます。認証情報はWindows資格情報マネージャーへ保存します。</p></article>
               <article><h3>Creator確認</h3><p>最終確認日のWarning（黄色）とAlert（赤色）を通知対象として個別に設定できます。</p></article>
-              <article><h3>サブスク</h3><p>終了予定の前日と、アラートをONにした更新予定を通知できます。</p></article>
+              <article><h3>サブスク・タスク</h3><p>サブスクの更新／終了予定は前日に、Creator Trackingタスクは設定した頻度で通知できます。</p></article>
               <article><h3>定期走査</h3><p>定期フォルダ走査の開始・完了を発生時に通知できます。</p></article>
             </div>
             <div class="user-guide-note accent"><BellRing size={19} /><div><strong>通知スケジュール</strong><p>1日に複数の送信時刻を設定できます。同じ時刻のCreator確認・解除予定・更新アラートは最新DBで再集計し、1通へまとめて送信します。各通知種別は設定画面から個別にテストできます。</p></div></div>
@@ -16359,7 +19290,7 @@
                 <span class="language-settings-icon"><CalendarCheck size={20} /></span>
                 <div>
                   <h2>Calendar</h2>
-                  <p>サブスク更新予定を表示するカレンダーの基本動作を設定します</p>
+                  <p>サブスク・Creator確認・タスクを表示するカレンダーの基本動作を設定します</p>
                 </div>
               </header>
 
@@ -16391,7 +19322,7 @@
                 <span class="language-settings-icon"><CloudUpload size={20} /></span>
                 <div>
                   <h2>Google Calendar同期</h2>
-                  <p>GalleryBrowserのサブスク更新予定をGoogle Calendarへ一方向で自動同期します</p>
+                  <p>GalleryBrowserのCreator Tracking予定をGoogle Calendarへ一方向で自動同期します</p>
                 </div>
                 <span class:connected={googleCalendarSyncFeatureEnabled && googleCalendarHasRefreshToken} class="google-calendar-connection-badge">
                   {googleCalendarSyncFeatureEnabled ? (googleCalendarHasRefreshToken ? '連携済み' : '未連携') : '無効'}
@@ -16446,7 +19377,7 @@
                   <li>OAuth同意画面を設定し、OAuthクライアントを「デスクトップアプリ」で作成します。</li>
                   <li>Client IDとClient Secretを入力して保存後、OAuth連携を実行します。</li>
                 </ol>
-                <p>Google側の一般予定は取り込みません。GalleryBrowserの識別情報が付いたサブスク予定だけを更新・削除します。</p>
+                <p>Google側の一般予定は取り込みません。GalleryBrowserの識別情報が付いたサブスク・Creator確認・タスク予定だけを更新・削除します。</p>
               </div>
 
               {#if googleCalendarLastSyncedAt || googleCalendarLastSyncError || googleCalendarStatus}
@@ -16518,7 +19449,7 @@
               {/if}
 
               <p class="pcloud-automation-note">
-                同じ時刻のCreator警告・アラートとサブスク予定は、送信先ごとに1通へまとめます。
+                同じ時刻のCreator警告・アラート、サブスク予定、Creatorタスクは、送信先ごとに1通へまとめます。
                 送信直前にSQLiteDBを再読込し、現在の日付で警告状態と更新予定を再計算します。
               </p>
               <div class="pcloud-backup-actions">
@@ -16583,7 +19514,11 @@
                 </label>
                 <label>
                   <input type="checkbox" bind:checked={discordNotifySubscriptionReminder} disabled={discordNotificationBusy || !discordNotificationEnabled} />
-                  <span><strong>サブスクの更新アラート</strong><small>アラートがONで、更新予定日の前日になった時</small></span>
+                  <span><strong>サブスクの更新予定</strong><small>終了予定がOFFで、更新予定日の前日になった時</small></span>
+                </label>
+                <label>
+                  <input type="checkbox" bind:checked={discordNotifyCreatorTasks} disabled={discordNotificationBusy || !discordNotificationEnabled} />
+                  <span><strong>Creator Trackingのタスク</strong><small>タスクごとのアラート頻度に従って通知</small></span>
                 </label>
                 <label>
                   <input type="checkbox" bind:checked={discordNotifyScheduledScanStarted} disabled={discordNotificationBusy || !discordNotificationEnabled} />
@@ -16697,7 +19632,11 @@
                 </label>
                 <label>
                   <input type="checkbox" bind:checked={lineNotifySubscriptionReminder} disabled={lineNotificationBusy || !lineNotificationEnabled} />
-                  <span><strong>サブスクの更新アラート</strong><small>アラートがONで、更新予定日の前日になった時</small></span>
+                  <span><strong>サブスクの更新予定</strong><small>終了予定がOFFで、更新予定日の前日になった時</small></span>
+                </label>
+                <label>
+                  <input type="checkbox" bind:checked={lineNotifyCreatorTasks} disabled={lineNotificationBusy || !lineNotificationEnabled} />
+                  <span><strong>Creator Trackingのタスク</strong><small>タスクごとのアラート頻度に従って通知</small></span>
                 </label>
                 <label>
                   <input type="checkbox" bind:checked={lineNotifyScheduledScanStarted} disabled={lineNotificationBusy || !lineNotificationEnabled} />
@@ -16773,6 +19712,81 @@
               {#if lineNotificationStatus}<p class="pcloud-backup-status" aria-live="polite">{lineNotificationStatus}</p>{/if}
             </section>
           </div>
+        {:else if settingsSection === 'creatorBlacklist'}
+          <div class="creator-blacklist-settings-page">
+            <section class="settings-panel creator-blacklist-settings-card">
+              <header class="creator-blacklist-settings-header">
+                <div class="creator-blacklist-settings-heading">
+                  <span class="creator-blacklist-settings-icon"><OctagonAlert size={19} /></span>
+                  <div>
+                    <h2>Creator Blacklist</h2>
+                    <p>登録した作者について、Creator Trackingページの新規作成を禁止します。</p>
+                  </div>
+                </div>
+                <button class="primary-button" type="button" onclick={addCreatorBlacklistItem} disabled={creatorBlacklistBusy}>
+                  <Plus size={16} /> Add
+                </button>
+              </header>
+
+              <div class="creator-blacklist-table" aria-label="Creator Blacklist">
+                <div class="creator-blacklist-table-head" aria-hidden="true">
+                  <span>作者名</span>
+                  <span>理由（任意）</span>
+                  <span>登録日</span>
+                  <span></span>
+                </div>
+                {#if creatorBlacklistItems.length === 0}
+                  <div class="creator-blacklist-empty">
+                    <UserRound size={22} />
+                    <span>Blacklistに登録されている作者はいません。</span>
+                  </div>
+                {:else}
+                  {#each creatorBlacklistItems as item, index (item.originalCreator || `new-${index}`)}
+                    <div class="creator-blacklist-row">
+                      <input
+                        type="text"
+                        value={item.creator}
+                        placeholder="作者名"
+                        aria-label="作者名"
+                        oninput={(event) => updateCreatorBlacklistItem(index, 'creator', event.currentTarget.value)}
+                        disabled={creatorBlacklistBusy} />
+                      <input
+                        type="text"
+                        value={item.reason}
+                        placeholder="理由を入力（任意）"
+                        aria-label="理由（任意）"
+                        oninput={(event) => updateCreatorBlacklistItem(index, 'reason', event.currentTarget.value)}
+                        disabled={creatorBlacklistBusy} />
+                      <time datetime={item.registeredOn}>{item.registeredOn || '-'}</time>
+                      <div class="creator-blacklist-row-actions">
+                        <button
+                          type="button"
+                          class="creator-blacklist-save"
+                          title="この行を保存"
+                          aria-label={`${item.creator || '未入力の行'}を保存`}
+                          onclick={() => saveCreatorBlacklistItem(index)}
+                          disabled={creatorBlacklistBusy || !item.dirty || !item.creator.trim()}>
+                          <Check size={16} />
+                        </button>
+                        <button
+                          type="button"
+                          class="creator-blacklist-delete"
+                          title="Blacklistから削除"
+                          aria-label={`${item.creator || '未入力の行'}を削除`}
+                          onclick={() => deleteCreatorBlacklistItem(index)}
+                          disabled={creatorBlacklistBusy}>
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  {/each}
+                {/if}
+              </div>
+              <p class="creator-blacklist-note">
+                既に存在するCreator Trackingページは削除されません。Blacklist登録後の新規作成だけを停止します。
+              </p>
+            </section>
+          </div>
         {:else if settingsSection === 'creatorTracking'}
           <div class="creator-tracking-settings-page">
             <div class="creator-tracking-settings-grid">
@@ -16781,15 +19795,25 @@
                   <span class="creator-tracking-settings-icon"><Star size={18} /></span>
                   <div>
                     <h2>作品の傾向</h2>
-                    <p>レーダーチャートの指標名、重み、総合評価の計算方法</p>
+                    <p>区分ごとのレーダーチャート指標名、重み、総合評価の計算方法</p>
                   </div>
                 </header>
+
+                <div class="creator-tracking-settings-category-tabs" role="group" aria-label="作品の傾向を設定する区分">
+                  {#each gallerySections as section (section.id)}
+                    <button
+                      type="button"
+                      class:active={creatorTrackingSettingsCategory === section.id}
+                      aria-pressed={creatorTrackingSettingsCategory === section.id}
+                      onclick={() => selectCreatorTrackingSettingsCategory(section.id)}>{section.label}</button>
+                  {/each}
+                </div>
 
                 <div class="creator-tracking-settings-metric-head" aria-hidden="true">
                   <span>指標</span><span>表示名</span><span>重み</span>
                 </div>
                 <div class="creator-tracking-settings-metrics">
-                  {#each creatorTrackingSettingsDraft.metrics as metric, index (metric.key)}
+                  {#each creatorTrackingSettingsMetrics as metric, index (`${creatorTrackingSettingsCategory}:${metric.key}`)}
                     <label class="creator-tracking-settings-metric-row">
                       <span>{index + 1}</span>
                       <input bind:value={metric.label} aria-label={`${index + 1}番目の指標名`} onchange={saveCreatorTrackingSettings} />
@@ -16852,7 +19876,7 @@
                   <span class="creator-tracking-settings-icon"><ListFilter size={18} /></span>
                   <div>
                     <h2>ドロップダウンの候補</h2>
-                    <p>作者基本情報で使用するフォロー方針の候補を編集します</p>
+                    <p>作者基本情報とタスクスケジューラで使用する候補を編集します</p>
                   </div>
                 </header>
                 <div class="creator-tracking-settings-option-columns">
@@ -16867,6 +19891,21 @@
                           <span>{index + 1}</span>
                           <input value={option} placeholder="フォロー方針" aria-label={`フォロー方針候補${index + 1}`} oninput={(event) => updateCreatorTrackingStringOption('followPolicyOptions', index, event.currentTarget.value)} onchange={saveCreatorTrackingSettings} />
                           <button type="button" title="候補を削除" aria-label={`フォロー方針候補${index + 1}を削除`} onclick={() => removeCreatorTrackingStringOption('followPolicyOptions', index)}><Trash2 size={14} /></button>
+                        </div>
+                      {/each}
+                    </div>
+                  </section>
+                  <section>
+                    <div class="creator-tracking-settings-option-heading">
+                      <div><h3>タスク分類</h3><p>タスクスケジューラで使用</p></div>
+                      <button type="button" class="quiet-button" onclick={() => addCreatorTrackingStringOption('taskCategories')}><Plus size={14} /> 候補を追加</button>
+                    </div>
+                    <div class="creator-tracking-settings-option-list">
+                      {#each creatorTrackingSettingsDraft.taskCategories as option, index}
+                        <div>
+                          <span>{index + 1}</span>
+                          <input value={option} placeholder="タスク分類" aria-label={`タスク分類候補${index + 1}`} oninput={(event) => updateCreatorTrackingStringOption('taskCategories', index, event.currentTarget.value)} onchange={saveCreatorTrackingSettings} />
+                          <button type="button" title="候補を削除" aria-label={`タスク分類候補${index + 1}を削除`} onclick={() => removeCreatorTrackingStringOption('taskCategories', index)}><Trash2 size={14} /></button>
                         </div>
                       {/each}
                     </div>
@@ -17068,6 +20107,79 @@
               <button onclick={saveNConvertSettings}>保存</button>
             </div>
           </section>
+        {:else if settingsSection === 'aiConcierge'}
+          <div class="ai-concierge-settings-layout">
+            <section class="settings-panel ai-concierge-settings-panel">
+              <div class="database-panel-heading">
+                <div class="ai-concierge-settings-heading">
+                  <span><BrainCircuit size={21} /></span>
+                  <div>
+                    <h2>会話データの保存先</h2>
+                    <p>表示中の会話履歴、診断ログ、AIへ渡すGalleryBrowser専用ワークスペースを保存します</p>
+                  </div>
+                </div>
+                {#if aiConciergeRestartRequired}
+                  <span class="database-restart-badge">再起動後に切替</span>
+                {/if}
+              </div>
+              <label class="wide">
+                <span>保存先ディレクトリ</span>
+                <span class="program-executable-input">
+                  <input
+                    bind:value={aiConciergeDataDirectoryDraft}
+                    placeholder="空欄の場合はGalleryBrowserの既定データフォルダ"
+                    disabled={aiConciergeSettingsBusy}
+                  />
+                  <button
+                    type="button"
+                    title="保存先を選択"
+                    disabled={aiConciergeSettingsBusy}
+                    onclick={() => postHostMessage({ type: 'settings.aiConcierge.pickDirectory' })}>
+                    <FolderOpen size={17} />
+                  </button>
+                </span>
+              </label>
+              <div class="ai-concierge-storage-facts">
+                <div>
+                  <span>現在使用中</span>
+                  <code title={aiConciergeRuntimeDataDirectory}>{aiConciergeRuntimeDataDirectory || '-'}</code>
+                </div>
+                <div>
+                  <span>保存対象</span>
+                  <code>session.json / diagnostic.log / workspace</code>
+                </div>
+              </div>
+              <p class="settings-note">空の保存先へ変更した場合は現在の会話データをコピーします。既存データがある保存先を選んだ場合は、その内容を次回起動から使用します。</p>
+              <div class="settings-actions">
+                <button class="primary-button" onclick={saveAiConciergeSettings} disabled={aiConciergeSettingsBusy}>保存</button>
+                <button class="quiet-button" onclick={resetAiConciergeDataDirectory} disabled={aiConciergeSettingsBusy}>既定値</button>
+              </div>
+              {#if aiConciergeSettingsStatus}
+                <p class="ai-concierge-settings-status" aria-live="polite">{aiConciergeSettingsStatus}</p>
+              {/if}
+            </section>
+
+            <section class="settings-panel ai-concierge-settings-panel">
+              <div class="ai-concierge-settings-heading">
+                <span><FileText size={21} /></span>
+                <div>
+                  <h2>属性推論の学習データ</h2>
+                  <p>AIが付与した属性と、後から手動で修正した履歴はGallery本体DBへ保存します</p>
+                </div>
+              </div>
+              <div class="ai-concierge-storage-facts">
+                <div>
+                  <span>保存先DB</span>
+                  <code title={aiConciergeLearningDatabasePath}>{aiConciergeLearningDatabasePath || '-'}</code>
+                </div>
+                <div>
+                  <span>履歴テーブル</span>
+                  <code>ai_attribute_inference_history / ai_attribute_correction_history</code>
+                </div>
+              </div>
+              <p class="settings-note">学習データの保存先は Settings ＞ Files ＞ データベースの「本体DBの保存先」と連動します。Codexのログイン情報と共通設定は安全上の理由からユーザープロファイルの <code>%USERPROFILE%\.codex</code> に残り、この設定では移動しません。</p>
+            </section>
+          </div>
         {:else if settingsSection === 'searchEngine'}
           <section class="settings-panel search-engine-settings-panel">
             <div class="field-grid">
@@ -17092,11 +20204,18 @@
                 <span>Gemini APIキー</span>
                 <input type="password" bind:value={searchEngineSettings.geminiApiKey} autocomplete="off" placeholder="任意。AI候補取得の接続用に保存します" />
               </label>
+              <label class="wide">
+                <span>Yahoo! JAPAN Client ID</span>
+                <input bind:value={searchEngineSettings.yahooClientId} autocomplete="off" placeholder="ローマ字検索用のアプリケーションID" />
+                <small>Gallery、Explorer、Creators、各管理・属性登録画面の日本語をローマ字で検索するために使用します</small>
+                <small>Client IDを設定した場合だけ有効です。ローマ字検索時、候補となる日本語文字列をYahoo! JAPANへ送信します</small>
+              </label>
             </div>
-            <p class="settings-note">Google はブラウザ検索、Brave Search API と Gemini API はフィルタエディタ内へ候補を表示します</p>
+            <p class="settings-note">Google はブラウザ検索、Brave Search API と Gemini API はフィルタエディタ内へ候補を表示します。Yahoo! JAPAN ルビ振りAPIの読みはキャッシュDBへ保存し、同じ文字列を繰り返し取得しません</p>
             <div class="settings-actions">
               <button onclick={saveSearchEngineSettings}>保存</button>
             </div>
+            <p class="settings-note" data-i18n-skip>Webサービス by Yahoo! JAPAN （https://developer.yahoo.co.jp/sitemap/）</p>
           </section>
         {:else if settingsSection === 'galleryTargets'}
           <div class="gallery-targets-settings-page">
@@ -18634,8 +21753,8 @@
           <div>
             <span class="calendar-heading-icon"><CalendarCheck size={22} /></span>
             <div>
-              <h1>Subscription Calendar</h1>
-              <p>有効なサブスクの更新予定をCreator Trackingから集約します</p>
+              <h1>Schedule Overview</h1>
+              <p>サブスク、Creator確認、タスクをひとつのカレンダーに集約します</p>
             </div>
           </div>
           <div class="calendar-controls">
@@ -18650,6 +21769,13 @@
           </div>
         </header>
 
+        <div class="calendar-event-filters" role="group" aria-label="表示する予定">
+          <button class:active={calendarShowSubscriptions} aria-pressed={calendarShowSubscriptions} onclick={() => calendarShowSubscriptions = !calendarShowSubscriptions}><span class="calendar-filter-mark subscription"></span>サブスクリプション</button>
+          <button class:active={calendarShowCreatorChecks} aria-pressed={calendarShowCreatorChecks} onclick={() => calendarShowCreatorChecks = !calendarShowCreatorChecks}><span class="calendar-filter-mark creator-check"></span>Creator確認</button>
+          <button class:active={calendarShowTasks} aria-pressed={calendarShowTasks} onclick={() => calendarShowTasks = !calendarShowTasks}><span class="calendar-filter-mark task"></span>タスク</button>
+          <small><span class="calendar-severity-sample warning"></span>警告 <span class="calendar-severity-sample alert"></span>重要な警告</small>
+        </div>
+
         {#if calendarIsLoading}
           <div class="calendar-status"><RefreshCw size={22} /> Calendarを読み込んでいます...</div>
         {:else if calendarError}
@@ -18663,29 +21789,65 @@
               <article class:muted={!cell.inMonth && calendarViewMode === 'month'} class:today={cell.isToday} class="calendar-day-cell">
                 <div class="calendar-day-head">
                   <span>{cell.day}</span>
-                  {#if cell.events.length > 0}<small>{cell.events.length}</small>{/if}
+                  {#if cell.events.length > 0}
+                    <button title={`${cell.events.length}件の内訳を表示`} aria-label={`${cell.date}の${cell.events.length}件の内訳を表示`} onclick={() => openCalendarDayDetail(cell.date, cell.events)}>{cell.events.length}</button>
+                  {/if}
                 </div>
                 <div class="calendar-day-events">
-                  {#each cell.events as event (event.id)}
+                  {#each cell.events.slice(0, 6) as calendarEvent (calendarEvent.id)}
                     <button
-                      class:ending={event.endingPlanned}
-                      class:reminder={event.reminder}
+                      class:subscription={calendarEvent.eventType === 'subscription'}
+                      class:creator-check={calendarEvent.eventType === 'creator-check'}
+                      class:task={calendarEvent.eventType === 'task'}
+                      class:ending-planned={calendarEvent.eventType === 'subscription' && calendarEvent.endingPlanned}
+                      class:warning={calendarEvent.severity === 'warning'}
+                      class:alert={calendarEvent.severity === 'alert'}
                       class="calendar-event-pill"
-                      title={`${event.displayName} / ${event.platform}${event.plan ? ` / ${event.plan}` : ''}`}
-                      onclick={() => openCalendarEventCreator(event)}
+                      title={getCalendarEventAccessibleLabel(calendarEvent)}
+                      onclick={() => openCalendarEventCreator(calendarEvent)}
                     >
-                      <strong data-i18n-skip>{event.displayName}</strong>
-                      <span data-i18n-skip>{event.platform}{event.plan ? ` / ${event.plan}` : ''}</span>
-                      {#if formatCalendarEventAmount(event)}<small>{formatCalendarEventAmount(event)}</small>{/if}
+                      <strong data-i18n-skip>{calendarEvent.displayName}</strong>
+                      <span data-i18n-skip>{getCalendarEventTitle(calendarEvent)}</span>
+                      <small data-i18n-skip>{getCalendarEventSecondaryText(calendarEvent)}{formatCalendarEventAmount(calendarEvent) ? ` · ${formatCalendarEventAmount(calendarEvent)}` : ''}</small>
                     </button>
                   {/each}
+                  {#if cell.events.length > 6}
+                    <button class="calendar-more-events" onclick={() => openCalendarDayDetail(cell.date, cell.events)}>ほか {cell.events.length - 6}件</button>
+                  {/if}
                 </div>
               </article>
             {/each}
           </div>
-          {#if calendarEvents.length === 0}
-            <div class="calendar-empty"><CalendarCheck size={34} /><h2>更新予定はありません</h2><p>Creator Trackingで有効なサブスクの更新予定日を登録するとここに表示されます。</p></div>
+          {#if getVisibleCalendarEvents().length === 0}
+            <div class="calendar-empty"><CalendarCheck size={34} /><h2>表示する予定はありません</h2><p>Creator Trackingでサブスク、確認間隔、タスクを登録するとここに表示されます。</p></div>
           {/if}
+        {/if}
+
+        {#if calendarDetailDate}
+          <div class="calendar-detail-backdrop" role="presentation" onclick={closeCalendarDayDetail}>
+            <dialog open class="calendar-detail-dialog" aria-labelledby="calendar-detail-title" onclick={(event) => event.stopPropagation()}>
+              <header>
+                <div><small>DAY SCHEDULE</small><h2 id="calendar-detail-title">{calendarDetailDate}</h2></div>
+                <button type="button" title="閉じる" aria-label="日別予定を閉じる" onclick={closeCalendarDayDetail}>×</button>
+              </header>
+              <div class="calendar-detail-list">
+                {#each calendarDetailEvents as calendarEvent (calendarEvent.id)}
+                  <button
+                    class:subscription={calendarEvent.eventType === 'subscription'}
+                    class:creator-check={calendarEvent.eventType === 'creator-check'}
+                    class:task={calendarEvent.eventType === 'task'}
+                    class:ending-planned={calendarEvent.eventType === 'subscription' && calendarEvent.endingPlanned}
+                    class:warning={calendarEvent.severity === 'warning'}
+                    class:alert={calendarEvent.severity === 'alert'}
+                    onclick={() => { closeCalendarDayDetail(); openCalendarEventCreator(calendarEvent); }}
+                  >
+                    <span><strong data-i18n-skip>{calendarEvent.displayName}</strong><em>{getCalendarEventTitle(calendarEvent)}</em></span>
+                    <small data-i18n-skip>{getCalendarEventSecondaryText(calendarEvent)}{formatCalendarEventAmount(calendarEvent) ? ` · ${formatCalendarEventAmount(calendarEvent)}` : ''}</small>
+                  </button>
+                {/each}
+              </div>
+            </dialog>
+          </div>
         {/if}
       </section>
     {:else if activeView === 'userMetrics'}
@@ -18926,7 +22088,7 @@
             <section class="user-metrics-panel user-metrics-tracking-ranking">
               <div class="user-metrics-panel-heading"><div><h2>CREATOR TENDENCY</h2><p>Creator Tracking「作品の傾向」</p></div><Trophy size={18} /></div>
               <select bind:value={userMetricsMetricKey} aria-label="作品の傾向の指標">
-                {#each userMetricsDashboard.metricRankings as ranking}<option value={ranking.key}>{getUserMetricsMetricLabel(ranking.key, creatorTrackingSettingsDraft.metrics)}</option>{/each}
+                {#each userMetricsDashboard.metricRankings as ranking}<option value={ranking.key}>{getUserMetricsMetricLabel(ranking.key, getCreatorTrackingSettingsMetrics(userMetricsCategory))}</option>{/each}
               </select>
               <div class="user-metrics-score-list">
                 {#each getUserMetricsMetricRanking(userMetricsDashboard, userMetricsMetricKey) as item, index}
@@ -19014,34 +22176,63 @@
             </header>
 
             <section class="creator-tracking-index-controls">
-              <div class="creator-tracking-index-sections" role="group" aria-label="区分">
-                <button class:active={creatorTrackingIndexSection === 'all'} onclick={() => selectCreatorTrackingIndexSection('all')}>
-                  すべて <small>{getCreatorTrackingIndexSectionCount('all', creatorTrackingIndexItems)}</small>
-                </button>
-                {#each gallerySections as section (section.id)}
-                  <button class:active={creatorTrackingIndexSection === section.id} onclick={() => selectCreatorTrackingIndexSection(section.id)}>
-                    {section.label} <small>{getCreatorTrackingIndexSectionCount(section.id, creatorTrackingIndexItems)}</small>
+              <label class="creator-tracking-index-search">
+                <Search size={16} />
+                <input
+                  bind:this={creatorTrackingIndexSearchElement}
+                  bind:value={creatorTrackingIndexQuery}
+                  type="search"
+                  placeholder="Creator名・別名を検索"
+                  aria-label="Creator Tracking IndexをCreator名または別名で検索" />
+                <small>{visibleCreatorTrackingIndexItems.length.toLocaleString('ja-JP')} / {creatorTrackingIndexItems.length.toLocaleString('ja-JP')}</small>
+                {#if creatorTrackingIndexQuery}
+                  <button type="button" title="検索をクリア" aria-label="Creator Tracking Indexの検索をクリア" onclick={() => { creatorTrackingIndexQuery = ''; void focusCreatorTrackingIndexSearch(); }}><X size={14} /></button>
+                {/if}
+              </label>
+              <div class="creator-tracking-index-controls-row">
+                <div class="creator-tracking-index-sections" role="group" aria-label="区分">
+                  <button class:active={creatorTrackingIndexSection === 'all'} onclick={() => selectCreatorTrackingIndexSection('all')}>
+                    すべて <small>{getCreatorTrackingIndexSectionCount('all', creatorTrackingIndexItems)}</small>
                   </button>
-                {/each}
-              </div>
-              <div class="creator-tracking-index-sorts" role="group" aria-label="並び替え">
-                <span>Sort</span>
-                <button class:active={creatorTrackingIndexSortKey === 'creator'} onclick={() => setCreatorTrackingIndexSort('creator')}>
-                  Creator名 {creatorTrackingIndexSortKey === 'creator' ? (creatorTrackingIndexSortDirection === 'asc' ? '↑' : '↓') : ''}
-                </button>
-                <button class:active={creatorTrackingIndexSortKey === 'lastChecked'} onclick={() => setCreatorTrackingIndexSort('lastChecked')}>
-                  最終チェック日 {creatorTrackingIndexSortKey === 'lastChecked' ? (creatorTrackingIndexSortDirection === 'asc' ? '↑' : '↓') : ''}
-                </button>
-                <button class:active={creatorTrackingIndexSortKey === 'alert'} onclick={() => setCreatorTrackingIndexSort('alert')}>
-                  アラート状況 {creatorTrackingIndexSortKey === 'alert' ? (creatorTrackingIndexSortDirection === 'asc' ? '↑' : '↓') : ''}
-                </button>
-                <button class="creator-tracking-index-refresh" title="Indexを更新" aria-label="Indexを更新" disabled={creatorTrackingIndexIsLoading} onclick={loadCreatorTrackingIndex}><RefreshCw size={16} /></button>
+                  {#each gallerySections as section (section.id)}
+                    <button class:active={creatorTrackingIndexSection === section.id} onclick={() => selectCreatorTrackingIndexSection(section.id)}>
+                      {section.label} <small>{getCreatorTrackingIndexSectionCount(section.id, creatorTrackingIndexItems)}</small>
+                    </button>
+                  {/each}
+                </div>
+                <div class="creator-tracking-index-sorts" role="group" aria-label="並び替え">
+                  <span>Sort</span>
+                  <button
+                    type="button"
+                    class="creator-tracking-index-wishlist-filter"
+                    class:active={creatorTrackingIndexWishlistOnly}
+                    aria-pressed={creatorTrackingIndexWishlistOnly}
+                    title="ウィッシュリスト登録済みCreatorだけを表示"
+                    onclick={toggleCreatorTrackingIndexWishlist}>
+                    <Heart size={14} fill={creatorTrackingIndexWishlistOnly ? 'currentColor' : 'none'} />
+                    Wishlist
+                  </button>
+                  <button class:active={creatorTrackingIndexSortKey === 'creator'} onclick={() => setCreatorTrackingIndexSort('creator')}>
+                    Creator名 {creatorTrackingIndexSortKey === 'creator' ? (creatorTrackingIndexSortDirection === 'asc' ? '↑' : '↓') : ''}
+                  </button>
+                  <button class:active={creatorTrackingIndexSortKey === 'lastChecked'} onclick={() => setCreatorTrackingIndexSort('lastChecked')}>
+                    最終チェック日 {creatorTrackingIndexSortKey === 'lastChecked' ? (creatorTrackingIndexSortDirection === 'asc' ? '↑' : '↓') : ''}
+                  </button>
+                  <button class:active={creatorTrackingIndexSortKey === 'alert'} onclick={() => setCreatorTrackingIndexSort('alert')}>
+                    アラート状況 {creatorTrackingIndexSortKey === 'alert' ? (creatorTrackingIndexSortDirection === 'asc' ? '↑' : '↓') : ''}
+                  </button>
+                  <button class:active={creatorTrackingIndexSortKey === 'new'} onclick={() => setCreatorTrackingIndexSort('new')}>
+                    新規追加 {creatorTrackingIndexSortKey === 'new' ? (creatorTrackingIndexSortDirection === 'asc' ? '↑' : '↓') : ''}
+                  </button>
+                  <button class="creator-tracking-index-refresh" title="Indexを更新" aria-label="Indexを更新" disabled={creatorTrackingIndexIsLoading} onclick={loadCreatorTrackingIndex}><RefreshCw size={16} /></button>
+                </div>
               </div>
             </section>
 
             <section class="creator-tracking-index-list">
               <header>
                 <span>Creator</span>
+                <span>Wishlist</span>
                 <span>区分</span>
                 <span>最終チェック日</span>
                 <span>経過</span>
@@ -19052,14 +22243,21 @@
               {:else if creatorTrackingIndexError}
                 <div class="creator-tracking-index-empty error"><TriangleAlert size={22} />{creatorTrackingIndexError}</div>
               {:else if visibleCreatorTrackingIndexItems.length === 0}
-                <div class="creator-tracking-index-empty"><UsersRound size={24} />この区分に登録済みCreatorはありません</div>
+                <div class="creator-tracking-index-empty"><UsersRound size={24} />{creatorTrackingIndexQuery.trim() ? '検索条件に一致するCreatorはありません' : creatorTrackingIndexWishlistOnly ? 'ウィッシュリストに登録済みのCreatorはありません' : 'この区分に登録済みCreatorはありません'}</div>
               {:else}
                 {#each visibleCreatorTrackingIndexItems as item (item.creator)}
                   <article>
                     <button class="creator-tracking-index-creator" title={`${formatCreatorTrackingIndexName(item)}を開く`} onclick={() => openCreatorTrackingFromIndex(item)}>
-                      <strong>{formatCreatorTrackingIndexName(item)}</strong>
+                      <span class="creator-tracking-index-name">
+                        <strong>{formatCreatorTrackingIndexName(item)}</strong>
+                        {#if item.isNewAfterScheduledScan}<em><Sparkles size={11} />NEW</em>{/if}
+                      </span>
                       <ChevronRight size={16} />
                     </button>
+                    <span class:active={item.wishlist} class="creator-tracking-index-wishlist-state">
+                      <Heart size={14} fill={item.wishlist ? 'currentColor' : 'none'} />
+                      {item.wishlist ? '登録済み' : '-'}
+                    </span>
                     <div class="creator-tracking-index-categories">
                       {#if item.categories.length > 0}
                         {#each item.categories as category}<span>{getGallerySectionLabel(category)}</span>{/each}
@@ -19084,6 +22282,12 @@
         {:else if creatorTracking}
           <div class="creator-tracking-shell">
             <section class="creator-tracking-hero">
+              <button
+                type="button"
+                class="creator-tracking-page-close"
+                title="このCreator Trackingタブを閉じる"
+                aria-label="このCreator Trackingタブを閉じる"
+                onclick={(event) => closeCreatorTrackingTab(event, activeCreatorTrackingTabId)}><X size={17} /></button>
               <div class="creator-tracking-avatar">
                 {#if creatorTrackingSummary && galleryThumbnails[creatorTrackingSummary.id]}
                   <img src={galleryThumbnails[creatorTrackingSummary.id]} alt="" />
@@ -19111,7 +22315,7 @@
                     <span>Since last check</span>
                     <strong>{checkAge.days === null ? '-' : `${checkAge.days.toLocaleString('en-US')} Days`}</strong>
                   </div>
-                  <div><span>Last update</span><strong>{formatGalleryDate(creatorTrackingSummary.lastUpdatedTime)}</strong></div>
+                  <div><span>Last update</span><strong>{formatGalleryDate(getCreatorTrackingLatestAddedTime())}</strong></div>
                 </div>
               {/if}
             </section>
@@ -19123,77 +22327,73 @@
               {@const tagComposition = creatorTrackingSummary?.tagComposition ?? []}
               {@const titleCompositionSegments = getCreatorTrackingCompositionSegments(titleComposition)}
               {@const tagCompositionSegments = getCreatorTrackingCompositionSegments(tagComposition)}
-              <section class="creator-tracking-dashboard">
+              <section class="creator-tracking-dashboard" aria-busy={creatorTrackingDashboardSwitching}>
                 <header class="creator-tracking-dashboard-header">
                   <div class="creator-tracking-panel-title">
                     <div class="creator-tracking-panel-icon"><ChartNoAxesCombined size={18} /></div>
                     <div><h2>SUMMARY</h2><p>{getGallerySectionLabel(creatorTrackingDashboard.category)}内の集計と推移</p></div>
                   </div>
+                  <div class="creator-tracking-category-toolbar">
+                    {#if creatorTrackingCategoryProfileLabels.length > 1}
+                      <div class="creator-tracking-category-tabs" aria-label="SUMMARYの区分">
+                        {#each creatorTrackingCategoryProfileLabels as profile}
+                          <button
+                            type="button"
+                            class:active={profile.category === activeCreatorTrackingCategoryId}
+                            aria-pressed={profile.category === activeCreatorTrackingCategoryId}
+                            onclick={() => switchCreatorTrackingCategory(profile.category)}>{profile.label}</button>
+                        {/each}
+                      </div>
+                    {/if}
+                    <button type="button" class:active={creatorTrackingSummaryEditMode} title="カード構成を設定" aria-pressed={creatorTrackingSummaryEditMode} onclick={() => creatorTrackingSummaryEditMode = !creatorTrackingSummaryEditMode}><Settings size={16} /></button>
+                  </div>
                 </header>
+                {#if creatorTrackingSummaryEditMode}
+                  <div class="creator-tracking-card-editor">
+                    <div><strong>カード構成</strong><span>6枠へ表示する指標を選択します。既に使用中の指標を選ぶと位置を入れ替えます。</span></div>
+                    <div class="creator-tracking-card-editor-slots">
+                      {#each activeCreatorTrackingSummaryCardIds as cardId, index}
+                        <label><span>{index + 1}</span><select value={cardId} onchange={(event) => setCreatorTrackingSummaryCard(index, event.currentTarget.value as CreatorTrackingSummaryCardId)}>{#each creatorTrackingSummaryCardOptions as option}<option value={option.id}>{option.label}</option>{/each}</select></label>
+                      {/each}
+                    </div>
+                    <button type="button" onclick={resetCreatorTrackingSummaryCards}><RotateCcw size={14} /> 初期構成</button>
+                  </div>
+                {/if}
 
                 <div class="creator-tracking-dashboard-layout">
                   <div class="creator-tracking-kpis">
-                    <article class="creator-tracking-kpi">
-                      <div class="creator-tracking-kpi-icon files"><File size={19} /></div>
-                      <div class="creator-tracking-kpi-body">
-                        <span>総ファイル数</span>
-                        <strong>{creatorTrackingDashboard.fileCount.toLocaleString('ja-JP')}</strong>
-                        <small class:gold={getCreatorTrackingRankTier(creatorTrackingDashboard.fileRank, creatorTrackingDashboard.creatorCount) === 'gold'} class:silver={getCreatorTrackingRankTier(creatorTrackingDashboard.fileRank, creatorTrackingDashboard.creatorCount) === 'silver'} class:bronze={getCreatorTrackingRankTier(creatorTrackingDashboard.fileRank, creatorTrackingDashboard.creatorCount) === 'bronze'}>
-                          {#if getCreatorTrackingRankTier(creatorTrackingDashboard.fileRank, creatorTrackingDashboard.creatorCount)}<Trophy size={13} />{/if}{formatCreatorTrackingRank(creatorTrackingDashboard.fileRank, creatorTrackingDashboard.creatorCount)}
-                        </small>
-                      </div>
-                    </article>
-                    <article class="creator-tracking-kpi">
-                      <div class="creator-tracking-kpi-icon images"><Grid3X3 size={19} /></div>
-                      <div class="creator-tracking-kpi-body">
-                        <span>総枚数</span>
-                        <strong>{creatorTrackingDashboard.totalImageCount.toLocaleString('ja-JP')}</strong>
-                        <small class:gold={getCreatorTrackingRankTier(creatorTrackingDashboard.totalImageCountRank, creatorTrackingDashboard.creatorCount) === 'gold'} class:silver={getCreatorTrackingRankTier(creatorTrackingDashboard.totalImageCountRank, creatorTrackingDashboard.creatorCount) === 'silver'} class:bronze={getCreatorTrackingRankTier(creatorTrackingDashboard.totalImageCountRank, creatorTrackingDashboard.creatorCount) === 'bronze'}>
-                          {#if getCreatorTrackingRankTier(creatorTrackingDashboard.totalImageCountRank, creatorTrackingDashboard.creatorCount)}<Trophy size={13} />{/if}{formatCreatorTrackingRank(creatorTrackingDashboard.totalImageCountRank, creatorTrackingDashboard.creatorCount)}
-                        </small>
-                      </div>
-                    </article>
-                    <article class="creator-tracking-kpi">
-                      <div class="creator-tracking-kpi-icon rating creator-tracking-kpi-rating-stars"><Star size={12} /><Star size={12} /><Star size={12} /></div>
-                      <div class="creator-tracking-kpi-body">
-                        <span>トータル評価値</span>
-                        <strong>{creatorTrackingDashboard.totalRating.toLocaleString('ja-JP')}</strong>
-                        <small class:gold={getCreatorTrackingRankTier(creatorTrackingDashboard.totalRatingRank, creatorTrackingDashboard.creatorCount) === 'gold'} class:silver={getCreatorTrackingRankTier(creatorTrackingDashboard.totalRatingRank, creatorTrackingDashboard.creatorCount) === 'silver'} class:bronze={getCreatorTrackingRankTier(creatorTrackingDashboard.totalRatingRank, creatorTrackingDashboard.creatorCount) === 'bronze'}>
-                          {#if getCreatorTrackingRankTier(creatorTrackingDashboard.totalRatingRank, creatorTrackingDashboard.creatorCount)}<Trophy size={13} />{/if}{formatCreatorTrackingRank(creatorTrackingDashboard.totalRatingRank, creatorTrackingDashboard.creatorCount)}
-                        </small>
-                      </div>
-                    </article>
-                    <article class="creator-tracking-kpi">
-                      <div class="creator-tracking-kpi-icon tracking"><Footprints size={19} /></div>
-                      <div class="creator-tracking-kpi-body">
-                        <span>フォローしている日数</span>
-                        <strong>{creatorTrackingDashboard.trackingDays.toLocaleString('ja-JP')}<em>日</em></strong>
-                        <small class:gold={getCreatorTrackingRankTier(creatorTrackingDashboard.trackingDaysRank, creatorTrackingDashboard.creatorCount) === 'gold'} class:silver={getCreatorTrackingRankTier(creatorTrackingDashboard.trackingDaysRank, creatorTrackingDashboard.creatorCount) === 'silver'} class:bronze={getCreatorTrackingRankTier(creatorTrackingDashboard.trackingDaysRank, creatorTrackingDashboard.creatorCount) === 'bronze'}>
-                          {#if getCreatorTrackingRankTier(creatorTrackingDashboard.trackingDaysRank, creatorTrackingDashboard.creatorCount)}<Trophy size={13} />{/if}{formatCreatorTrackingRank(creatorTrackingDashboard.trackingDaysRank, creatorTrackingDashboard.creatorCount)}
-                        </small>
-                      </div>
-                    </article>
-                    <article class="creator-tracking-kpi">
-                      <div class="creator-tracking-kpi-icon spend"><Coins size={19} /></div>
-                      <div class="creator-tracking-kpi-body">
-                        <span>総課金額</span>
-                        <strong>{formatCreatorTrackingSpendAmount(creatorTrackingDashboard.totalSpend, creatorTrackingDashboard.currency)}<em>{creatorTrackingDashboard.currency}</em></strong>
-                        <small class:gold={getCreatorTrackingRankTier(creatorTrackingDashboard.totalSpendRank, creatorTrackingDashboard.creatorCount) === 'gold'} class:silver={getCreatorTrackingRankTier(creatorTrackingDashboard.totalSpendRank, creatorTrackingDashboard.creatorCount) === 'silver'} class:bronze={getCreatorTrackingRankTier(creatorTrackingDashboard.totalSpendRank, creatorTrackingDashboard.creatorCount) === 'bronze'}>
-                          {#if getCreatorTrackingRankTier(creatorTrackingDashboard.totalSpendRank, creatorTrackingDashboard.creatorCount)}<Trophy size={13} />{/if}{formatCreatorTrackingRank(creatorTrackingDashboard.totalSpendRank, creatorTrackingDashboard.creatorCount)}
-                        </small>
-                        {#if creatorTrackingDashboard.hasMissingExchangeRates}<em class="creator-tracking-exchange-warning">一部レート未取得</em>{/if}
-                      </div>
-                    </article>
-                    <article class="creator-tracking-kpi">
-                      <div class="creator-tracking-kpi-icon recent"><Coins size={19} /></div>
-                      <div class="creator-tracking-kpi-body">
-                        <span>直近3か月の課金額</span>
-                        <strong>{formatCreatorTrackingSpendAmount(creatorTrackingDashboard.recentThreeMonthSpend, creatorTrackingDashboard.currency)}<em>{creatorTrackingDashboard.currency}</em></strong>
-                        <small class:gold={getCreatorTrackingRankTier(creatorTrackingDashboard.recentThreeMonthSpendRank, creatorTrackingDashboard.creatorCount) === 'gold'} class:silver={getCreatorTrackingRankTier(creatorTrackingDashboard.recentThreeMonthSpendRank, creatorTrackingDashboard.creatorCount) === 'silver'} class:bronze={getCreatorTrackingRankTier(creatorTrackingDashboard.recentThreeMonthSpendRank, creatorTrackingDashboard.creatorCount) === 'bronze'}>
-                          {#if getCreatorTrackingRankTier(creatorTrackingDashboard.recentThreeMonthSpendRank, creatorTrackingDashboard.creatorCount)}<Trophy size={13} />{/if}{formatCreatorTrackingRank(creatorTrackingDashboard.recentThreeMonthSpendRank, creatorTrackingDashboard.creatorCount)}
-                        </small>
-                      </div>
-                    </article>
+                    {#each activeCreatorTrackingSummaryCardIds as cardId}
+                      {@const rank = getCreatorTrackingCardRank(cardId)}
+                      {@const tier = rank ? getCreatorTrackingRankTier(rank.rank, rank.total) : ''}
+                      {@const cardValueParts = getCreatorTrackingCardValueParts(cardId)}
+                      <article class="creator-tracking-kpi">
+                        <div class="creator-tracking-kpi-icon" class:files={cardId === 'totalFiles'} class:images={cardId === 'totalImages' || cardId === 'averageImages'} class:rating={cardId === 'totalRating' || cardId === 'maxRating'} class:tracking={cardId === 'trackingDays'} class:spend={cardId === 'totalSpend'} class:recent={cardId === 'recentSpend'} class:video={cardId === 'videoFiles' || cardId === 'totalDuration' || cardId === 'averageDuration'} class:date={cardId === 'lastAdded'}>
+                          {#if cardId === 'totalFiles' || cardId === 'ratedFiles'}<File size={19} />
+                          {:else if cardId === 'totalImages' || cardId === 'averageImages'}<Grid3X3 size={19} />
+                          {:else if cardId === 'totalRating' || cardId === 'maxRating'}<Star size={19} />
+                          {:else if cardId === 'trackingDays'}<Footprints size={19} />
+                          {:else if cardId === 'totalSpend' || cardId === 'recentSpend'}<Coins size={19} />
+                          {:else if cardId === 'lastAdded'}<CalendarCheck size={19} />
+                          {:else}<Play size={19} />{/if}
+                        </div>
+                        <div class="creator-tracking-kpi-body">
+                          <span>{getCreatorTrackingCardLabel(cardId)}</span>
+                          <strong>
+                            {#each cardValueParts as part}
+                              {#if part.unit}<em>{part.text}</em>{:else}{part.text}{/if}
+                            {/each}
+                          </strong>
+                          {#if rank}
+                            <small class:gold={tier === 'gold'} class:silver={tier === 'silver'} class:bronze={tier === 'bronze'}>
+                              {#if tier}<Trophy size={13} />{/if}{formatCreatorTrackingRank(rank.rank, rank.total)}
+                            </small>
+                          {:else}
+                            <small class="creator-tracking-kpi-scope">{getGallerySectionLabel(activeCreatorTrackingCategoryId)}</small>
+                          {/if}
+                          {#if (cardId === 'totalSpend' || cardId === 'recentSpend') && creatorTrackingDashboard.hasMissingExchangeRates}<em class="creator-tracking-exchange-warning">一部レート未取得</em>{/if}
+                        </div>
+                      </article>
+                    {/each}
                   </div>
 
                   <div class="creator-tracking-composition-charts">
@@ -19333,9 +22533,16 @@
 
             <div class="creator-tracking-grid">
               <section class="creator-tracking-panel">
-                <header>
-                  <div class="creator-tracking-panel-icon"><UserRound size={18} /></div>
-                  <div><h2>作者基本情報とフォローの概要</h2><p>現在の活動状態と、自分側の確認進捗</p></div>
+                <header class="creator-tracking-panel-actions">
+                  <div class="creator-tracking-panel-title">
+                    <div class="creator-tracking-panel-icon"><UserRound size={18} /></div>
+                    <div><h2>作者基本情報とフォローの概要</h2><p>現在の活動状態と、自分側の確認進捗</p></div>
+                  </div>
+                  <label class="creator-tracking-wishlist-check">
+                    <input type="checkbox" bind:checked={creatorTracking.wishlist} onchange={markCreatorTrackingDirty} />
+                    <Heart size={16} fill={creatorTracking.wishlist ? 'currentColor' : 'none'} />
+                    <span>ウィッシュリストに登録</span>
+                  </label>
                 </header>
                 <div class="creator-tracking-fields two-columns">
                   <label class="creator-tracking-field">
@@ -19384,11 +22591,26 @@
               </section>
 
               <section class="creator-tracking-panel">
-                <header>
-                  <div class="creator-tracking-panel-icon"><Star size={18} /></div>
-                  <div><h2>作品の傾向</h2><p>作品傾向に対する自分の評価</p></div>
+                <header class="creator-tracking-panel-actions">
+                  <div class="creator-tracking-panel-title">
+                    <div class="creator-tracking-panel-icon"><Star size={18} /></div>
+                    <div><h2>作品の傾向</h2><p>{getGallerySectionLabel(activeCreatorTrackingCategoryId)}の作品傾向に対する自分の評価</p></div>
+                  </div>
+                  {#if creatorTrackingCategoryProfileLabels.length > 1}
+                    <div class="creator-tracking-category-toolbar">
+                      <div class="creator-tracking-category-tabs" aria-label="作品の傾向の区分">
+                        {#each creatorTrackingCategoryProfileLabels as profile}
+                          <button
+                            type="button"
+                            class:active={profile.category === activeCreatorTrackingCategoryId}
+                            aria-pressed={profile.category === activeCreatorTrackingCategoryId}
+                            onclick={() => switchCreatorTrackingCategory(profile.category)}>{profile.label}</button>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
                 </header>
-                <div class="creator-tracking-rating" aria-label={`総合評価 ${creatorTracking.personalRating.toFixed(1)} / 5`}>
+                <div class="creator-tracking-rating" aria-label={`総合評価 ${(activeCreatorTrackingCategoryProfile?.personalRating ?? 0).toFixed(1)} / 5`}>
                   <div class="creator-tracking-stars" aria-hidden="true">
                     {#each [0, 1, 2, 3, 4] as starIndex}
                       <span class="creator-tracking-star-meter">
@@ -19397,7 +22619,7 @@
                       </span>
                     {/each}
                   </div>
-                  <strong>{creatorTracking.personalRating.toFixed(1)} <span>/ 5</span></strong>
+                  <strong>{(activeCreatorTrackingCategoryProfile?.personalRating ?? 0).toFixed(1)} <span>/ 5</span></strong>
                 </div>
                 <div class="creator-tracking-evaluation-layout">
                   <div class="creator-tracking-radar-card">
@@ -19406,7 +22628,7 @@
                       {#each [1, 2, 3, 4] as level}
                         <polygon class="creator-tracking-radar-grid" points={getCreatorTrackingRadarPolygon(level)}></polygon>
                       {/each}
-                      {#each creatorTrackingSettingsDraft.metrics as metric, index}
+                      {#each activeCreatorTrackingMetricSettings as metric, index}
                         {@const axisPoint = getCreatorTrackingRadarPoint(index, 4)}
                         {@const labelPoint = getCreatorTrackingRadarPoint(index, 4, 111)}
                         <line class="creator-tracking-radar-axis" x1="180" y1="137" x2={axisPoint.x} y2={axisPoint.y}></line>
@@ -19416,23 +22638,23 @@
                           y={labelPoint.y + (index === 0 ? -3 : index === 3 ? 10 : 4)}
                           text-anchor={getCreatorTrackingRadarLabelAnchor(labelPoint.x)}>{metric.label}</text>
                       {/each}
-                      <polygon class="creator-tracking-radar-value" points={getCreatorTrackingRadarValuePolygon(creatorTracking.evaluationMetrics)}></polygon>
-                      {#each creatorTrackingSettingsDraft.metrics as metric, index}
-                        {@const valuePoint = getCreatorTrackingRadarPoint(index, creatorTracking.evaluationMetrics[metric.key])}
+                      <polygon class="creator-tracking-radar-value" points={getCreatorTrackingRadarValuePolygon(activeCreatorTrackingCategoryProfile?.evaluationMetrics ?? creatorTracking.evaluationMetrics)}></polygon>
+                      {#each activeCreatorTrackingMetricSettings as metric, index}
+                        {@const valuePoint = getCreatorTrackingRadarPoint(index, activeCreatorTrackingCategoryProfile?.evaluationMetrics[metric.key] ?? creatorTracking.evaluationMetrics[metric.key])}
                         <circle class="creator-tracking-radar-point" cx={valuePoint.x} cy={valuePoint.y} r="4"></circle>
                       {/each}
                     </svg>
                   </div>
                   <div class="creator-tracking-metric-controls">
-                    {#each creatorTrackingSettingsDraft.metrics as metric}
+                    {#each activeCreatorTrackingMetricSettings as metric}
                       <div class="creator-tracking-metric-row">
                         <div><span>{metric.label}</span></div>
                         <div class="creator-tracking-metric-values" aria-label={`${metric.label}の評価`}>
                           {#each [1, 2, 3, 4] as value}
                             <button
                               type="button"
-                              class:active={creatorTracking.evaluationMetrics[metric.key] === value}
-                              aria-pressed={creatorTracking.evaluationMetrics[metric.key] === value}
+                              class:active={(activeCreatorTrackingCategoryProfile?.evaluationMetrics[metric.key] ?? creatorTracking.evaluationMetrics[metric.key]) === value}
+                              aria-pressed={(activeCreatorTrackingCategoryProfile?.evaluationMetrics[metric.key] ?? creatorTracking.evaluationMetrics[metric.key]) === value}
                               onclick={() => setCreatorTrackingMetric(metric.key, value)}>{value}</button>
                           {/each}
                         </div>
@@ -19513,9 +22735,11 @@
                       <input aria-label={`${location.usage}のフォルダパス`} value={location.path} placeholder="D:\Gallery" oninput={(event) => updateCreatorTrackingStorageLocation(location.id, { path: event.currentTarget.value })} />
                       <button
                         class="creator-tracking-storage-delete"
-                        class:protected={location.usage !== 'Temporary'}
-                        title={location.usage === 'Temporary' ? '行を削除' : `${location.usage}は必須用途のため削除できません`}
-                        aria-disabled={location.usage !== 'Temporary'}
+                        class:protected={!canRemoveCreatorTrackingStorageLocation(location)}
+                        title={canRemoveCreatorTrackingStorageLocation(location)
+                          ? '行を削除'
+                          : `${location.usage}は必須用途のため削除できません`}
+                        aria-disabled={!canRemoveCreatorTrackingStorageLocation(location)}
                         onclick={() => removeCreatorTrackingStorageLocation(location)}
                       ><Trash2 size={16} /></button>
                     </div>
@@ -19548,7 +22772,7 @@
                   {:else}
                     <div class="creator-tracking-history-table">
                       <div class="creator-tracking-history-head creator-tracking-subscription-grid">
-                        <span></span><span>課金プラットフォーム</span><span>対象プラン（任意）</span><span>通貨</span><span>支払い額</span><span>支払い頻度</span><span>開始日</span><span>更新予定日</span><span>Wishlist</span><span>終了予定</span><span class="creator-tracking-alert-heading"><AlarmClock size={13} />アラート</span><span>終了</span><span>終了日</span><span></span>
+                        <span></span><span>課金プラットフォーム</span><span>対象プラン（任意）</span><span>通貨</span><span>支払い額</span><span>支払い頻度</span><span>開始日</span><span>更新予定日</span><span>Wishlist</span><span>終了予定</span><span>終了</span><span>終了日</span><span></span>
                       </div>
                       {#each creatorTracking.subscriptionHistory as subscription, index (subscription.id)}
                         {@const platformIcon = getCreatorTrackingActivityIcon(subscription.platform)}
@@ -19581,7 +22805,6 @@
                           <input aria-label={`サブスク${index + 1}の更新予定日`} type="date" value={subscription.renewalOn} disabled={subscription.wishlist} oninput={(event) => updateCreatorTrackingSubscription(index, { renewalOn: event.currentTarget.value })} />
                           <button class="creator-tracking-history-toggle" class:active={subscription.wishlist} aria-label={`サブスク${index + 1}のWishlist`} aria-pressed={subscription.wishlist} onclick={() => toggleCreatorTrackingSubscriptionWishlist(index)}><span></span>{subscription.wishlist ? 'ON' : 'OFF'}</button>
                           <button class="creator-tracking-history-toggle" class:active={subscription.endingPlanned} aria-pressed={subscription.endingPlanned} disabled={subscription.wishlist} onclick={() => updateCreatorTrackingSubscription(index, { endingPlanned: !subscription.endingPlanned })}><span></span>{subscription.endingPlanned ? 'ON' : 'OFF'}</button>
-                          <button class="creator-tracking-history-toggle" class:active={subscription.reminder} aria-label={`サブスク${index + 1}のアラート`} aria-pressed={subscription.reminder} disabled={subscription.wishlist} onclick={() => updateCreatorTrackingSubscription(index, { reminder: !subscription.reminder })}><span></span>{subscription.reminder ? 'ON' : 'OFF'}</button>
                           <button class="creator-tracking-history-toggle" class:active={subscription.isEnded} aria-label={`サブスク${index + 1}の終了状態`} aria-pressed={subscription.isEnded} disabled={subscription.wishlist} onclick={() => toggleCreatorTrackingSubscriptionEnded(index)}><span></span>{subscription.isEnded ? 'ON' : 'OFF'}</button>
                           <input aria-label={`サブスク${index + 1}の終了日`} type="date" value={subscription.endedOn} disabled={subscription.wishlist || !subscription.isEnded} oninput={(event) => updateCreatorTrackingSubscription(index, { endedOn: event.currentTarget.value })} />
                           <button class="creator-tracking-history-delete" title="サブスク歴を削除" onclick={() => removeCreatorTrackingSubscription(index)}><Trash2 size={15} /></button>
@@ -19628,6 +22851,49 @@
                       {/each}
                     </div>
                   {/if}
+                {/if}
+              </section>
+
+              <section class="creator-tracking-panel full-span creator-tracking-task-panel">
+                <header class="creator-tracking-panel-actions">
+                  <div class="creator-tracking-panel-title">
+                    <div class="creator-tracking-panel-icon"><List size={18} /></div>
+                    <div><h2>タスクスケジューラ</h2><p>作者に関する作業期間と通知タイミングを管理します</p></div>
+                  </div>
+                  <button class="creator-tracking-billing-add" onclick={addCreatorTrackingTask}><Plus size={15} /> タスクを追加</button>
+                </header>
+
+                {#if creatorTracking.tasks.length === 0}
+                  <button class="creator-tracking-history-empty" onclick={addCreatorTrackingTask}>タスクを追加してください</button>
+                {:else}
+                  <div class="creator-tracking-history-table creator-tracking-task-table">
+                    <div class="creator-tracking-history-head creator-tracking-task-grid">
+                      <span>タスク分類</span><span>タスク名</span><span>開始日</span><span>終了日</span><span></span><span>アラート頻度</span><span></span>
+                    </div>
+                    {#each creatorTracking.tasks as task, index (task.id)}
+                      <div class="creator-tracking-history-row creator-tracking-task-grid">
+                        <select aria-label={`タスク${index + 1}の分類`} value={task.category} onchange={(event) => updateCreatorTrackingTask(index, { category: event.currentTarget.value })}>
+                          <option value="">未分類</option>
+                          {#if task.category && !creatorTrackingSettingsDraft.taskCategories.includes(task.category)}
+                            <option value={task.category}>{task.category}</option>
+                          {/if}
+                          {#each creatorTrackingSettingsDraft.taskCategories as category}
+                            <option value={category}>{category}</option>
+                          {/each}
+                        </select>
+                        <input aria-label={`タスク${index + 1}の名前`} value={task.name} placeholder="タスク名" oninput={(event) => updateCreatorTrackingTask(index, { name: event.currentTarget.value })} />
+                        <input aria-label={`タスク${index + 1}の開始日`} type="date" value={task.startedOn} oninput={(event) => updateCreatorTrackingTask(index, { startedOn: event.currentTarget.value })} />
+                        <input aria-label={`タスク${index + 1}の終了日`} type="date" min={task.startedOn || undefined} value={task.endedOn} oninput={(event) => updateCreatorTrackingTask(index, { endedOn: event.currentTarget.value })} />
+                        <button class="creator-tracking-task-same-day" title="終了日を開始日と同日にする" aria-label={`タスク${index + 1}の終了日を開始日と同日にする`} onclick={() => setCreatorTrackingTaskEndToStart(index)}>同日</button>
+                        <select aria-label={`タスク${index + 1}のアラート頻度`} value={task.alertFrequency} onchange={(event) => updateCreatorTrackingTask(index, { alertFrequency: event.currentTarget.value as CreatorTrackingTask['alertFrequency'] })}>
+                          <option value="none">アラートしない</option>
+                          <option value="daily">期間中毎日</option>
+                          <option value="end">最終日のみ</option>
+                        </select>
+                        <button class="creator-tracking-history-delete" title="タスクを削除" aria-label={`タスク${index + 1}を削除`} onclick={() => removeCreatorTrackingTask(index)}><Trash2 size={15} /></button>
+                      </div>
+                    {/each}
+                  </div>
                 {/if}
               </section>
             </div>
@@ -19753,7 +23019,7 @@
                 {/each}
               </div>
             </div>
-            {#each creatorTrackingSettingsDraft.metrics as metric}
+            {#each getCreatorTrackingSettingsMetrics(galleryCreatorSummarySection) as metric}
               <div class="gallery-filter-row gallery-creator-summary-more-row">
                 <strong title={metric.label}>{metric.label}</strong>
                 <div class="gallery-filter-buttons">
@@ -19837,7 +23103,7 @@
                 <button class="gallery-work-open" use:observeGalleryCreatorSummaryThumbnail={item} onclick={() => openGalleryCreatorSummary(item)}>
                   <div class="gallery-work-thumb gallery-creator-summary-thumb">
                     {#if galleryThumbnails[item.id]}
-                      <img src={galleryThumbnails[item.id]} alt="" loading="lazy" />
+                      <img src={galleryThumbnails[item.id]} alt="" loading="lazy" decoding="async" />
                     {:else}
                       <UserRound size={38} />
                     {/if}
@@ -19859,35 +23125,38 @@
     {:else if activeView === 'explorer'}
       <section class="content explorer-content">
         <div class="explorer-tabs" aria-label="フォルダタブ">
-          {#each explorerTabs as tab}
-            <div
-              class:tab-active={tab.id === activeExplorerTabId}
-              class:tab-split={tab.id === explorerSplit?.rightTabId}
-              class:tab-focused={tab.id === (splitFocusedPane === 'right' ? explorerSplit?.rightTabId : activeExplorerTabId)}
-              class="explorer-tab"
-              role="group"
-              draggable="true"
-              ondragstart={(event) => {
-                draggedExplorerTab = tab;
-                event.dataTransfer?.setData('text/plain', tab.path);
-                if (event.dataTransfer) {
-                  event.dataTransfer.effectAllowed = 'move';
-                }
-              }}
-              ondragend={() => (draggedExplorerTab = null)}
-              ondragover={(event) => event.preventDefault()}
-              ondrop={(event) => reorderExplorerTab(event, tab)}
-              onauxclick={(event) => closeExplorerTabWithMiddleClick(event, tab)}
-              oncontextmenu={(event) => openExplorerTabContextMenu(event, tab)}
-            >
-              <button class="explorer-tab-label" title={tab.path} onclick={() => selectExplorerTab(tab)}>
-                {tab.label}
-              </button>
-              <button class="explorer-tab-close" title="タブを閉じる" onclick={() => closeExplorerTab(tab)}>
-                <X size={14} />
-              </button>
-            </div>
-          {/each}
+          <div class="explorer-tab-strip" role="tablist" bind:this={explorerTabStripElement}>
+            {#each explorerTabs as tab}
+              <div
+                class:tab-active={tab.id === activeExplorerTabId}
+                class:tab-split={tab.id === explorerSplit?.rightTabId}
+                class:tab-focused={tab.id === (splitFocusedPane === 'right' ? explorerSplit?.rightTabId : activeExplorerTabId)}
+                class="explorer-tab"
+                data-explorer-tab-id={tab.id}
+                role="group"
+                draggable="true"
+                ondragstart={(event) => {
+                  draggedExplorerTab = tab;
+                  event.dataTransfer?.setData('text/plain', tab.path);
+                  if (event.dataTransfer) {
+                    event.dataTransfer.effectAllowed = 'move';
+                  }
+                }}
+                ondragend={() => (draggedExplorerTab = null)}
+                ondragover={(event) => event.preventDefault()}
+                ondrop={(event) => reorderExplorerTab(event, tab)}
+                onauxclick={(event) => closeExplorerTabWithMiddleClick(event, tab)}
+                oncontextmenu={(event) => openExplorerTabContextMenu(event, tab)}
+              >
+                <button class="explorer-tab-label" title={tab.path} onclick={() => selectExplorerTab(tab)}>
+                  {tab.label}
+                </button>
+                <button class="explorer-tab-close" title="タブを閉じる" onclick={() => closeExplorerTab(tab)}>
+                  <X size={14} />
+                </button>
+              </div>
+            {/each}
+          </div>
           <div class="explorer-tab-add-menu" role="presentation" onpointerdown={(event) => event.stopPropagation()}>
             <button
               class="explorer-tab-add"
@@ -20007,13 +23276,18 @@
                       {/if}
                     {/each}
                   </div>
-                  {#each filteredExplorerEntries as entry}
+                  <div
+                    class="explorer-detail-virtual-content"
+                    style={`height: ${$explorerSplitLeftDetailVirtualizer.getTotalSize()}px;`}
+                  >
+                  {#each $explorerSplitLeftDetailVirtualizer.getVirtualItems() as virtualRow (virtualRow.key)}
+                    {@const entry = filteredExplorerEntries[virtualRow.index]}
                     <button
-                      class="file-row"
-                      class:selected={selectedPaths.includes(entry.path)}
+                      class="file-row explorer-detail-virtual-row"
+                      class:selected={selectedPathSet.has(entry.path)}
                       class:drop-target={explorerDropTargetPath === entry.path}
                       role="option"
-                      aria-selected={selectedPaths.includes(entry.path)}
+                      aria-selected={selectedPathSet.has(entry.path)}
                       draggable="true"
                       ondragstart={(event) => startExplorerEntryDrag(event, entry, 'left')}
                       ondragend={() => { draggedExplorerEntries = null; clearExplorerDropTarget(); }}
@@ -20025,6 +23299,8 @@
                       oncontextmenu={(event) => openExplorerContextMenu(event, entry, 'left')}
                       onkeydown={(event) => onExplorerKeydown(event, entry)}
                       data-explorer-path={entry.path}
+                      data-index={virtualRow.index}
+                      style={`height: ${virtualRow.size}px; transform: translateY(${virtualRow.start}px);`}
                     >
                       {#each visibleExplorerDetailColumns as column}
                         {#if column.id === 'icon'}
@@ -20037,6 +23313,7 @@
                       {/each}
                     </button>
                   {/each}
+                  </div>
                 </div>
                 {:else}
                 <div class="split-grid-pane" bind:this={explorerSplitLeftPaneElement}>
@@ -20045,7 +23322,7 @@
                       <button
                         class="explorer-tile"
                         class:explorer-folder-tile={entry.isDirectory}
-                        class:selected={selectedPaths.includes(entry.path)}
+                        class:selected={selectedPathSet.has(entry.path)}
                         class:drop-target={explorerDropTargetPath === entry.path}
                         draggable="true"
                         ondragstart={(event) => startExplorerEntryDrag(event, entry, 'left')}
@@ -20061,7 +23338,14 @@
                       >
                         <span class="explorer-preview" use:observeExplorerThumbnail={{ entry, pane: 'left' }}>
                           {#if explorerThumbnails[entry.path]}
-                            <img src={explorerThumbnails[entry.path]} alt="" loading="lazy" />
+                            <img
+                              src={explorerThumbnails[entry.path]}
+                              alt=""
+                              loading="lazy"
+                              decoding="async"
+                              onload={(event) => handleExplorerThumbnailLoad(entry.path, event)}
+                              onerror={(event) => handleExplorerThumbnailError(entry.path, event)}
+                            />
                           {:else if entry.isDirectory}
                             <Folder size={42} />
                           {:else if entry.extension === '.zip' || entry.extension === '.cbz'}
@@ -20156,13 +23440,18 @@
                       {/if}
                     {/each}
                   </div>
-                  {#each splitRightEntries as entry}
+                  <div
+                    class="explorer-detail-virtual-content"
+                    style={`height: ${$explorerSplitRightDetailVirtualizer.getTotalSize()}px;`}
+                  >
+                  {#each $explorerSplitRightDetailVirtualizer.getVirtualItems() as virtualRow (virtualRow.key)}
+                    {@const entry = splitRightEntries[virtualRow.index]}
                     <button
-                      class="file-row"
-                      class:selected={explorerSplit.rightSelectedPaths.includes(entry.path)}
+                      class="file-row explorer-detail-virtual-row"
+                      class:selected={splitRightSelectedPathSet.has(entry.path)}
                       class:drop-target={explorerDropTargetPath === entry.path}
                       role="option"
-                      aria-selected={explorerSplit.rightSelectedPaths.includes(entry.path)}
+                      aria-selected={splitRightSelectedPathSet.has(entry.path)}
                       draggable="true"
                       ondragstart={(event) => startExplorerEntryDrag(event, entry, 'right')}
                       ondragend={() => { draggedExplorerEntries = null; clearExplorerDropTarget(); }}
@@ -20174,6 +23463,8 @@
                       oncontextmenu={(event) => openExplorerContextMenu(event, entry, 'right')}
                       onkeydown={(event) => onSplitExplorerKeydown(event, entry)}
                       data-explorer-path={entry.path}
+                      data-index={virtualRow.index}
+                      style={`height: ${virtualRow.size}px; transform: translateY(${virtualRow.start}px);`}
                     >
                       {#each visibleExplorerDetailColumns as column}
                         {#if column.id === 'icon'}
@@ -20186,6 +23477,7 @@
                       {/each}
                     </button>
                   {/each}
+                  </div>
                 </div>
                 {:else}
                 <div class="split-grid-pane" bind:this={explorerSplitRightPaneElement}>
@@ -20194,7 +23486,7 @@
                       <button
                         class="explorer-tile"
                         class:explorer-folder-tile={entry.isDirectory}
-                        class:selected={explorerSplit.rightSelectedPaths.includes(entry.path)}
+                        class:selected={splitRightSelectedPathSet.has(entry.path)}
                         class:drop-target={explorerDropTargetPath === entry.path}
                         draggable="true"
                         ondragstart={(event) => startExplorerEntryDrag(event, entry, 'right')}
@@ -20209,7 +23501,14 @@
                       >
                         <span class="explorer-preview" use:observeExplorerThumbnail={{ entry, pane: 'right' }}>
                           {#if explorerThumbnails[entry.path]}
-                            <img src={explorerThumbnails[entry.path]} alt="" loading="lazy" />
+                            <img
+                              src={explorerThumbnails[entry.path]}
+                              alt=""
+                              loading="lazy"
+                              decoding="async"
+                              onload={(event) => handleExplorerThumbnailLoad(entry.path, event)}
+                              onerror={(event) => handleExplorerThumbnailError(entry.path, event)}
+                            />
                           {:else if entry.isDirectory}
                             <Folder size={42} />
                           {:else if entry.extension === '.zip' || entry.extension === '.cbz'}
@@ -20266,7 +23565,7 @@
                     <button
                       class="explorer-tile"
                       class:explorer-folder-tile={entry.isDirectory}
-                      class:selected={selectedPaths.includes(entry.path)}
+                      class:selected={selectedPathSet.has(entry.path)}
                       class:drop-target={explorerDropTargetPath === entry.path}
                       draggable="true"
                       ondragstart={(event) => startExplorerEntryDrag(event, entry, 'left')}
@@ -20282,7 +23581,14 @@
                     >
                       <span class="explorer-preview" use:observeExplorerThumbnail={{ entry, pane: 'left' }}>
                         {#if explorerThumbnails[entry.path]}
-                          <img src={explorerThumbnails[entry.path]} alt="" loading="lazy" />
+                          <img
+                            src={explorerThumbnails[entry.path]}
+                            alt=""
+                            loading="lazy"
+                            decoding="async"
+                            onload={(event) => handleExplorerThumbnailLoad(entry.path, event)}
+                            onerror={(event) => handleExplorerThumbnailError(entry.path, event)}
+                          />
                         {:else if entry.isDirectory}
                           <Folder size={42} />
                         {:else if entry.extension === '.zip' || entry.extension === '.cbz'}
@@ -20335,12 +23641,17 @@
                     {/if}
                   {/each}
                 </div>
-              {#each filteredExplorerEntries as entry}
+              <div
+                class="explorer-detail-virtual-content"
+                style={`height: ${$explorerDetailVirtualizer.getTotalSize()}px;`}
+              >
+              {#each $explorerDetailVirtualizer.getVirtualItems() as virtualRow (virtualRow.key)}
+                {@const entry = filteredExplorerEntries[virtualRow.index]}
                 <button
-                  class="file-row"
-                  class:selected={selectedPaths.includes(entry.path)}
+                  class="file-row explorer-detail-virtual-row"
+                  class:selected={selectedPathSet.has(entry.path)}
                   role="option"
-                  aria-selected={selectedPaths.includes(entry.path)}
+                  aria-selected={selectedPathSet.has(entry.path)}
                   draggable="true"
                   ondragstart={(event) => startExplorerEntryDrag(event, entry, 'left')}
                   ondragend={() => { draggedExplorerEntries = null; clearExplorerDropTarget(); }}
@@ -20352,6 +23663,8 @@
                   oncontextmenu={(event) => openExplorerContextMenu(event, entry, 'left')}
                   onkeydown={(event) => onExplorerKeydown(event, entry)}
                   data-explorer-path={entry.path}
+                  data-index={virtualRow.index}
+                  style={`height: ${virtualRow.size}px; transform: translateY(${virtualRow.start}px);`}
                 >
                   {#each visibleExplorerDetailColumns as column}
                     {#if column.id === 'icon'}
@@ -20370,6 +23683,7 @@
                   {/each}
                 </button>
               {/each}
+              </div>
               </div>
             </div>
         {/if}
@@ -20545,7 +23859,7 @@
               <strong>{getGalleryFilterLabel('character')}</strong>
               <div class="gallery-filter-control">
                 <div bind:this={galleryCharacterFilterButtonsElement} class:gallery-filter-buttons-collapsed={!galleryCharacterFiltersExpanded} class="gallery-filter-buttons gallery-filter-buttons-expandable" onwheel={scrollGalleryFilterRows}>
-                  {#each getGalleryFilterOptions(galleryCharacters, [], galleryPromotedCharacters) as option}
+                  {#each getGalleryFilterOptions(galleryCharacters, emptyGalleryFilterValues, galleryPromotedCharacters) as option}
                     <button class:active={galleryCharacterFilters.includes(option.value)} onclick={(event) => setGalleryCharacterFilter(option.value, event)}>
                       {option.label ?? option.value} {option.count}
                     </button>
@@ -20572,7 +23886,7 @@
             <strong>{getGalleryFilterLabel('tag')}</strong>
             <div class="gallery-filter-control">
               <div bind:this={galleryTagFilterButtonsElement} class:gallery-filter-buttons-collapsed={!galleryTagFiltersExpanded} class="gallery-filter-buttons gallery-filter-buttons-expandable" onwheel={scrollGalleryFilterRows}>
-                {#each getGalleryFilterOptions(galleryTags, [], galleryPromotedTags) as option}
+                {#each getGalleryFilterOptions(galleryTags, emptyGalleryFilterValues, galleryPromotedTags) as option}
                   <button class:active={galleryTagFilters.includes(option.value)} onclick={(event) => setGalleryTagFilter(option.value, event)}>
                     {option.label ?? option.value} {option.count}
                   </button>
@@ -20612,6 +23926,19 @@
                 onclick={openGalleryRandomPickDialog}
               >
                 <Dices size={16} />
+              </button>
+              <button
+                class:active={aiAttributeReviewOpen}
+                class:has-pending={aiAttributeReviewItems.length > 0}
+                class="gallery-creator-summary-refresh ai-attribute-review-launch"
+                title={`AI属性推論の要確認${aiAttributeReviewItems.length > 0 ? `（${aiAttributeReviewItems.length}件）` : ''}`}
+                aria-label="AI属性推論の要確認リストを開く"
+                onclick={openAiAttributeReview}
+              >
+                <TriangleAlert size={16} />
+                {#if aiAttributeReviewItems.length > 0}
+                  <span>{aiAttributeReviewItems.length > 99 ? '99+' : aiAttributeReviewItems.length}</span>
+                {/if}
               </button>
               <button class="gallery-creator-summary-refresh sticky-note-launch-button" title="Galleryに付箋を追加" aria-label="Galleryに付箋を追加" onclick={createStickyNoteFromToolbar}>
                 <StickyNote size={16} />
@@ -20704,7 +24031,7 @@
                 >
                   <div class="gallery-work-thumb">
                     {#if galleryThumbnails[work.id]}
-                      <img src={galleryThumbnails[work.id]} alt="" loading="lazy" />
+                      <img src={galleryThumbnails[work.id]} alt="" loading="lazy" decoding="async" />
                     {:else}
                       <Archive size={32} />
                     {/if}
@@ -20736,6 +24063,17 @@
       </section>
     {/if}
   </section>
+
+  <button
+    type="button"
+    class="ai-concierge-launcher"
+    title="AIコンシェルジュ"
+    aria-label="AIコンシェルジュを開く"
+    onclick={openAiConciergeWindow}
+  >
+    <BrainCircuit size={21} />
+    <span>AI</span>
+  </button>
 </main>
 
 {#if galleryRandomPickDialogOpen}
@@ -21185,6 +24523,141 @@
         </div>
       </dialog>
     </div>
+  </div>
+{/if}
+
+{#if aiAttributeReviewOpen && activeView === 'library'}
+  <div
+    class="modal-backdrop ai-attribute-review-backdrop"
+    role="presentation"
+    onclick={(event) => {
+      if (event.target === event.currentTarget) closeAiAttributeReview();
+    }}
+  >
+    <dialog
+      open
+      class="modal ai-attribute-review-modal"
+      aria-labelledby="ai-attribute-review-title"
+      style={`transform: translate(${aiAttributeReviewPosition.x}px, ${aiAttributeReviewPosition.y}px);`}
+    >
+      <header
+        class="ai-attribute-review-heading"
+        role="group"
+        aria-label="AI属性推論の要確認ウィンドウを移動"
+        onpointerdown={beginAiAttributeReviewMove}
+      >
+        <div>
+          <span><TriangleAlert size={20} /></span>
+          <div>
+            <h2 id="ai-attribute-review-title">AI属性推論の要確認</h2>
+            <p>AIが特定できなかった作品へ、既存属性の付与または新規属性の追加を続けて行います。</p>
+          </div>
+        </div>
+        <div class="ai-attribute-review-heading-actions">
+          <strong>{aiAttributeReviewItems.length.toLocaleString('ja-JP')} 件</strong>
+          <button type="button" title="再読み込み" aria-label="要確認リストを再読み込み" disabled={aiAttributeReviewLoading} onclick={requestAiAttributeReviews}>
+            <RefreshCw class={aiAttributeReviewLoading ? 'spin' : ''} size={17} />
+          </button>
+          <button type="button" aria-label="閉じる" disabled={galleryTitleAssignment !== null} onclick={closeAiAttributeReview}>
+            <X size={18} />
+          </button>
+        </div>
+      </header>
+
+      <div class="ai-attribute-review-search">
+        <Search size={16} />
+        <input bind:value={aiAttributeReviewQuery} placeholder="作品名・Creator・区分・パスで絞り込む" />
+      </div>
+
+      {#if aiAttributeReviewLoading && aiAttributeReviewItems.length === 0}
+        <div class="ai-attribute-review-empty">要確認リストを読み込んでいます...</div>
+      {:else if aiAttributeReviewItems.length === 0}
+        <div class="ai-attribute-review-empty ai-attribute-review-complete">
+          <Check size={32} />
+          <strong>要確認の作品はありません</strong>
+          <span>AIが判断できなかった作品は、次回の推論付与後にここへ追加されます。</span>
+        </div>
+      {:else}
+        <div class="ai-attribute-review-layout">
+          <aside class="ai-attribute-review-list" aria-label="要確認作品">
+            {#if visibleAiAttributeReviewItems.length === 0}
+              <div class="ai-attribute-review-empty">検索条件に一致する作品はありません。</div>
+            {:else}
+              {#each renderedAiAttributeReviewItems as item, index (item.gid)}
+                <button
+                  class:selected={selectedAiAttributeReviewItem?.gid === item.gid}
+                  type="button"
+                  onclick={() => selectAiAttributeReview(item)}
+                >
+                  <span>{(index + 1).toLocaleString('ja-JP')}</span>
+                  <div>
+                    <strong>{item.name}</strong>
+                    <small>{item.creator || 'Creator未設定'} ・ {item.category}</small>
+                  </div>
+                  <ChevronRight size={16} />
+                </button>
+              {/each}
+              {#if renderedAiAttributeReviewItems.length < visibleAiAttributeReviewItems.length}
+                <button
+                  class="ai-attribute-review-load-more"
+                  type="button"
+                  onclick={showMoreAiAttributeReviews}
+                >
+                  <Plus size={15} />
+                  <div>
+                    <strong>さらに200件を表示</strong>
+                    <small>
+                      {renderedAiAttributeReviewItems.length.toLocaleString('ja-JP')} /
+                      {visibleAiAttributeReviewItems.length.toLocaleString('ja-JP')} 件
+                    </small>
+                  </div>
+                </button>
+              {/if}
+            {/if}
+          </aside>
+
+          <section class="ai-attribute-review-detail">
+            {#if selectedAiAttributeReviewItem}
+              <div class="ai-attribute-review-preview">
+                {#if galleryThumbnails[`ai-review:${selectedAiAttributeReviewItem.gid}`]}
+                  <img src={galleryThumbnails[`ai-review:${selectedAiAttributeReviewItem.gid}`]} alt="" />
+                {:else}
+                  <Archive size={48} />
+                {/if}
+              </div>
+              <div class="ai-attribute-review-meta">
+                <span>{selectedAiAttributeReviewItem.category}</span>
+                <span>{selectedAiAttributeReviewItem.creator || 'Creator未設定'}</span>
+                <span>{selectedAiAttributeReviewItem.imageCount.toLocaleString('ja-JP')} 枚</span>
+              </div>
+              <h3>{selectedAiAttributeReviewItem.name}</h3>
+              <div class="ai-attribute-review-reason">
+                <strong>AIが保留した理由</strong>
+                <p>{selectedAiAttributeReviewItem.reason || '既存Titleを十分な確度で特定できませんでした。'}</p>
+              </div>
+              <div class="ai-attribute-review-path" title={selectedAiAttributeReviewItem.path}>
+                {selectedAiAttributeReviewItem.path}
+              </div>
+              <div class="ai-attribute-review-actions">
+                <button class="primary-button" type="button" onclick={editSelectedAiAttributeReview}>
+                  <Pencil size={16} />
+                  Title / Characterを設定
+                </button>
+                <button class="quiet-button" type="button" disabled={aiAttributeReviewLoading} onclick={resolveSelectedAiAttributeReview}>
+                  <Check size={16} />
+                  対象外として完了
+                </button>
+              </div>
+              <p class="ai-attribute-review-help">
+                属性設定画面の「新規Titleの追加」「新規Characterの追加」も利用できます。登録後はこの一覧の次の作品へ進みます。
+              </p>
+            {:else}
+              <div class="ai-attribute-review-empty">左の一覧から作品を選択してください。</div>
+            {/if}
+          </section>
+        </div>
+      {/if}
+    </dialog>
   </div>
 {/if}
 
@@ -22193,6 +25666,43 @@
       <div class="modal-actions">
         <button class="primary-button" disabled={!creatorTrackingNewCreator.trim()} onclick={createNewCreatorTracking}><UserPlus size={16} /> 作成</button>
         <button class="quiet-button" onclick={() => (creatorTrackingNewDialogOpen = false)}>キャンセル</button>
+      </div>
+    </dialog>
+  </div>
+{/if}
+
+{#if creatorTrackingCategoryDeleteTarget && creatorTracking}
+  <div class="modal-backdrop" role="presentation">
+    <dialog
+      open
+      class="modal rename-modal delete-modal creator-tracking-category-delete-modal"
+      aria-labelledby="creator-tracking-category-delete-title"
+      onkeydown={(event) => {
+        if (event.key === 'Escape') cancelCreatorTrackingCategoryDelete();
+      }}
+    >
+      <div class="modal-heading">
+        <h2 id="creator-tracking-category-delete-title">区分を削除しますか？</h2>
+        <button title="閉じる" onclick={cancelCreatorTrackingCategoryDelete}><X size={18} /></button>
+      </div>
+      <p>
+        Creator「{creatorTracking.displayName || creatorTracking.creator}」から
+        「{getGallerySectionLabel(creatorTrackingCategoryDeleteTarget)}」を削除します。
+      </p>
+      <div class="creator-tracking-delete-summary">
+        <span>この区分で削除される情報</span>
+        <ul>
+          <li>SUMMARYカードの構成</li>
+          <li>作品の傾向の評価値とメモ</li>
+          <li>ARCHIVE HISTORY</li>
+        </ul>
+      </div>
+      <p class="gid-assignment-note">Galleryの作品・属性・ファイル本体や、他の区分のCreator Tracking情報は削除しません。</p>
+      <div class="modal-actions">
+        <button class="danger-button" onclick={confirmCreatorTrackingCategoryDelete}>
+          <Trash2 size={16} /> 区分を削除
+        </button>
+        <button class="quiet-button" onclick={cancelCreatorTrackingCategoryDelete}>キャンセル</button>
       </div>
     </dialog>
   </div>

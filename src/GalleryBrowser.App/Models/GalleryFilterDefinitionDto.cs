@@ -133,6 +133,10 @@ public sealed record GalleryCreatorReassignmentResultDto(
     bool TrackingConflict,
     string Message);
 
+public sealed record GalleryCreatorFolderUpdateResultDto(
+    int ItemCount,
+    int UpdatedCount);
+
 public sealed record GalleryReverseCharacterFilterDto(
     string Value,
     string Label,

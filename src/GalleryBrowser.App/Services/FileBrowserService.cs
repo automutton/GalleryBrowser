@@ -1,4 +1,6 @@
 using GalleryBrowser.Models;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Globalization;
@@ -36,16 +38,17 @@ public sealed record CreatorFolderRenameResult(
 public sealed class FileBrowserService
 {
     private const int MaximumEntries = 2_000;
+    private const int ArchivePageCountPersistenceBatchSize = 128;
+    private static readonly TimeSpan ReadyDriveRootsCacheDuration = TimeSpan.FromSeconds(3);
     private static readonly Regex GidTagRegex = new(
         @"\{gid=(?<gid>[^{}]+)\}",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
-    private static readonly HashSet<string> ArchiveImageExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".avif", ".heic", ".heif", ".jxl"
-    };
-    private readonly Dictionary<string, (long Length, long ModifiedTicks, int? PageCount)> _archivePageCounts =
+    private readonly ConcurrentDictionary<string, (long Length, long ModifiedTicks, int? PageCount)> _archivePageCounts =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _readyDriveRootsLock = new();
     private readonly GalleryDatabase _database;
+    private string[] _readyDriveRoots = [];
+    private long _readyDriveRootsRefreshedAt;
 
     public FileBrowserService(GalleryDatabase database)
     {
@@ -85,7 +88,7 @@ public sealed class FileBrowserService
                         isDirectory,
                         isDirectory ? string.Empty : Path.GetExtension(entry.Name),
                         file?.Length,
-                        file is null ? null : GetArchivePageCount(file),
+                        null,
                         entry.CreationTimeUtc,
                         entry.LastAccessTimeUtc,
                         entry.LastWriteTimeUtc));
@@ -105,27 +108,179 @@ public sealed class FileBrowserService
             throw new InvalidOperationException("このフォルダにアクセスする権限がありません。", ex);
         }
 
-        _database.SaveFileSearchMetadata(entries.Select(entry => new FileSearchMetadataDto(
-            entry.Path,
-            entry.Name,
-            entry.RomanizedName)));
+        entries.Sort(static (left, right) =>
+        {
+            if (left.IsDirectory != right.IsDirectory)
+            {
+                return left.IsDirectory ? -1 : 1;
+            }
 
-        var orderedEntries = entries
-            .OrderBy(entry => !entry.IsDirectory)
-            .ThenBy(entry => entry.Name, StringComparer.CurrentCultureIgnoreCase)
-            .ToArray();
+            return StringComparer.CurrentCultureIgnoreCase.Compare(left.Name, right.Name);
+        });
 
         var parent = directory.Parent?.FullName;
         return new FileBrowserDirectoryDto(
             directory.FullName,
             parent,
-            DriveInfo.GetDrives()
-                .Where(drive => drive.IsReady)
-                .Select(drive => drive.RootDirectory.FullName)
-                .OrderBy(root => root, StringComparer.CurrentCultureIgnoreCase)
-                .ToArray(),
-            orderedEntries,
+            GetReadyDriveRoots(),
+            entries,
             isTruncated);
+    }
+
+    private IReadOnlyList<string> GetReadyDriveRoots()
+    {
+        lock (_readyDriveRootsLock)
+        {
+            if (_readyDriveRootsRefreshedAt != 0 &&
+                Stopwatch.GetElapsedTime(_readyDriveRootsRefreshedAt) < ReadyDriveRootsCacheDuration)
+            {
+                return _readyDriveRoots;
+            }
+
+            _readyDriveRoots = DriveInfo.GetDrives()
+                .Where(static drive =>
+                {
+                    try
+                    {
+                        return drive.IsReady;
+                    }
+                    catch (IOException)
+                    {
+                        return false;
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        return false;
+                    }
+                })
+                .Select(static drive => drive.RootDirectory.FullName)
+                .OrderBy(static root => root, StringComparer.CurrentCultureIgnoreCase)
+                .ToArray();
+            _readyDriveRootsRefreshedAt = Stopwatch.GetTimestamp();
+            return _readyDriveRoots;
+        }
+    }
+
+    public void SaveSearchMetadata(IReadOnlyList<FileBrowserEntryDto> entries)
+    {
+        _database.SaveFileSearchMetadata(entries.Select(entry => new FileSearchMetadataDto(
+            entry.Path,
+            entry.Name,
+            entry.RomanizedName)));
+    }
+
+    public void StreamArchivePageCounts(
+        IReadOnlyList<FileBrowserEntryDto> entries,
+        Action<IReadOnlyDictionary<string, int?>> reportBatch,
+        CancellationToken cancellationToken)
+    {
+        var archiveEntries = entries
+            .Where(entry =>
+                !entry.IsDirectory &&
+                (string.Equals(entry.Extension, ".zip", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(entry.Extension, ".cbz", StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        if (archiveEntries.Length == 0)
+        {
+            return;
+        }
+
+        var knownCounts = _database.ListGalleryImageCountsByPaths(
+            archiveEntries.Select(entry => entry.Path).ToArray());
+        if (knownCounts.Count > 0)
+        {
+            reportBatch(knownCounts.ToDictionary(
+                pair => pair.Key,
+                pair => (int?)pair.Value,
+                StringComparer.OrdinalIgnoreCase));
+        }
+
+        var cachedCounts = _database.ListArchivePageCountCacheByPaths(
+            archiveEntries
+                .Where(entry => !knownCounts.ContainsKey(entry.Path))
+                .Select(entry => entry.Path)
+                .ToArray());
+        var reusableCounts = new Dictionary<string, int?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in archiveEntries)
+        {
+            if (knownCounts.ContainsKey(entry.Path) ||
+                !cachedCounts.TryGetValue(entry.Path, out var cached) ||
+                entry.Size is not long fileLength ||
+                cached.FileLength != fileLength ||
+                cached.ModifiedTicks != entry.ModifiedAt.UtcDateTime.Ticks)
+            {
+                continue;
+            }
+
+            _archivePageCounts[entry.Path] = (cached.FileLength, cached.ModifiedTicks, cached.PageCount);
+            reusableCounts[entry.Path] = cached.PageCount;
+        }
+        if (reusableCounts.Count > 0)
+        {
+            reportBatch(reusableCounts);
+        }
+
+        var pending = new Dictionary<string, int?>(StringComparer.OrdinalIgnoreCase);
+        var persistentPending = new List<ArchivePageCountCacheDto>(ArchivePageCountPersistenceBatchSize);
+        var lastReport = Stopwatch.GetTimestamp();
+        try
+        {
+            foreach (var entry in archiveEntries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (knownCounts.ContainsKey(entry.Path) || reusableCounts.ContainsKey(entry.Path))
+                {
+                    continue;
+                }
+
+                var file = new FileInfo(entry.Path);
+                var pageCount = GetArchivePageCount(file);
+                pending[entry.Path] = pageCount;
+                persistentPending.Add(new ArchivePageCountCacheDto(
+                    file.FullName,
+                    file.Length,
+                    file.LastWriteTimeUtc.Ticks,
+                    pageCount));
+                if (persistentPending.Count >= ArchivePageCountPersistenceBatchSize)
+                {
+                    _database.SaveArchivePageCountCache(persistentPending);
+                    persistentPending.Clear();
+                }
+
+                var elapsed = Stopwatch.GetElapsedTime(lastReport);
+                if (pending.Count >= 16 || elapsed >= TimeSpan.FromMilliseconds(120))
+                {
+                    reportBatch(new Dictionary<string, int?>(pending, StringComparer.OrdinalIgnoreCase));
+                    pending.Clear();
+                    lastReport = Stopwatch.GetTimestamp();
+                }
+            }
+        }
+        finally
+        {
+            _database.SaveArchivePageCountCache(persistentPending);
+        }
+
+        if (pending.Count > 0)
+        {
+            reportBatch(pending);
+        }
+    }
+
+    public int? GetArchivePageCount(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var fullPath = Path.GetFullPath(path);
+        if (!File.Exists(fullPath))
+        {
+            return null;
+        }
+
+        return GetArchivePageCount(new FileInfo(fullPath));
     }
 
     private int? GetArchivePageCount(FileInfo file)
@@ -146,9 +301,17 @@ public sealed class FileBrowserService
         try
         {
             using var archive = ZipFile.OpenRead(file.FullName);
-            pageCount = archive.Entries.Count(entry =>
-                !string.IsNullOrEmpty(entry.Name) &&
-                ArchiveImageExtensions.Contains(Path.GetExtension(entry.FullName)));
+            var imageCount = 0;
+            foreach (var entry in archive.Entries)
+            {
+                if (!string.IsNullOrEmpty(entry.Name) &&
+                    IsArchiveImagePath(entry.FullName))
+                {
+                    imageCount++;
+                }
+            }
+
+            pageCount = imageCount;
         }
         catch (InvalidDataException)
         {
@@ -165,6 +328,23 @@ public sealed class FileBrowserService
 
         _archivePageCounts[file.FullName] = (file.Length, file.LastWriteTimeUtc.Ticks, pageCount);
         return pageCount;
+    }
+
+    private static bool IsArchiveImagePath(string path)
+    {
+        var extension = Path.GetExtension(path.AsSpan());
+        return extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".webp", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".bmp", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".gif", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".tif", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".tiff", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".avif", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".heic", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".heif", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".jxl", StringComparison.OrdinalIgnoreCase);
     }
 
     public IReadOnlyList<string> Copy(

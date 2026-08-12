@@ -37,6 +37,7 @@ internal sealed class LineNotificationService
         bool notifyCreatorFollowAlert,
         bool notifySubscriptionEnding,
         bool notifySubscriptionReminder,
+        bool notifyCreatorTasks,
         bool notifyScheduledScanStarted,
         bool notifyScheduledScanCompleted)
     {
@@ -56,6 +57,7 @@ internal sealed class LineNotificationService
             notifyCreatorFollowAlert,
             notifySubscriptionEnding,
             notifySubscriptionReminder,
+            notifyCreatorTasks,
             notifyScheduledScanStarted,
             notifyScheduledScanCompleted);
     }
@@ -129,6 +131,7 @@ internal sealed class LineNotificationService
             settings.NotifyCreatorFollowAlert,
             settings.NotifySubscriptionEnding,
             settings.NotifySubscriptionReminder,
+            settings.NotifyCreatorTasks,
             markdown: false,
             MaximumMessageLength);
         if (digest is null ||
